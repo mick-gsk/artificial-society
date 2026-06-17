@@ -2,26 +2,38 @@
 Emergent Invention Engine
 --------------------------
 Agents perform primitive physical actions on materials in their environment.
-There are NO predefined recipes. Outcomes are governed entirely by
-artificial_society.environment.materials.apply_interaction().
+There are NO predefined recipes. Outcomes are governed entirely by the
+vector-based physical simulation in materials.py.
 
-An agent's brain decides WHAT to try based on local features.
-The effects of trying (energy gain, warmth, damage, social attraction)
-are fed back as reward -- the brain learns purely from consequences.
+Two parallel code paths run simultaneously:
+  1. Legacy string path  -- keeps fire/cooked_meat/sharp_stone working
+  2. Emergent vector path -- produces genuinely new mat_XXXX materials
+
+An agent's brain learns WHAT combinations are valuable purely through
+homeostatic reward. No label lookup, no hardcoded recipe tree.
 """
 
 import random
+import numpy as np
+
 from artificial_society.environment.materials import (
     apply_interaction,
+    combine_vectors,
     material_heat,
     material_light,
     material_danger,
+    material_reward,
     decay_materials,
+    get_vector,
     MATERIALS,
+    DISCOVERY_REGISTRY,
+    IDX,
+    N_PROPS,
 )
 
-PRIMITIVE_ACTIONS = ['rub', 'strike', 'place_on_heat', 'bundle', 'blow', 'carry', 'eat']
+PRIMITIVE_ACTIONS = ['rub', 'strike', 'place_on_heat', 'bundle', 'blow', 'carry', 'eat', 'bind']
 
+# Legacy reward constants kept for named-material fast paths
 WARMTH_REWARD  = 0.08
 LIGHT_REWARD   = 0.06
 COOK_REWARD    = 0.35
@@ -29,7 +41,16 @@ SHARP_REWARD   = 0.45
 DANGER_PENALTY = -0.12
 
 
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 def agent_try_invention(agent, cell: dict, env: dict) -> float:
+    """
+    Agent picks two materials from the cell (or one from cell + one from
+    inventory) and applies a primitive action.
+    Returns the reward signal.
+    """
     slot = cell.get('materials', {})
     if not slot:
         return 0.0
@@ -38,32 +59,57 @@ def agent_try_invention(agent, cell: dict, env: dict) -> float:
         return 0.0
 
     mat_a = random.choice(available)
-    mat_b = random.choice([m for m in available if m != mat_a]) if len(available) > 1 else None
-
-    inv = getattr(agent, 'material_inventory', {})
-    if not mat_b and inv:
-        mat_b = random.choice(list(inv.keys()))
+    mat_b = None
+    if len(available) > 1:
+        candidates = [m for m in available if m != mat_a]
+        mat_b = random.choice(candidates)
+    if mat_b is None:
+        inv = getattr(agent, 'material_inventory', {})
+        if inv:
+            mat_b = random.choice(list(inv.keys()))
 
     causal_mem = getattr(agent, 'causal_memory', None)
     action = _choose_action(agent, causal_mem, mat_a, mat_b)
-    outcomes = apply_interaction(action, mat_a, mat_b, env)
-    reward = _evaluate_outcomes(agent, cell, slot, outcomes, env)
+
+    # --- Legacy string path ---
+    legacy_outcomes = apply_interaction(action, mat_a, mat_b, env)
+    legacy_reward   = _evaluate_legacy_outcomes(agent, cell, slot, legacy_outcomes, env)
+
+    # --- Emergent vector path ---
+    vec_a    = get_vector(mat_a)
+    vec_b    = get_vector(mat_b) if mat_b else None
+    new_vec  = combine_vectors(vec_a, vec_b, action, env)
+    emergent_reward = 0.0
+    if new_vec is not None and float(new_vec.sum()) > 0.1:
+        agent_state = _agent_homeostatic_state(agent, cell)
+        emergent_reward = material_reward(new_vec, agent_state)
+        mat_id = DISCOVERY_REGISTRY.register(
+            new_vec,
+            discoverer_id=agent.id,
+            tick=getattr(agent, 'age', 0),
+            recipe=(action, mat_a, mat_b),
+        )
+        # Place in agent inventory
+        inv = getattr(agent, 'material_inventory', {})
+        inv[mat_id] = inv.get(mat_id, 0.0) + 0.5
+        # Upgrade tool if newly invented material is sharper than current
+        _maybe_upgrade_tool(agent, mat_id, new_vec)
+        # Endocrine discovery burst
+        if emergent_reward > 0.3 and hasattr(agent, 'endocrine'):
+            agent.endocrine.apply_discovery(min(1.0, emergent_reward))
+
+    total_reward = legacy_reward + emergent_reward * 0.6
 
     if causal_mem is not None:
-        causal_mem.record(action, mat_a, mat_b, outcomes, reward)
+        causal_mem.record(action, mat_a, mat_b, legacy_outcomes, total_reward)
 
-    return reward
+    return total_reward
 
 
 def agent_try_cook(agent, cell: dict) -> float:
     """
-    Explizites Kochversuch-Interface fuer maybe_craft().
-    Agent versucht Rohfleisch oder Rohwurzel auf einem Feuer/Ember
-    in der aktuellen Zelle zu garen.
-    Kein vordefiniertes Rezept -- der Agent muss 'place_on_heat' mit
-    dem richtigen Material und einer Hitzequelle kombinieren.
-    Gibt 0.0 zurueck wenn keine Hitzequelle oder kein rohes Essen vorhanden.
-    Reward kommt ausschliesslich durch den Energiegewinn beim spaetere Essen.
+    Explicit cooking attempt (called from agent.update).
+    Kept for backward compatibility.
     """
     slot = cell.get('materials', {})
     heat_sources = [m for m in slot if slot[m] > 0.1 and m in ('fire', 'ember')]
@@ -72,13 +118,11 @@ def agent_try_cook(agent, cell: dict) -> float:
 
     inv = getattr(agent, 'material_inventory', {})
     cookable = [m for m in inv if m in ('raw_meat', 'raw_root') and inv[m] > 0.1]
-    if not cookable:
-        # Auch in der Zelle nach kochbarem suchen
+    if cookable:
+        source = inv
+    else:
         cookable = [m for m in slot if m in ('raw_meat', 'raw_root') and slot[m] > 0.1]
         source = slot
-    else:
-        source = inv
-
     if not cookable:
         return 0.0
 
@@ -89,20 +133,101 @@ def agent_try_cook(agent, cell: dict) -> float:
         'moisture':    cell.get('moisture', 50)   / 100.0,
         'temperature': cell.get('temperature', 20),
     }
-    outcomes = apply_interaction('place_on_heat', food_mat, heat_mat, env)
-    if not outcomes:
-        return 0.0
 
-    causal_mem = getattr(agent, 'causal_memory', None)
-    reward = _evaluate_outcomes(agent, cell, slot, outcomes, env)
-    if causal_mem is not None:
-        causal_mem.record('place_on_heat', food_mat, heat_mat, outcomes, reward)
-    # Rohes Material verbrauchen wenn Ergebnis produziert wurde
-    result_mats = [o for o in outcomes if not o.startswith('_')]
+    # Legacy path
+    outcomes     = apply_interaction('place_on_heat', food_mat, heat_mat, env)
+    causal_mem   = getattr(agent, 'causal_memory', None)
+    legacy_r     = _evaluate_legacy_outcomes(agent, cell, slot, outcomes, env)
+    result_mats  = [o for o in outcomes if not o.startswith('_')]
     if result_mats:
         source[food_mat] = max(0.0, source.get(food_mat, 0) - 0.5)
-    return reward
 
+    # Emergent path
+    vec_food = get_vector(food_mat)
+    vec_heat = get_vector(heat_mat)
+    new_vec  = combine_vectors(vec_food, vec_heat, 'place_on_heat', env)
+    emergent_r = 0.0
+    if new_vec is not None and float(new_vec.sum()) > 0.1:
+        agent_state = _agent_homeostatic_state(agent, cell)
+        emergent_r  = material_reward(new_vec, agent_state)
+        mat_id = DISCOVERY_REGISTRY.register(
+            new_vec,
+            discoverer_id=agent.id,
+            tick=getattr(agent, 'age', 0),
+            recipe=('place_on_heat', food_mat, heat_mat),
+        )
+        inv[mat_id] = inv.get(mat_id, 0.0) + 0.6
+
+    total = legacy_r + emergent_r * 0.6
+    if causal_mem is not None:
+        causal_mem.record('place_on_heat', food_mat, heat_mat, outcomes, total)
+    return total
+
+
+def share_discovery(teacher, student, mat_id: str) -> bool:
+    """
+    Social knowledge transfer: teacher shows student a discovered material.
+    Student gains the mat_id in inventory if trust is sufficient.
+    Returns True if transfer happened.
+    """
+    trust = teacher.trust.get(student.id, 0.0)
+    if trust < 0.25:
+        return False
+    if mat_id not in DISCOVERY_REGISTRY.known_ids():
+        return False
+    inv = getattr(student, 'material_inventory', {})
+    if inv.get(mat_id, 0.0) < 0.1:
+        inv[mat_id] = 0.3
+        if hasattr(student, 'endocrine'):
+            student.endocrine.apply_discovery(0.3)
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Tick-level world update
+# ---------------------------------------------------------------------------
+
+def tick_materials(world):
+    for y in range(world.height):
+        for x in range(world.width):
+            cell = world.cells[y][x]
+            if 'materials' in cell and cell['materials']:
+                env = {
+                    'wind':        cell.get('disturbance', 0) / 100.0,
+                    'moisture':    cell.get('moisture', 50)   / 100.0,
+                    'temperature': cell.get('temperature', 20),
+                }
+                decay_materials(cell['materials'], env)
+
+
+def seed_world_materials(world):
+    import random
+    biome_mats = {
+        'forest':    [('dry_wood', 0.4), ('wet_wood', 0.3), ('dry_grass', 0.2), ('fiber', 0.3)],
+        'grassland': [('dry_grass', 0.5), ('fiber', 0.4), ('raw_root', 0.2)],
+        'mountain':  [('stone', 0.5), ('flint', 0.25), ('bone', 0.1)],
+        'desert':    [('dry_grass', 0.3), ('flint', 0.2), ('stone', 0.3), ('dry_wood', 0.1)],
+        'swamp':     [('wet_wood', 0.4), ('fiber', 0.4), ('raw_root', 0.3)],
+        'tundra':    [('dry_grass', 0.2), ('bone', 0.15), ('stone', 0.3)],
+    }
+    for y in range(world.height):
+        for x in range(world.width):
+            biome = world.biomes[y][x]
+            if biome == 'water':
+                continue
+            cell = world.cells[y][x]
+            slot = {}
+            for mat, base_qty in biome_mats.get(biome, []):
+                if random.random() < 0.35:
+                    slot[mat] = round(base_qty * random.uniform(0.5, 1.5), 2)
+            cell['materials'] = slot
+            cell['warmth'] = 0.0
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
 
 def _choose_action(agent, causal_mem, mat_a: str, mat_b: str | None) -> str:
     if causal_mem is None:
@@ -115,7 +240,33 @@ def _choose_action(agent, causal_mem, mat_a: str, mat_b: str | None) -> str:
     return random.choice(PRIMITIVE_ACTIONS)
 
 
-def _evaluate_outcomes(agent, cell: dict, slot: dict, outcomes: list[str], env: dict) -> float:
+def _agent_homeostatic_state(agent, cell: dict) -> dict:
+    from artificial_society.agents.agent import MAX_ENERGY
+    heat = material_heat(cell.get('materials', {}))
+    return {
+        'energy':    agent.energy    / MAX_ENERGY,
+        'hydration': agent.hydration / 100.0,
+        'health':    agent.health    / 100.0,
+        'cold':      cell.get('temperature', 20) < 8,
+        'dark':      cell.get('light', 1.0) < 0.3,
+    }
+
+
+def _maybe_upgrade_tool(agent, mat_id: str, vec: np.ndarray):
+    """Equip invented material as tool if it is sharper than current tool."""
+    current_sharpness = 0.0
+    if agent.tool == 'sharp_stone':
+        current_sharpness = float(get_vector('sharp_stone')[IDX['sharpness']])
+    elif agent.tool and agent.tool.startswith('mat_'):
+        current_sharpness = float(get_vector(agent.tool)[IDX['sharpness']])
+    if vec[IDX['sharpness']] > current_sharpness + 0.05:
+        agent.tool = mat_id
+
+
+def _evaluate_legacy_outcomes(
+    agent, cell: dict, slot: dict, outcomes: list[str], env: dict
+) -> float:
+    """Handle named-material outcomes from the legacy apply_interaction path."""
     reward = 0.0
     for result in outcomes:
         if result == '_spark':
@@ -151,53 +302,16 @@ def _evaluate_outcomes(agent, cell: dict, slot: dict, outcomes: list[str], env: 
             inv = getattr(agent, 'material_inventory', {})
             inv['sharp_stone'] = inv.get('sharp_stone', 0.0) + 1.0
             reward += SHARP_REWARD
-            # Tool setzen -- auch wenn bereits eines vorhanden ist
-            # (Agent traegt jetzt explizit das scharfe Werkzeug)
             agent.tool = 'sharp_stone'
+        elif result.startswith('mat_'):
+            # Emergent material produced via legacy path (shouldn't normally happen
+            # but handled gracefully)
+            inv = getattr(agent, 'material_inventory', {})
+            inv[result] = inv.get(result, 0.0) + 0.5
 
     heat   = material_heat(slot)
     light  = material_light(slot)
     danger = material_danger(slot)
-    reward += heat * WARMTH_REWARD
-    reward += light * LIGHT_REWARD
-    reward += danger * DANGER_PENALTY
+    reward += heat * WARMTH_REWARD + light * LIGHT_REWARD + danger * DANGER_PENALTY
     cell['warmth'] = heat
     return reward
-
-
-def tick_materials(world):
-    for y in range(world.height):
-        for x in range(world.width):
-            cell = world.cells[y][x]
-            if 'materials' in cell and cell['materials']:
-                env = {
-                    'wind':        cell.get('disturbance', 0) / 100.0,
-                    'moisture':    cell.get('moisture', 50)   / 100.0,
-                    'temperature': cell.get('temperature', 20),
-                }
-                decay_materials(cell['materials'], env)
-
-
-def seed_world_materials(world):
-    from artificial_society.environment.biomes import BIOME_BASE
-    import random
-    biome_mats = {
-        'forest':    [('dry_wood', 0.4), ('wet_wood', 0.3), ('dry_grass', 0.2), ('fiber', 0.3)],
-        'grassland': [('dry_grass', 0.5), ('fiber', 0.4), ('raw_root', 0.2)],
-        'mountain':  [('stone', 0.5), ('flint', 0.25), ('bone', 0.1)],
-        'desert':    [('dry_grass', 0.3), ('flint', 0.2), ('stone', 0.3), ('dry_wood', 0.1)],
-        'swamp':     [('wet_wood', 0.4), ('fiber', 0.4), ('raw_root', 0.3)],
-        'tundra':    [('dry_grass', 0.2), ('bone', 0.15), ('stone', 0.3)],
-    }
-    for y in range(world.height):
-        for x in range(world.width):
-            biome = world.biomes[y][x]
-            if biome == 'water':
-                continue
-            cell = world.cells[y][x]
-            slot = {}
-            for mat, base_qty in biome_mats.get(biome, []):
-                if random.random() < 0.35:
-                    slot[mat] = round(base_qty * random.uniform(0.5, 1.5), 2)
-            cell['materials'] = slot
-            cell['warmth'] = 0.0
