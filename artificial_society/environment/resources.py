@@ -12,8 +12,9 @@ def clamp(v, lo, hi):
 
 def initial_cell_state(biome):
     base = BIOME_BASE[biome]
-    plant_food = float(base['food'] * (1.15 if biome in ('forest', 'grassland', 'swamp') else 0.65))
-    meat_food = float(base['food'] * (0.35 if biome in ('mountain', 'forest', 'swamp') else 0.12))
+    # Increased initial food: 1.15->1.6 for lush biomes
+    plant_food = float(base['food'] * (1.6 if biome in ('forest', 'grassland', 'swamp') else 0.85))
+    meat_food = float(base['food'] * (0.45 if biome in ('mountain', 'forest', 'swamp') else 0.18))
     return {
         'food': float(base['food']),
         'plant_food': plant_food,
@@ -128,10 +129,13 @@ def regrow_cell(cell, biome, season_state, weather_state, tick, event_strength):
     fert_factor = 0.4 + fertility / 100.0
     moisture_factor = 0.35 + moisture / 100.0
     cap_factor = 0.35 + (capacity + farm_bonus) / 120.0
-    stress_factor = max(0.12, 1.0 - pollution / 120.0 - usage / 180.0 - disturbance / 180.0)
-    plant_gain = 0.05 * season_food * fert_factor * moisture_factor * cap_factor * stress_factor * (1.15 if biome == 'forest' else 1.0)
+    # Raised stress floor: 0.12 -> 0.30 so cells never go completely dead
+    stress_factor = max(0.30, 1.0 - pollution / 120.0 - usage / 180.0 - disturbance / 180.0)
+    # Doubled plant regrowth: 0.05 -> 0.10
+    plant_gain = 0.10 * season_food * fert_factor * moisture_factor * cap_factor * stress_factor * (1.15 if biome == 'forest' else 1.0)
     plant_gain += 0.03 * cell['structures']['farm']
-    meat_gain = 0.016 * season_food * cap_factor * max(0.2, 1.0 - pollution / 150.0) * (1.1 if biome in ('mountain', 'forest', 'swamp') else 0.7)
+    # Increased meat regrowth: 0.016 -> 0.028
+    meat_gain = 0.028 * season_food * cap_factor * max(0.2, 1.0 - pollution / 150.0) * (1.1 if biome in ('mountain', 'forest', 'swamp') else 0.7)
 
     if biome == 'desert':
         plant_gain *= 0.3

@@ -8,12 +8,12 @@ from artificial_society.agents.communication import CommunicationSystem
 from artificial_society.environment.resources import apply_consumption, maybe_build_structure
 
 MAX_ENERGY = 240.0
-INITIAL_ENERGY = 100.0
-CHILD_START_ENERGY = 80.0
-REPRODUCTION_ENERGY = 150.0
-REPRODUCTION_COST = 50.0
+INITIAL_ENERGY = 120.0
+CHILD_START_ENERGY = 100.0
+REPRODUCTION_ENERGY = 115.0
+REPRODUCTION_COST = 32.0
 REPRODUCTION_COOLDOWN = 300
-MIN_REPRODUCTION_AGE = 220
+MIN_REPRODUCTION_AGE = 140
 GESTATION_TIME = 190
 AGE_LIMIT = 5000
 PLANT_ENERGY = 28.0
@@ -313,23 +313,27 @@ class Agent:
     def apply_environmental_effects(self, world):
         cell = world.get_cell(*self.pos)
         biome_cost = world.biome_move_cost(*self.pos)
-        move_cost = (0.38 + (1.0 / max(0.6, self.genes['speed'])) * 0.16) * biome_cost
+        # Reduced move cost: 0.38 -> 0.22, speed factor 0.16 -> 0.10
+        move_cost = (0.22 + (1.0 / max(0.6, self.genes['speed'])) * 0.10) * biome_cost
         move_cost *= (1.75 - min(1.5, self.genes['efficiency']))
         self.energy -= move_cost
-        self.hydration -= 0.45 + 0.012 * cell['temperature'] + 0.015 * biome_cost + 0.02 * cell['disturbance']
-        self.energy -= 0.006 * cell['danger'] + 0.006 * cell['disturbance']
+        # Reduced hydration drain
+        self.hydration -= 0.30 + 0.008 * cell['temperature'] + 0.010 * biome_cost + 0.012 * cell['disturbance']
+        # Reduced danger/disturbance energy cost
+        self.energy -= 0.003 * cell['danger'] + 0.003 * cell['disturbance']
         self.health -= max(0, abs(cell['temperature'] - 20) - 14) * 0.05
-        self.health -= 0.01 * cell['pollution'] + 0.012 * cell['ash']
+        # Reduced pollution/ash health cost
+        self.health -= 0.005 * cell['pollution'] + 0.006 * cell['ash']
         if cell['biome'] == 'desert':
-            self.energy -= 0.25
-            self.hydration -= 0.55
+            self.energy -= 0.18
+            self.hydration -= 0.35
         if cell['biome'] == 'swamp':
-            self.health -= 0.08
+            self.health -= 0.05
         if self.hydration <= 0:
-            self.health -= 0.9
-            self.energy -= 0.35
+            self.health -= 0.6
+            self.energy -= 0.25
         if self.energy <= 0:
-            self.health -= 0.8
+            self.health -= 0.6
         if self.age > AGE_LIMIT:
             self.energy = 0
             self.health -= 2.0
