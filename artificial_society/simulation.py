@@ -104,7 +104,6 @@ class Simulation:
         x, y = self.world.find_free_neighbor(parent.pos)
         if x is None:
             x, y = parent.pos
-        # Finde den anderen Elternteil via _last_mate_id (jetzt korrekt gesetzt)
         other_parent = None
         agent_by_id  = {a.id: a for a in self.agents if a.alive}
         mate_id = getattr(parent, '_last_mate_id', None)
@@ -113,13 +112,9 @@ class Simulation:
         child = self.evolution.make_child(parent, x, y, genes=genes, other_parent=other_parent)
         child.hidden_state = child.brain.initial_hidden()
         child.birth_tick   = self.tick
-        # Gewichts-Vererbung: plasticity des Kindes bestimmt wie stark Eltern-Gewichte uebernommen werden
-        # Hochplastische Kinder (plasticity > 1.2) erben weniger -- sie sollen mehr selbst lernen
-        # Niedrigplastische Kinder erben staerker -- sie verlassen sich auf ererbtes Wissen
         inherit_strength = max(0.20, min(0.75, 0.75 - (child.genes['plasticity'] - 0.3) / (1.8 - 0.3) * 0.55))
         child.brain.inherit_weights_from(parent.brain, strength=inherit_strength)
         if other_parent is not None:
-            # Auch Vater-Gewichte mit halbem Gewicht einmischen
             child.brain.inherit_weights_from(other_parent.brain, strength=inherit_strength * 0.4)
         parent_mem = getattr(parent, 'causal_memory', None)
         if parent_mem:
@@ -233,7 +228,6 @@ class Simulation:
                     fitness_b = (other.energy/MAX_ENERGY)*0.5 + (other.health/100.0)*0.5
                     bonus += HAMILTON_TRIBE_R * fitness_b
             if bonus > 0 and agent.brain.rollout.storage:
-                # Sicher: nur wenn Rollout nicht leer ist
                 agent.brain.rollout.storage[-1]['reward'] += bonus * HAMILTON_REWARD_SCALE
                 agent.last_reward += bonus * HAMILTON_REWARD_SCALE
 
@@ -269,10 +263,56 @@ class Simulation:
         season_state = self.seasons.update(self.tick)
         weather_state= self.weather.update(self.world, season_state, self.tick)
         # Aktuelle Jahreszeit am World-Objekt speichern damit agent.forage() darauf zugreifen kann
-        self.world.current_season = season_state.get('season', None) if isinstance(season_state, dict) else getattr(season_state, 'name', None)
+        if isinstance(season_state, dict):
+            self.world.current_season = season_state.get('season', None)
+        else:
+            self.world.current_season = getattr(season_state, 'name', None)
         if self.tick < EVENT_WARMUP_TICKS:
             self.world.active_events = [e for e in self.world.active_events
-                                         if e.get('kind') not in ('drought','fire','blight','storm')]
+                                         if e.get('kind') not in ('drought', 'fire', 'blight', 'storm')]
         self.world.update_environment(season_state, weather_state, self.tick)
         tick_materials(self.world)
-        update_terri
+        update_territory_claims(self.world, self.agents)
+        self.tribes.update_membership(self.agents)
+        births = []
+        for agent in list(self.agents):
+            child_genes = agent.update(
+                world=self.world, agents=self.agents, tick=self.tick,
+                season_state=season_state, weather_state=weather_state,
+                tribes=self.tribes, economy=self.economy, technology=self.technology,
+            )
+            if agent.alive and child_genes is not None:
+                births.append(self.spawn_child_from_parent(agent, child_genes))
+        self.agents.extend(births)
+        self.tick_immunity_and_recovery()
+        self.spread_diseases()
+        self._apply_hamilton_rewards()
+        self.remove_dead()
+        self.tribes.cleanup(self.agents)
+        self.technology.update(self.agents, self.tribes)
+        self.economy.update(self.agents, self.tribes)
+        self.stats.update(self.tick, self.agents, self.world, self.tribes, self.technology)
+        if len(self.agents) < MIN_POPULATION:
+            self.emergency_respawn()
+        if self.tick % CHECKPOINT_INTERVAL == 0:
+            self._save_checkpoint()
+
+    def draw(self):
+        self.renderer.draw(self.screen, self.world, self.agents, self.stats, self.tribes, self.technology)
+
+    def run(self):
+        while self.running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_s:
+                        self._save_checkpoint()
+                        print('[checkpoint] manual save')
+                    elif event.key == pygame.K_DELETE:
+                        if os.path.exists(CHECKPOINT_PATH):
+                            os.remove(CHECKPOINT_PATH)
+                            print('[checkpoint] deleted')
+            self.step()
+            self.draw()
+            self.clock.tick(30)
