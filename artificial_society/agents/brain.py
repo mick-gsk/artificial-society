@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 device = torch.device('cpu')
 
-INPUT_SIZE = 47  # 41 base + warmth + mat_count + inv_size + 3x causal_feats
+INPUT_SIZE = 48  # 41 base + warmth + mat_count + inv_size + stage_enc + 3x causal_feats
 HIDDEN_SIZE = 96
 ACTION_SIZE = 6
 GAMMA = 0.97
