@@ -21,9 +21,13 @@ class TribeSystem:
 
     def consider_join(self, agent, nearby):
         if agent.tribe_id is not None:
-            return
+            # tribe_id gesetzt aber Stamm existiert nicht mehr (nach cleanup) -> zuruecksetzen
+            if agent.tribe_id not in self.tribes:
+                agent.tribe_id = None
+            else:
+                return
         trusted = [a for a in nearby if agent.trust.get(a.id, 0.0) > 0.25]
-        same = [a for a in trusted if a.tribe_id is not None]
+        same = [a for a in trusted if a.tribe_id is not None and a.tribe_id in self.tribes]
         if same:
             agent.tribe_id = same[0].tribe_id
             self.tribes[agent.tribe_id]['members'].add(agent.id)
@@ -43,10 +47,17 @@ class TribeSystem:
 
     def cleanup(self, agents):
         alive_ids = {a.id for a in agents if a.alive}
+        deleted = set()
         for tid in list(self.tribes.keys()):
             self.tribes[tid]['members'] &= alive_ids
             if not self.tribes[tid]['members']:
                 del self.tribes[tid]
+                deleted.add(tid)
+        # tribe_id bei allen Agenten deren Stamm geloescht wurde zuruecksetzen
+        if deleted:
+            for a in agents:
+                if a.alive and a.tribe_id in deleted:
+                    a.tribe_id = None
 
     def count(self):
         return len(self.tribes)
