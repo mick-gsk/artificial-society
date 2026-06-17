@@ -22,12 +22,15 @@ from artificial_society.systems.social_learning import social_learning_step
 MAX_ENERGY = 240.0
 INITIAL_ENERGY = 120.0
 CHILD_START_ENERGY = 100.0
-REPRODUCTION_ENERGY = 115.0
-REPRODUCTION_COST = 32.0
-REPRODUCTION_COOLDOWN = 300
-MIN_REPRODUCTION_AGE = 140
-GESTATION_TIME = 190
-AGE_LIMIT = 5000
+REPRODUCTION_ENERGY = 100.0      # war 115 — leichter erreichbar
+REPRODUCTION_COST = 28.0         # war 32
+REPRODUCTION_COOLDOWN = 120      # war 300 — weniger Wartezeit
+MIN_REPRODUCTION_AGE = 80        # war 140
+GESTATION_TIME = 80              # war 190
+AGE_LIMIT = 800                  # war 5000
+ELDER_AGE = 600                  # ab hier Altersverfall
+AGE_HEALTH_DECAY_START = 600     # sanfter Verfall
+AGE_HEALTH_DECAY_HARD  = 750     # starker Verfall
 PLANT_ENERGY = 28.0
 MEAT_ENERGY = 40.0
 CORPSE_ENERGY = 36.0
@@ -35,10 +38,13 @@ CORPSE_ENERGY = 36.0
 SHARP_STONE_FORAGE_BONUS = 0.30
 SHARP_STONE_COLLECT_BONUS = 0.20
 
-# Sleep driven entirely by endocrine (melatonin via modifiers['sleep_drive'])
 SLEEP_DRIVE_THRESHOLD = 0.45
 SLEEP_ENERGY_REGEN    = 0.40
 SLEEP_HEALTH_REGEN    = 0.12
+
+# Lebensphasen-Grenzen (fuer Renderer / Statistik)
+STAGE_CHILD = MIN_REPRODUCTION_AGE       # 0 .. 79
+STAGE_ELDER = ELDER_AGE                  # 600+
 
 
 def _ensure_new_fields(agent):
@@ -141,6 +147,14 @@ class Agent:
         agent.reproduction_cooldown = REPRODUCTION_COOLDOWN
         return agent
 
+    def life_stage(self) -> str:
+        """Returns 'child', 'adult', or 'elder' for renderer / stats."""
+        if self.age < STAGE_CHILD:
+            return 'child'
+        if self.age >= STAGE_ELDER:
+            return 'elder'
+        return 'adult'
+
     def display_color(self):
         meat_bias = max(0.0, min(1.0, (self.genes['diet_preference'] + 1.0) * 0.5))
         plant_bias = max(0.0, min(1.0, (-self.genes['diet_preference'] + 1.0) * 0.5))
@@ -150,26 +164,16 @@ class Agent:
         return (r, g, b)
 
     def can_reproduce(self):
-        return self.alive and self.age >= MIN_REPRODUCTION_AGE and self.energy >= REPRODUCTION_ENERGY and self.reproduction_cooldown <= 0 and not self.pregnant
+        return (
+            self.alive
+            and self.age >= MIN_REPRODUCTION_AGE
+            and self.age < ELDER_AGE            # Aeltere reproduzieren sich nicht mehr
+            and self.energy >= REPRODUCTION_ENERGY
+            and self.reproduction_cooldown <= 0
+            and not self.pregnant
+        )
 
     def local_features(self, world, agents):
-        """
-        The brain receives:
-          - Internal body state (energy, health, hydration)
-          - Immediate sensory percepts (cell properties)
-          - Social context
-          - 8 HORMONE LEVELS from the endocrine system
-
-        The brain does NOT receive:
-          - Raw 'light' value
-          - 'is_night' flag
-          - 'sleep_pressure' scalar
-          - 'disease_level' directly
-          - Any other world-semantic label
-
-        All those effects reach the brain ONLY through their hormonal
-        consequences. The agent must learn the correlations.
-        """
         _ensure_new_fields(self)
         x, y = self.pos
         cell = world.get_cell(x, y)
@@ -182,60 +186,48 @@ class Agent:
         mat_count = min(1.0, len(cell.get('materials', {})) / 6.0)
         causal_feats = self.causal_memory.feature_vector()
         inv_size = min(1.0, sum(self.material_inventory.values()) / 5.0)
-
-        # 8 hormone levels — this is what drives all internal motivation
         hormones = self.endocrine.as_features()
 
         return [
-            # --- Body state ---
-            self.energy / MAX_ENERGY,          # 0
-            self.health / 100.0,               # 1
-            self.hydration / 100.0,            # 2
-            min(1.0, self.age / AGE_LIMIT),    # 3
-            # --- Immediate cell percepts ---
-            cell['food'] / 180.0,              # 4
-            cell['water'] / 100.0,             # 5
-            (cell['temperature'] + 20) / 72.0, # 6
-            cell['danger'] / 100.0,            # 7
-            cell['disease'] / 100.0,           # 8
-            cell['soil_fertility'] / 100.0,    # 9
-            cell['pollution'] / 100.0,         # 10
-            cell['carrying_capacity'] / 100.0, # 11
-            cell['moisture'] / 100.0,          # 12
-            cell['ash'] / 100.0,               # 13
-            cell['disturbance'] / 100.0,       # 14
-            # --- Social ---
-            min(1.0, len(near) / 10.0),        # 15
-            min(1.0, friends / 6.0),           # 16
-            # --- Genes (fixed traits) ---
-            self.genes['curiosity'],           # 17
-            self.genes['aggression'],          # 18
-            self.genes['cooperation'],         # 19
-            self.genes['sociality'],           # 20
-            # --- Equipment ---
-            1.0 if self.tool else 0.0,         # 21
-            avg_trust * 0.5 + 0.5,             # 22
-            min(1.0, self.resources['wood'] / 4.0),   # 23
-            min(1.0, self.resources['stone'] / 4.0),  # 24
-            min(1.0, self.resources['fiber'] / 4.0),  # 25
-            max(-1.0, min(1.0, self.last_reward / 10.0)),  # 26
-            # --- Sensory extras ---
-            herb_presence,                     # 27
-            warmth,                            # 28
-            mat_count,                         # 29
-            inv_size,                          # 30
-            # --- Causal memory ---
-            *causal_feats,                     # 31,32,33
-            # --- Episodic memory retrieval ---
-            *retrieval,                        # 34..45
-            # --- 8 Hormones (all internal motivation lives here) ---
-            *hormones,                         # 46..53
+            self.energy / MAX_ENERGY,
+            self.health / 100.0,
+            self.hydration / 100.0,
+            min(1.0, self.age / AGE_LIMIT),
+            cell['food'] / 180.0,
+            cell['water'] / 100.0,
+            (cell['temperature'] + 20) / 72.0,
+            cell['danger'] / 100.0,
+            cell['disease'] / 100.0,
+            cell['soil_fertility'] / 100.0,
+            cell['pollution'] / 100.0,
+            cell['carrying_capacity'] / 100.0,
+            cell['moisture'] / 100.0,
+            cell['ash'] / 100.0,
+            cell['disturbance'] / 100.0,
+            min(1.0, len(near) / 10.0),
+            min(1.0, friends / 6.0),
+            self.genes['curiosity'],
+            self.genes['aggression'],
+            self.genes['cooperation'],
+            self.genes['sociality'],
+            1.0 if self.tool else 0.0,
+            avg_trust * 0.5 + 0.5,
+            min(1.0, self.resources['wood'] / 4.0),
+            min(1.0, self.resources['stone'] / 4.0),
+            min(1.0, self.resources['fiber'] / 4.0),
+            max(-1.0, min(1.0, self.last_reward / 10.0)),
+            herb_presence,
+            warmth,
+            mat_count,
+            inv_size,
+            *causal_feats,
+            *retrieval,
+            *hormones,
         ]
 
     def visible_cells(self, world):
         x, y = self.pos
-        # Vision modulated by melatonin (night blindness emerges from endocrine)
-        melatonin = self.endocrine.h[2]  # index 2 = MELATONIN
+        melatonin = self.endocrine.h[2]
         vision_mult = max(0.4, 1.0 - 0.6 * melatonin)
         radius = max(1, int(round((self.genes['vision'] + 0.35 * self.genes['sense_radius']) * vision_mult)))
         return world.neighbors(x, y, radius)
@@ -267,11 +259,6 @@ class Agent:
                 self.last_action_mode = 'move'
 
     def apply_sleep(self, world):
-        """
-        Sleep is entirely driven by melatonin (endocrine).
-        No direct light/time check — the endocrine system
-        converts darkness to melatonin which drives sleep_drive.
-        """
         _ensure_new_fields(self)
         mods = self.endocrine.modifiers()
         sleep_drive = mods['sleep_drive']
@@ -290,20 +277,13 @@ class Agent:
         if self.is_sleeping:
             self.energy = min(MAX_ENERGY, self.energy + SLEEP_ENERGY_REGEN)
             self.health = min(100.0, self.health + SLEEP_HEALTH_REGEN)
-            # Sleeping clears melatonin faster (natural night processing)
             self.endocrine.h[2] = max(0.0, self.endocrine.h[2] - 0.05)
             self.last_action_mode = 'sleep'
-            # Wake conditions: danger, or melatonin cleared, or adrenaline spike
             adrenaline_wake = self.endocrine.h[1] > 0.55
             if danger_here > 40.0 or self.endocrine.h[2] < 0.12 or adrenaline_wake:
                 self.is_sleeping = False
 
     def forage(self, world, intensity):
-        """
-        No minimum-intensity guard: the agent decides fully when to eat.
-        No direct forage_reward bonus — gain flows into energy/hydration
-        which is picked up by the homeostasis reward in update().
-        """
         _ensure_new_fields(self)
         if self.is_sleeping:
             return 0.0
@@ -382,11 +362,6 @@ class Agent:
         return reward
 
     def collect_materials(self, world, intensity):
-        """
-        No minimum-intensity guard.
-        No reward returned — material gains only pay off downstream
-        (building shelter -> warmth -> health, cooking -> energy, etc.)
-        """
         _ensure_new_fields(self)
         if self.is_sleeping:
             return
@@ -409,10 +384,6 @@ class Agent:
         return 0.0
 
     def maybe_build(self, world, intensity):
-        """
-        No minimum-intensity guard, no reward — the agent must learn
-        that shelter improves warmth -> health, not because we told it so.
-        """
         if self.is_sleeping:
             return None
         cell = world.get_cell(*self.pos)
@@ -429,11 +400,6 @@ class Agent:
             self.last_action_mode = 'signal'
 
     def update_social(self, agents, tribes, tick, action, features_before):
-        """
-        Social interactions update trust and trigger tribe logic.
-        No direct reward for communicating or sharing — cooperation
-        must emerge because it leads to better homeostasis outcomes.
-        """
         _ensure_new_fields(self)
         if self.is_sleeping:
             return 0.0
@@ -475,11 +441,17 @@ class Agent:
             other.energy += transfer
 
     def maybe_reproduce(self, agents, action):
+        """Paarung: keine Action-Gates mehr, groesserer Suchradius (2 Zellen)."""
         if self.is_sleeping:
             return False
-        if not self.can_reproduce() or action['communicate'] < 0.15 or action['explore'] < 0.05:
+        if not self.can_reproduce():
             return False
-        nearby = [a for a in agents if a is not self and a.alive and abs(a.pos[0] - self.pos[0]) <= 1 and abs(a.pos[1] - self.pos[1]) <= 1]
+        nearby = [
+            a for a in agents
+            if a is not self and a.alive
+            and abs(a.pos[0] - self.pos[0]) <= 2
+            and abs(a.pos[1] - self.pos[1]) <= 2
+        ]
         random.shuffle(nearby)
         for other in nearby:
             if not other.can_reproduce() or other.sex == self.sex or other.pregnant:
@@ -503,11 +475,6 @@ class Agent:
         return False
 
     def maybe_attack(self, agents, intensity):
-        """
-        No minimum-intensity guard, no direct reward.
-        Attack costs energy; any gain comes from changes in
-        health/energy/hydration captured by homeostasis reward.
-        """
         if self.is_sleeping:
             return
         mods = self.endocrine.modifiers()
@@ -562,6 +529,11 @@ class Agent:
         self.health -= 0.005 * cell['pollution'] + 0.006 * cell['ash']
         self.health -= mods['health_drain']
 
+        # Natuerlicher Altersverfall
+        if self.age >= AGE_HEALTH_DECAY_START:
+            decay = 0.3 + max(0.0, (self.age - AGE_HEALTH_DECAY_HARD) * 1.5 / (AGE_LIMIT - AGE_HEALTH_DECAY_HARD))
+            self.health -= decay
+
         warmth = cell.get('warmth', 0.0)
         if warmth > 0.3:
             cold_exposure = max(0, abs(cell['temperature'] - 20) - 14)
@@ -579,7 +551,7 @@ class Agent:
             self.health -= 0.6
         if self.age > AGE_LIMIT:
             self.energy = 0
-            self.health -= 2.0
+            self.health -= 5.0
         adrenaline = self.endocrine.h[1]
         if adrenaline > 0.5:
             self.energy -= 0.02 * (adrenaline - 0.5)
@@ -594,9 +566,7 @@ class Agent:
             self.reproduction_cooldown -= 1
         child_genes = self.progress_pregnancy()
 
-        # --- Endocrine tick (BEFORE any action or perception) ---
         self.endocrine.update(self, world)
-
         self.apply_sleep(world)
 
         if not self.is_sleeping:
@@ -609,7 +579,6 @@ class Agent:
         features = self.local_features(world, agents)
         self.local_features_cache = features
 
-        # Snapshot homeostasis BEFORE actions
         prev_energy    = self.energy
         prev_hydration = self.hydration
         prev_health    = self.health
@@ -684,7 +653,6 @@ class Agent:
         if self.sick > 60:
             self.last_action_mode = 'sick'
 
-        # --- Pure homeostasis reward ---
         reward = _homeostasis_reward(
             self.energy, prev_energy,
             self.hydration, prev_hydration,
@@ -724,20 +692,12 @@ class Agent:
         return child_genes
 
 
-# ---------------------------------------------------------------------------
-# Pure homeostasis reward function
-# ---------------------------------------------------------------------------
-
 def _homeostasis_reward(
     energy, prev_energy,
     hydration, prev_hydration,
     health, prev_health,
     alive: bool,
 ) -> float:
-    """
-    Reward signal derived exclusively from changes in vital homeostasis.
-    No bonuses for any specific action (build, mate, attack, collect).
-    """
     d_energy    = (energy    - prev_energy)    / MAX_ENERGY  * 3.0
     d_hydration = (hydration - prev_hydration) / 100.0       * 2.5
     d_health    = (health    - prev_health)    / 100.0       * 4.0
