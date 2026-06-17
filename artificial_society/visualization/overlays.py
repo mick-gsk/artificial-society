@@ -41,20 +41,21 @@ def _draw_stat_bar(screen, x, y, value, lo, hi, invert=False, color=None):
 
 
 def _label(screen, font, text, x, y, color=TEXT):
-    screen.blit(font.render(text, True, color), (x, y))
+    screen.blit(font.render(text, True, color), (int(x), int(y)))
 
 
 def _section(screen, font_bold, text, x, y, w):
-    screen.blit(font_bold.render(text, True, ACCENT), (x, y))
+    screen.blit(font_bold.render(text, True, ACCENT), (int(x), int(y)))
     pygame.draw.line(screen, ACCENT, (x, y+18), (x+w-16, y+18), 1)
     return y + 24
 
 
-def _stat_row(screen, small, label, value_str, bar_val, lo, hi, x, y, w,
-              invert=False, color=None):
+def _stat_row(screen, small, label, value_str, bar_val, lo, hi,
+              x, y, w, invert=False, color=None):
+    """One stats row: label left, value right, bar below."""
     _label(screen, small, label, x, y, TEXT_DIM)
-    _label(screen, small, value_str, x+w-52, y, TEXT)
-    _draw_stat_bar(screen, x, y+13, bar_val, lo, hi, invert, color)
+    _label(screen, small, value_str, x + w - 52, y, TEXT)
+    _draw_stat_bar(screen, x, y + 13, bar_val, lo, hi, invert, color)
     return y + 28
 
 
@@ -79,7 +80,6 @@ def draw_dashboard(screen, x, y, w, h, stats, tribes, technology, font, font_bol
     pop = last.get('population', 0)
     _label(screen, font, f"{pop} agents", pad, yy)
 
-    # Life-stage breakdown bar
     n_c = last.get('n_child', 0)
     n_a = last.get('n_adult', 0)
     n_e = last.get('n_elder', 0)
@@ -89,11 +89,10 @@ def draw_dashboard(screen, x, y, w, h, stats, tribes, technology, font, font_bol
     seg_c = int(bar_w * n_c / total)
     seg_a = int(bar_w * n_a / total)
     seg_e = bar_w - seg_c - seg_a
-    if seg_c > 0: pygame.draw.rect(screen, (200,230,255), (bar_x,          bar_y, seg_c, bar_h2), border_radius=2)
-    if seg_a > 0: pygame.draw.rect(screen, (90, 200,110), (bar_x+seg_c,    bar_y, seg_a, bar_h2))
+    if seg_c > 0: pygame.draw.rect(screen, (200,230,255), (bar_x,             bar_y, seg_c, bar_h2), border_radius=2)
+    if seg_a > 0: pygame.draw.rect(screen, (90, 200,110), (bar_x+seg_c,       bar_y, seg_a, bar_h2))
     if seg_e > 0: pygame.draw.rect(screen, (200,170, 90), (bar_x+seg_c+seg_a, bar_y, seg_e, bar_h2), border_radius=2)
     yy += 28
-    # Legend for bar
     for col, lbl, cnt in [((200,230,255),'Child',n_c),((90,200,110),'Adult',n_a),((200,170,90),'Elder',n_e)]:
         pygame.draw.rect(screen, col, (pad, yy, 8, 8), border_radius=2)
         _label(screen, small, f'{lbl} {cnt}', pad+12, yy-1, TEXT_DIM)
@@ -108,8 +107,8 @@ def draw_dashboard(screen, x, y, w, h, stats, tribes, technology, font, font_bol
         f"Events {last.get('active_events',0)}",
     ]
     for i, d in enumerate(details):
-        col = pad if i%2==0 else pad+(w-20)//2
-        _label(screen, small, d, col, yy+(i//2)*14, TEXT_DIM)
+        col = pad if i % 2 == 0 else pad + (w - 20) // 2
+        _label(screen, small, d, col, yy + (i // 2) * 14, TEXT_DIM)
     yy += 32
 
     # Vitals
@@ -117,23 +116,23 @@ def draw_dashboard(screen, x, y, w, h, stats, tribes, technology, font, font_bol
     yy += 2
     yy = _stat_row(screen, small, 'Hydration',
                    f"{last.get('avg_hydration',0):.1f}/100",
-                   last.get('avg_hydration',0), 0, 100, False, BLUE, pad, yy, w-20)
+                   last.get('avg_hydration', 0), 0, 100, pad, yy, w-20, False, BLUE)
     yy = _stat_row(screen, small, 'Sickness',
                    f"{last.get('avg_sick',0):.1f}/100",
-                   last.get('avg_sick',0), 0, 100, True, RED, pad, yy, w-20)
+                   last.get('avg_sick', 0), 0, 100, pad, yy, w-20, True, RED)
     yy = _stat_row(screen, small, 'Avg reward',
                    f"{last.get('avg_reward',0):.2f}",
-                   last.get('avg_reward',0), -2, 3, False, GREEN, pad, yy, w-20)
+                   last.get('avg_reward', 0), -2, 3, pad, yy, w-20, False, GREEN)
     yy += 4
 
     # World
     yy = _section(screen, font_bold, 'WORLD', pad, yy, w)
     yy += 2
-    yy = _stat_row(screen, small, 'Food',        f"{last.get('world_food',0):.1f}",        last.get('world_food',0),        0,100,False,GREEN,  pad,yy,w-20)
-    yy = _stat_row(screen, small, 'Water',       f"{last.get('world_water',0):.1f}",       last.get('world_water',0),       0,100,False,BLUE,   pad,yy,w-20)
-    yy = _stat_row(screen, small, 'Disease',     f"{last.get('world_disease',0):.2f}",     last.get('world_disease',0),     0,  8,True, PURPLE, pad,yy,w-20)
-    yy = _stat_row(screen, small, 'Pollution',   f"{last.get('world_pollution',0):.2f}",   last.get('world_pollution',0),   0,  8,True, RED,    pad,yy,w-20)
-    yy = _stat_row(screen, small, 'Disturbance', f"{last.get('world_disturbance',0):.2f}", last.get('world_disturbance',0), 0,  5,True, YELLOW, pad,yy,w-20)
+    yy = _stat_row(screen, small, 'Food',        f"{last.get('world_food',0):.1f}",        last.get('world_food',0),        0, 100, pad, yy, w-20, False, GREEN)
+    yy = _stat_row(screen, small, 'Water',       f"{last.get('world_water',0):.1f}",       last.get('world_water',0),       0, 100, pad, yy, w-20, False, BLUE)
+    yy = _stat_row(screen, small, 'Disease',     f"{last.get('world_disease',0):.2f}",     last.get('world_disease',0),     0,   8, pad, yy, w-20, True,  PURPLE)
+    yy = _stat_row(screen, small, 'Pollution',   f"{last.get('world_pollution',0):.2f}",   last.get('world_pollution',0),   0,   8, pad, yy, w-20, True,  RED)
+    yy = _stat_row(screen, small, 'Disturbance', f"{last.get('world_disturbance',0):.2f}", last.get('world_disturbance',0), 0,   5, pad, yy, w-20, True,  YELLOW)
     yy += 4
     pygame.draw.line(screen, SEP, (x+6, yy), (x+w-6, yy), 1)
     yy += 6
@@ -141,9 +140,9 @@ def draw_dashboard(screen, x, y, w, h, stats, tribes, technology, font, font_bol
     # Graphs
     gw, gh = w-22, 46
     for lbl, hist, col in [
-        ('Population',  stats.population_history,  (90,190,255)),
-        ('Knowledge',   stats.knowledge_history,   (160,220,90)),
-        ('Cooperation', stats.cooperation_history, (210,120,240)),
+        ('Population',  stats.population_history,  (90, 190, 255)),
+        ('Knowledge',   stats.knowledge_history,   (160, 220, 90)),
+        ('Cooperation', stats.cooperation_history, (210, 120, 240)),
     ]:
         _label(screen, small, lbl, pad, yy, TEXT_DIM)
         yy += 13
@@ -157,18 +156,22 @@ def draw_dashboard(screen, x, y, w, h, stats, tribes, technology, font, font_bol
     _label(screen, small, 'Disease ring colors', pad, yy, TEXT_DIM)
     yy += 15
     for _, dname, dcol in DISEASE_ICONS:
-        if yy > h-18: break
+        if yy > h - 18: break
         pygame.draw.circle(screen, dcol, (pad+6, yy+6), 5)
         _label(screen, small, dname, pad+16, yy, TEXT_DIM)
         yy += 15
 
     yy += 2
-    if yy < h-70:
+    if yy < h - 70:
         pygame.draw.line(screen, SEP, (x+6, yy), (x+w-6, yy), 1)
         yy += 6
-        for rcol, rlabel in [((255,110,170),'Pregnant'),((255,255,255),'Has tool'),
-                              ((200,230,255),'Child'),((240,210,100),'Elder crown')]:
-            if yy > h-16: break
+        for rcol, rlabel in [
+            ((255, 110, 170), 'Pregnant'),
+            ((255, 255, 255), 'Has tool'),
+            ((200, 230, 255), 'Child'),
+            ((240, 210, 100), 'Elder crown'),
+        ]:
+            if yy > h - 16: break
             pygame.draw.circle(screen, rcol, (pad+6, yy+6), 4)
             _label(screen, small, rlabel, pad+16, yy, TEXT_DIM)
             yy += 14
@@ -176,12 +179,3 @@ def draw_dashboard(screen, x, y, w, h, stats, tribes, technology, font, font_bol
 
 def draw_heatmap_legend(screen, x, y, font):
     pass
-
-
-def _stat_row(screen, small, label, value_str, bar_val, lo, hi,
-              x, y, w, invert=False, color=None):
-    """Labeled stat row: name | value | bar."""
-    _label(screen, small, label, x, y, TEXT_DIM)
-    _label(screen, small, value_str, x+w-52, y, TEXT)
-    _draw_stat_bar(screen, x, y+13, bar_val, lo, hi, invert, color)
-    return y + 28
