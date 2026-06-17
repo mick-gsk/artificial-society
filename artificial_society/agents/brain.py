@@ -36,7 +36,7 @@ ENTROPY_COEF = 0.004
 LEARNING_RATE = 3e-4
 GRAD_CLIP = 1.0
 REWARD_CLAMP = 6.0
-ROLLOUT_HORIZON = 20
+ROLLOUT_HORIZON = 64   # erhoet von 20 -> 64: Agenten sehen laengere Konsequenzen
 PPO_EPOCHS = 6
 
 # --- Phase 1: Model-Based Planning ---
@@ -45,6 +45,12 @@ PLAN_HORIZON = 3
 NOVELTY_WEIGHT = 0.15
 VALUE_WEIGHT = 0.50
 REWARD_WEIGHT = 0.35
+
+# --- Neuronale Praedisposition durch Vererbung ---
+# Wie stark die elterlichen Gewichte das Kind beeinflussen (0.0 = kein Einfluss, 1.0 = Klon)
+# Biologisches Vorbild: Epigenetik / neuronale Praedisposition durch Elternteile
+WEIGHT_INHERIT_STRENGTH = 0.55   # Kind erbt 55% der elterlichen Gewichte
+WEIGHT_MUTATION_SCALE   = 0.018  # Gauss'sches Rauschen wie genetische Mutation
 
 
 class RolloutBuffer:
@@ -87,6 +93,29 @@ class Brain(nn.Module):
         self.reward_head = nn.Linear(128, 1)
         self.optimizer = optim.Adam(self.parameters(), lr=LEARNING_RATE)
         self.rollout = RolloutBuffer()
+
+    # ------------------------------------------------------------------
+    # Biologische Gewichtsvererbung:
+    # Wie bei neuronaler Praedisposition beim Menschen starten Kinder nicht
+    # bei null, sondern mit einer durch die Eltern vorgepraegten Gewichtsmatrix.
+    # Das Kind lernt dann von diesem Startpunkt aus weiter (Epigenetik-Analogie).
+    # ------------------------------------------------------------------
+    def inherit_weights_from(self, parent_brain: 'Brain', strength: float = WEIGHT_INHERIT_STRENGTH, mutation_scale: float = WEIGHT_MUTATION_SCALE):
+        """
+        Interpoliert die eigenen (zufaelligen) Gewichte mit denen des Elternteils
+        und fuegt Gauss'sches Rauschen als Mutation hinzu.
+        strength=0.55 bedeutet: 55% Eltern-Gewichte, 45% eigene Zufallsinitialisierung.
+        """
+        with torch.no_grad():
+            for (name, child_param), (_, parent_param) in zip(
+                self.named_parameters(), parent_brain.named_parameters()
+            ):
+                if child_param.shape != parent_param.shape:
+                    continue  # Input-Size-Mismatch -> ueberspringe
+                mutation = torch.randn_like(child_param) * mutation_scale
+                child_param.copy_(
+                    strength * parent_param + (1.0 - strength) * child_param + mutation
+                )
 
     def initial_hidden(self):
         return torch.zeros(self.hidden_size, dtype=torch.float32, device=device)
