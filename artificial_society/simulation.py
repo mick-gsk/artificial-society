@@ -14,7 +14,7 @@ from artificial_society.systems.economy import EconomySystem
 from artificial_society.systems.technology import TechnologySystem
 from artificial_society.systems.evolution import EvolutionSystem
 from artificial_society.visualization.statistics import StatisticsTracker
-from artificial_society.systems.remedy import try_infect_agent
+from artificial_society.systems.remedy import try_infect_agent, REMEDY_REGISTRY
 from artificial_society.systems.invention import tick_materials, seed_world_materials
 
 EVENT_WARMUP_TICKS = 600
@@ -23,10 +23,7 @@ RESPAWN_COUNT = 6
 CHECKPOINT_INTERVAL = 500
 CHECKPOINT_PATH = 'checkpoint.pkl'
 
-# Disease spread tuning
-SPREAD_RADIUS = 1          # cells (Manhattan distance)
-SPREAD_COOLDOWN = 60       # ticks an agent cannot re-infect after recovering
-IMMUNITY_WINDOW = 200      # ticks of immunity after full recovery from a disease
+IMMUNITY_WINDOW_DEFAULT = 200   # fallback if disease has no immunity_after
 
 
 class Simulation:
@@ -94,57 +91,59 @@ class Simulation:
             add_carcass(self.world.get_cell(*agent.pos), CORPSE_ENERGY)
         self.agents = survivors
 
+    def _is_immune(self, agent, disease_id: str) -> bool:
+        immunity_map = getattr(agent, '_disease_immunity', {})
+        return self.tick < immunity_map.get(disease_id, 0)
+
+    def _grant_immunity(self, agent, disease_id: str):
+        if not hasattr(agent, '_disease_immunity'):
+            agent._disease_immunity = {}
+        window = REMEDY_REGISTRY.get(disease_id, {}).get('immunity_after', IMMUNITY_WINDOW_DEFAULT)
+        agent._disease_immunity[disease_id] = self.tick + window
+
+    def tick_immunity_and_recovery(self):
+        """Detect full recoveries each tick and grant per-disease immunity."""
+        for agent in self.agents:
+            if not agent.alive:
+                continue
+            prev = getattr(agent, '_prev_disease_id', None)
+            curr = getattr(agent, 'disease_id', None)
+            if prev is not None and curr is None:
+                self._grant_immunity(agent, prev)
+            agent._prev_disease_id = curr
+
     def spread_diseases(self):
         """
-        Realistic disease spread:
-        - Only agents with active disease_id can infect neighbours.
-        - Neighbours must not already be sick AND must not be immune.
-        - Immunity is tracked per-disease as a cooldown on the agent.
-        - Spread is probabilistic via try_infect_agent (uses per-disease spread_rate).
+        Realistic spread:
+        - Airborne diseases (TB) spread at radius 2.
+        - Biome amplification applied per-disease.
+        - Immune agents cannot be re-infected.
+        - Non-contagious diseases (scurvy) are never spread here.
         """
         infectious = [
             a for a in self.agents
             if a.alive and getattr(a, 'disease_id', None) is not None
         ]
         for carrier in infectious:
+            disease_id = carrier.disease_id
+            rec = REMEDY_REGISTRY.get(disease_id, {})
+            if rec.get('spread_rate', 0) == 0:
+                continue   # non-contagious (scurvy)
+            # Airborne = bigger radius
+            radius = 2 if rec.get('vector') == 'airborne' else 1
             cx, cy = carrier.pos
+            biome = self.world.get_biome(cx, cy)
             neighbours = [
                 a for a in self.agents
                 if a is not carrier
                 and a.alive
-                and abs(a.pos[0] - cx) <= SPREAD_RADIUS
-                and abs(a.pos[1] - cy) <= SPREAD_RADIUS
+                and abs(a.pos[0] - cx) <= radius
+                and abs(a.pos[1] - cy) <= radius
                 and getattr(a, 'disease_id', None) is None
-                and not self._is_immune(a, carrier.disease_id)
+                and not self._is_immune(a, disease_id)
             ]
             for neighbour in neighbours:
-                if try_infect_agent(neighbour, carrier.disease_id):
-                    # Mark as recently infected so immunity check makes sense
-                    pass
-
-    def _is_immune(self, agent, disease_id: str) -> bool:
-        """Return True if agent has recent immunity to disease_id."""
-        immunity_map = getattr(agent, '_disease_immunity', {})
-        cooldown_until = immunity_map.get(disease_id, 0)
-        return self.tick < cooldown_until
-
-    def _grant_immunity(self, agent, disease_id: str):
-        """Grant post-recovery immunity to disease_id for IMMUNITY_WINDOW ticks."""
-        if not hasattr(agent, '_disease_immunity'):
-            agent._disease_immunity = {}
-        agent._disease_immunity[disease_id] = self.tick + IMMUNITY_WINDOW
-
-    def tick_immunity_and_recovery(self):
-        """Track full recoveries and grant immunity. Called once per step."""
-        for agent in self.agents:
-            if not agent.alive:
-                continue
-            prev_disease = getattr(agent, '_prev_disease_id', None)
-            curr_disease = getattr(agent, 'disease_id', None)
-            # Detect transition from sick → healthy
-            if prev_disease is not None and curr_disease is None:
-                self._grant_immunity(agent, prev_disease)
-            agent._prev_disease_id = curr_disease
+                try_infect_agent(neighbour, disease_id, biome=biome)
 
     def _save_checkpoint(self):
         try:

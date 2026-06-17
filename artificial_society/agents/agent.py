@@ -12,6 +12,8 @@ from artificial_society.systems.remedy import (
     record_cure_discovery,
     share_remedy_knowledge,
     try_infect_agent,
+    try_environmental_infection,
+    apply_disease_symptoms,
     REMEDY_REGISTRY,
 )
 from artificial_society.systems.culture import CausalMemory
@@ -270,8 +272,8 @@ class Agent:
             return 0.0
         reward = 0.0
         curiosity = self.genes.get('curiosity', 0.5)
-        sick_drive = min(1.0, self.sick / 40.0)  # more urgency when sick (was /60)
-        sample_prob = 0.15 + 0.30 * curiosity + 0.40 * sick_drive  # slightly higher baseline
+        sick_drive = min(1.0, self.sick / 40.0)
+        sample_prob = 0.15 + 0.30 * curiosity + 0.40 * sick_drive
         for tag in herbs_here:
             if random.random() < sample_prob:
                 taken = collect_herb(cell, tag, amount=1.0)
@@ -411,26 +413,15 @@ class Agent:
         return 0.12 if target.health < 30 else -0.04
 
     def apply_disease(self, world):
+        """Delegate all disease logic to remedy.py's realistic symptom system."""
         cell = world.get_cell(*self.pos)
-        # Exposure only triggers at much higher disease levels (was 0.12 threshold)
-        # Scale down the per-tick accumulation significantly
-        exposure = 0.004 * cell['disease'] + 0.002 * cell['pollution'] + 0.001 * cell['disturbance']
-        if random.random() < max(0.0, exposure - 0.30):  # threshold raised from 0.12 to 0.30
-            self.sick = min(100.0, self.sick + 2.0 + 0.02 * cell['disease'])  # softer hit (was 4.0)
-            if self.disease_id is None and self.sick > 15.0:  # higher threshold to get disease_id (was 10)
-                self.disease_id = random.choice(list(REMEDY_REGISTRY.keys()))
-        # Natural recovery: significantly faster, scaled by health AND hydration
-        recovery = 0.15 * (self.health / 100.0) + 0.05 * (self.hydration / 100.0)  # was 0.03
-        self.sick = max(0.0, self.sick - recovery)
-        if self.sick <= 2.0:
-            self.disease_id = None
-        if self.sick > 0:
-            self.health -= 0.010 * self.sick   # reduced damage per tick (was 0.018)
-            self.energy -= 0.006 * self.sick   # reduced drain (was 0.01)
-        # Warmth bonus (expanded: warmth > 0.2 instead of 0.5)
-        warmth = cell.get('warmth', 0.0)
-        if warmth > 0.2:
-            self.sick = max(0.0, self.sick - 0.15 * warmth)  # was 0.08
+        # Try environmental infection (Scurvy, Wound Fever)
+        try_environmental_infection(self, cell)
+        # Apply per-disease symptom effects
+        applied = apply_disease_symptoms(self, cell)
+        if not applied and self.sick > 0:
+            # Fallback generic recovery for agents with legacy sick value but no disease_id
+            self.sick = max(0.0, self.sick - 0.10)
 
     def apply_environmental_effects(self, world):
         cell = world.get_cell(*self.pos)
@@ -440,7 +431,9 @@ class Agent:
         self.energy -= move_cost
         self.hydration -= 0.30 + 0.008 * cell['temperature'] + 0.010 * biome_cost + 0.012 * cell['disturbance']
         self.energy -= 0.003 * cell['danger'] + 0.003 * cell['disturbance']
-        self.health -= max(0, abs(cell['temperature'] - 20) - 14) * 0.05
+        # Health regen blocked by scurvy
+        if not getattr(self, '_scurvy_active', False):
+            self.health -= max(0, abs(cell['temperature'] - 20) - 14) * 0.05
         self.health -= 0.005 * cell['pollution'] + 0.006 * cell['ash']
         warmth = cell.get('warmth', 0.0)
         if warmth > 0.3:
@@ -492,6 +485,10 @@ class Agent:
             'communicate': values[4],
             'attack': values[5],
         }
+        # Typhoid confusion: randomly flip movement if confused
+        if getattr(self, '_confused', False):
+            action['move_x'] = random.uniform(-1, 1)
+            action['move_y'] = random.uniform(-1, 1)
 
         self.primitive_move(world, action)
         reward = 0.0
