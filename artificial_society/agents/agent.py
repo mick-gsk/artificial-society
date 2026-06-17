@@ -37,8 +37,8 @@ PLANT_ENERGY = 28.0
 MEAT_ENERGY = 40.0
 CORPSE_ENERGY = 36.0
 
-SHARP_STONE_FORAGE_BONUS = 0.30
-SHARP_STONE_COLLECT_BONUS = 0.20
+SHARP_STONE_FORAGE_BONUS   = 0.30
+SHARP_STONE_COLLECT_BONUS  = 0.20
 
 SLEEP_DRIVE_THRESHOLD = 0.45
 SLEEP_ENERGY_REGEN    = 0.40
@@ -77,11 +77,12 @@ def _ensure_new_fields(agent):
         print(f'[compat] Agent {agent.id}: brain input_size={agent.brain.input_size} != {INPUT_SIZE}, rebuilding.')
         agent.brain = Brain()
         agent.hidden_state = agent.brain.initial_hidden()
-    # Tool-Inventar-Synchronisation: Wenn sharp_stone im Inventar aber nicht als Tool
     if not hasattr(agent, 'tool'):
         agent.tool = None
     if agent.tool is None and getattr(agent, 'material_inventory', {}).get('sharp_stone', 0) > 0.1:
         agent.tool = 'sharp_stone'
+    if not hasattr(agent, '_last_mate_id'):
+        agent._last_mate_id = None
 
 
 @dataclass
@@ -127,6 +128,7 @@ class Agent:
     causal_memory: CausalMemory = field(default_factory=lambda: CausalMemory(capacity=32))
     material_inventory: dict = field(default_factory=dict)
     is_sleeping: bool = False
+    _last_mate_id: int | None = None   # NEU: speichert ID des Partners fuer Geburts-Kontext
 
     @classmethod
     def spawn_random(cls, x, y):
@@ -195,7 +197,6 @@ class Agent:
         causal_f   = self.causal_memory.feature_vector()
         inv_size   = min(1.0, sum(self.material_inventory.values()) / 5.0)
         hormones   = self.endocrine.as_features()
-        # Strukturen als explizite Features -- Agent sieht ob Camp/Well/Farm da ist
         struct_f   = structure_feature_vector(cell)
         return [
             self.energy / MAX_ENERGY,
@@ -229,7 +230,7 @@ class Agent:
             warmth,
             mat_count,
             inv_size,
-            *struct_f,       # [camp, well, farm] -- NEU
+            *struct_f,
             *causal_f,
             *retrieval,
             *hormones,
@@ -307,7 +308,6 @@ class Agent:
         efficiency = (0.75 + 0.35*self.genes['efficiency']) * forage_eff
         tool_mult  = (1.0 + SHARP_STONE_FORAGE_BONUS) if self.tool == 'sharp_stone' else 1.0
         home_bonus = get_home_forage_bonus(self, world)
-        # Farm-Bonus aus Strukturen
         struct_mods = apply_structure_effects(self, cell)
         efficiency *= (1.0 + home_bonus + struct_mods['forage_bonus'])
         cook_bonus_health = 0.0
@@ -337,7 +337,9 @@ class Agent:
         total_gain = plant_gain + meat_gain
         if total_gain > 0.5:
             self.endocrine.apply_successful_forage(total_gain)
-        self.memory.remember_resource(self.pos, cell['food'], cell['water'], cell['tick'])
+        # Jahreszeit aus world.day_state oder seasons -- fuer Gedaechtnis-Tag
+        season_id = getattr(world, 'current_season', None)
+        self.memory.remember_resource(self.pos, cell['food'], cell['water'], cell['tick'], season_id=season_id)
         consumed_tags: list[str] = []
         if plant_take > 0.3:  consumed_tags.append('plant_food')
         if meat_take  > 0.3:  consumed_tags.append('meat')
@@ -387,27 +389,13 @@ class Agent:
                 take = min(qty, 0.5)
                 slot[mat] -= take
                 self.material_inventory[mat] = self.material_inventory.get(mat, 0.0) + take
-                # Wenn sharp_stone aufgesammelt: sofort als Tool setzen
                 if mat == 'sharp_stone' and self.tool is None:
                     self.tool = 'sharp_stone'
 
     def maybe_craft(self, technology, intensity):
-        """
-        Aktives Kochen: Agent versucht rohes Essen auf einer Hitzequelle
-        in seiner aktuellen Zelle zu garen.
-        Kein explizites Rezept -- der Agent muss place_on_heat + Hitzequelle
-        selbst durch Exploration entdecken.
-        Reward kommt implizit: mehr Energie nach dem Essen (in forage()).
-        """
         if self.is_sleeping:
             return 0.0
-        # Kochen nur wenn explore-Trieb aktiv und Agent genuegend Energie hat
-        # (hat kein Hunger -> kein Antrieb zu kochen -> emergent)
-        if self.energy < 40.0 or random.random() > 0.35 + 0.30 * self.genes.get('curiosity', 0.5):
-            return 0.0
-        from artificial_society.world import World
-        # Wir brauchen world -- Workaround: cell wird uebergeben wenn moeglich
-        return 0.0  # Wird direkt in update() mit cell aufgerufen
+        return 0.0
 
     def maybe_build(self, world, intensity):
         if self.is_sleeping:
@@ -415,8 +403,6 @@ class Agent:
         cell  = world.get_cell(*self.pos)
         built = maybe_build_structure(cell, self.resources)
         if built is not None:
-            # Bauen kostet Energie (physische Arbeit) -- kein kuenstlicher Reward,
-            # aber die Struktur hat danach messbare Effekte auf health/hydration
             cost = BUILD_ENERGY_COST.get(built, 8.0)
             self.energy = max(0.0, self.energy - cost)
             self.last_action_mode = f'build:{built}'
@@ -543,6 +529,9 @@ class Agent:
             father.reproduction_cooldown = REPRODUCTION_COOLDOWN
             mother.children += 1
             father.children += 1
+            # NEU: Partner-ID fuer Geburtskontext speichern
+            mother._last_mate_id = father.id
+            father._last_mate_id = mother.id
             mother.endocrine.h[5] = min(1.0, mother.endocrine.h[5] + 0.25)
             father.endocrine.h[5] = min(1.0, father.endocrine.h[5] + 0.15)
             self.last_action_mode  = 'mate'
@@ -571,7 +560,6 @@ class Agent:
 
     def apply_disease(self, world):
         cell     = world.get_cell(*self.pos)
-        # Struktur-Effekte auf Krankheitsexposition
         struct_mods = apply_structure_effects(self, cell)
         disease_factor = struct_mods['disease_factor']
         exposure = (0.004*cell['disease'] + 0.002*cell['pollution'] + 0.001*cell['disturbance']) * disease_factor
@@ -603,7 +591,6 @@ class Agent:
         self.energy    -= move_cost
         self.hydration -= 0.30 + 0.008*cell['temperature'] + 0.010*biome_cost + 0.012*cell['disturbance']
         self.energy    -= 0.003*cell['danger'] + 0.003*cell['disturbance']
-        # Kaelteschaden durch Camp reduziert (Wetterschutz)
         cold_dmg = max(0, abs(cell['temperature']-20) - 14) * 0.05
         self.health    -= cold_dmg * struct_mods['cold_factor']
         self.health    -= 0.005*cell['pollution'] + 0.006*cell['ash']
@@ -646,11 +633,12 @@ class Agent:
         self.apply_sleep(world)
 
         if not self.is_sleeping:
+            season_id = getattr(world, 'current_season', None)
             for xx, yy, cell, biome in self.visible_cells(world):
                 if cell['food'] > 30 or cell['water'] > 40:
-                    self.memory.remember_resource((xx, yy), cell['food'], cell['water'], tick)
+                    self.memory.remember_resource((xx, yy), cell['food'], cell['water'], tick, season_id=season_id)
                 if cell['danger'] > 50 or cell['disease'] > 30:
-                    self.memory.remember_danger((xx, yy), max(cell['danger'], cell['disease']), tick)
+                    self.memory.remember_danger((xx, yy), max(cell['danger'], cell['disease']), tick, season_id=season_id)
 
         features = self.local_features(world, agents)
         self.local_features_cache = features
@@ -695,7 +683,6 @@ class Agent:
         herb_heal_reward = self.forage(world, max(0.0, (action['eat'] + 1.0) * 0.5) * coop_mult)
         self.collect_materials(world, max(0.0, (action['explore'] + 1.0) * 0.5))
 
-        # Aktives Kochen wenn Feuer auf der Zelle und rohes Essen im Inventar
         cell = world.get_cell(*self.pos)
         if random.random() < 0.35 + 0.30 * self.genes.get('curiosity', 0.5):
             agent_try_cook(self, cell)
@@ -732,7 +719,9 @@ class Agent:
         reward  = _homeostasis_reward(self.energy, prev_energy, self.hydration, prev_hydration, self.health, prev_health, self.alive)
         reward += herb_heal_reward + share_reward
 
-        mem_reward  = self.memory.position_reward(self.pos, tick)
+        # position_reward mit world und aktueller Jahreszeit
+        current_season = getattr(world, 'current_season', None)
+        mem_reward  = self.memory.position_reward(self.pos, tick, world=world, current_season=current_season)
         reward     += mem_reward
 
         terr_reward = territory_reward_for_agent(self, world)
