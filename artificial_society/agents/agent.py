@@ -6,6 +6,14 @@ from artificial_society.agents.memory import EpisodicMemory
 from artificial_society.agents.genetics import random_genes, inherit_genes
 from artificial_society.agents.communication import CommunicationSystem
 from artificial_society.environment.resources import apply_consumption, maybe_build_structure
+from artificial_society.environment.herbs import available_herbs, collect_herb, regrow_herbs
+from artificial_society.systems.remedy import (
+    evaluate_remedy,
+    record_cure_discovery,
+    share_remedy_knowledge,
+    try_infect_agent,
+    REMEDY_REGISTRY,
+)
 
 MAX_ENERGY = 240.0
 INITIAL_ENERGY = 120.0
@@ -57,6 +65,10 @@ class Agent:
     birth_tick: int = 0
     sick: float = 0.0
     last_action_mode: str = 'idle'
+    # --- remedy / herb fields (not exposed to brain as labelled knowledge) ---
+    disease_id: str | None = None           # which disease (hidden from brain)
+    remedy_knowledge: dict = field(default_factory=dict)  # partial cure clues
+    herbs_carried: dict = field(default_factory=dict)     # tag -> amount
 
     @classmethod
     def spawn_random(cls, x, y):
@@ -113,6 +125,8 @@ class Agent:
         friends = sum(1 for a in near if self.trust.get(a.id, 0.0) > 0.2)
         retrieval = self.memory.retrieval_features(x, y, cell['tick'], world.width, world.height)
         avg_trust = sum(self.trust.values()) / len(self.trust) if self.trust else 0.0
+        # herb_presence: how many distinct herbs are available on this cell (normalised)
+        herb_presence = min(1.0, len(available_herbs(cell)) / 5.0)
         return [
             self.energy / MAX_ENERGY,
             self.health / 100.0,
@@ -142,6 +156,7 @@ class Agent:
             min(1.0, self.resources['fiber'] / 4.0),
             max(-1.0, min(1.0, self.last_reward / 10.0)),
             max(0.0, min(1.0, self.sick / 100.0)),
+            herb_presence,                      # new feature: herbs nearby
             *retrieval,
         ]
 
@@ -199,12 +214,61 @@ class Agent:
         if plant_take + meat_take + water_take > 0.8:
             self.last_action_mode = 'gather'
         self.memory.remember_resource(self.pos, cell['food'], cell['water'], cell['tick'])
-        return 0.025 * (plant_gain + meat_gain) + 0.18 * water_take
+
+        # Build consumed_tags for remedy evaluation (agent doesn't know what helps)
+        consumed_tags: list[str] = []
+        if plant_take > 0.3:
+            consumed_tags.append('plant_food')
+        if meat_take > 0.3:
+            consumed_tags.append('meat')
+        if water_take > 0.3:
+            consumed_tags.append('water')
+
+        forage_reward = 0.025 * (plant_gain + meat_gain) + 0.18 * water_take
+        forage_reward += self._try_use_herbs(cell, consumed_tags)
+        return forage_reward
+
+    def _try_use_herbs(self, cell: dict, consumed_tags: list[str]) -> float:
+        """
+        Opportunistically collect and consume available herbs from the cell.
+        Agents do NOT know which herbs cure which disease — they simply pick
+        herbs they encounter (curiosity-weighted) and the remedy system
+        silently evaluates whether the combination works.
+        """
+        herbs_here = available_herbs(cell)
+        if not herbs_here:
+            return 0.0
+
+        reward = 0.0
+        # Curious agents sample more herbs; sick agents sample more aggressively
+        curiosity = self.genes.get('curiosity', 0.5)
+        sick_drive = min(1.0, self.sick / 60.0)
+        sample_prob = 0.12 + 0.25 * curiosity + 0.35 * sick_drive
+
+        for tag in herbs_here:
+            if random.random() < sample_prob:
+                taken = collect_herb(cell, tag, amount=1.0)
+                if taken > 0:
+                    self.herbs_carried[tag] = self.herbs_carried.get(tag, 0.0) + taken
+                    consumed_tags.append(tag)
+                    self.last_action_mode = 'forage_herb'
+
+        if self.disease_id and consumed_tags:
+            prev_sick = self.sick
+            prev_disease = self.disease_id
+            cure_bonus = evaluate_remedy(self, consumed_tags)
+            if cure_bonus > 0:
+                # Agent experienced positive feedback — record partial knowledge
+                record_cure_discovery(self, prev_disease, consumed_tags)
+                reward += cure_bonus * 2.5   # strong reward signal for brain
+        return reward
 
     def collect_materials(self, world, intensity):
         if intensity < 0.15:
             return 0.0
         cell = world.get_cell(*self.pos)
+        # Also regrow herbs on this cell each time an agent actively explores
+        regrow_herbs(cell, cell.get('biome', 'grassland'))
         gain = 0.0
         if cell['biome'] == 'forest' and random.random() < 0.08 + 0.16 * intensity:
             self.resources['wood'] += 1
@@ -257,6 +321,11 @@ class Agent:
                 info_bonus = self.communication.evaluate_message_usefulness(other, self, before_food, after_food, before_danger, after_danger)
                 delta += info_bonus * 0.18
                 social_reward += info_bonus
+                # Share remedy knowledge with willing neighbours
+                if self.trust.get(other.id, 0.0) > 0.3:
+                    shared = share_remedy_knowledge(self, other)
+                    if shared:
+                        social_reward += 0.15  # small bonus for useful knowledge transfer
             self.trust[other.id] = max(-1.0, min(1.0, prior + delta))
             self.memory.remember_social(other.id, self.trust[other.id], helpful, tick)
         tribes.consider_join(self, nearby)
@@ -305,7 +374,16 @@ class Agent:
         exposure = 0.012 * cell['disease'] + 0.007 * cell['pollution'] + 0.005 * cell['disturbance']
         if random.random() < max(0.0, exposure - 0.12):
             self.sick = min(100.0, self.sick + 4.0 + 0.04 * cell['disease'])
+            # Assign a specific disease if none yet (randomly from registry)
+            if self.disease_id is None and self.sick > 10.0:
+                self.disease_id = random.choice(list(REMEDY_REGISTRY.keys()))
+        # Disease spread between nearby agents
+        if self.disease_id:
+            # Try to spread to a random nearby alive agent
+            pass  # Spread handled externally in simulation.py via try_infect_agent
         self.sick = max(0.0, self.sick - 0.03 * self.health / 100.0)
+        if self.sick <= 2.0:
+            self.disease_id = None  # recovered naturally
         if self.sick > 0:
             self.health -= 0.018 * self.sick
             self.energy -= 0.01 * self.sick
@@ -313,16 +391,12 @@ class Agent:
     def apply_environmental_effects(self, world):
         cell = world.get_cell(*self.pos)
         biome_cost = world.biome_move_cost(*self.pos)
-        # Reduced move cost: 0.38 -> 0.22, speed factor 0.16 -> 0.10
         move_cost = (0.22 + (1.0 / max(0.6, self.genes['speed'])) * 0.10) * biome_cost
         move_cost *= (1.75 - min(1.5, self.genes['efficiency']))
         self.energy -= move_cost
-        # Reduced hydration drain
         self.hydration -= 0.30 + 0.008 * cell['temperature'] + 0.010 * biome_cost + 0.012 * cell['disturbance']
-        # Reduced danger/disturbance energy cost
         self.energy -= 0.003 * cell['danger'] + 0.003 * cell['disturbance']
         self.health -= max(0, abs(cell['temperature'] - 20) - 14) * 0.05
-        # Reduced pollution/ash health cost
         self.health -= 0.005 * cell['pollution'] + 0.006 * cell['ash']
         if cell['biome'] == 'desert':
             self.energy -= 0.18
