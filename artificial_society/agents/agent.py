@@ -22,15 +22,15 @@ from artificial_society.systems.social_learning import social_learning_step
 MAX_ENERGY = 240.0
 INITIAL_ENERGY = 120.0
 CHILD_START_ENERGY = 100.0
-REPRODUCTION_ENERGY = 100.0      # war 115 — leichter erreichbar
-REPRODUCTION_COST = 28.0         # war 32
-REPRODUCTION_COOLDOWN = 120      # war 300 — weniger Wartezeit
-MIN_REPRODUCTION_AGE = 80        # war 140
-GESTATION_TIME = 80              # war 190
-AGE_LIMIT = 800                  # war 5000
-ELDER_AGE = 600                  # ab hier Altersverfall
-AGE_HEALTH_DECAY_START = 600     # sanfter Verfall
-AGE_HEALTH_DECAY_HARD  = 750     # starker Verfall
+REPRODUCTION_ENERGY = 100.0
+REPRODUCTION_COST = 28.0
+REPRODUCTION_COOLDOWN = 120
+MIN_REPRODUCTION_AGE = 80
+GESTATION_TIME = 80
+AGE_LIMIT = 800
+ELDER_AGE = 600
+AGE_HEALTH_DECAY_START = 600
+AGE_HEALTH_DECAY_HARD  = 750
 PLANT_ENERGY = 28.0
 MEAT_ENERGY = 40.0
 CORPSE_ENERGY = 36.0
@@ -42,13 +42,11 @@ SLEEP_DRIVE_THRESHOLD = 0.45
 SLEEP_ENERGY_REGEN    = 0.40
 SLEEP_HEALTH_REGEN    = 0.12
 
-# Lebensphasen-Grenzen (fuer Renderer / Statistik)
-STAGE_CHILD = MIN_REPRODUCTION_AGE       # 0 .. 79
-STAGE_ELDER = ELDER_AGE                  # 600+
+STAGE_CHILD = MIN_REPRODUCTION_AGE
+STAGE_ELDER = ELDER_AGE
 
 
 def _ensure_new_fields(agent):
-    """Backward-compat: inject missing fields and rebuild brain if input size changed."""
     if not hasattr(agent, 'causal_memory') or agent.causal_memory is None:
         agent.causal_memory = CausalMemory(capacity=32)
     if not hasattr(agent, 'material_inventory') or agent.material_inventory is None:
@@ -115,7 +113,8 @@ class Agent:
         cls.id_counter += 1
         genes = random_genes()
         memory_capacity = genes['memory_capacity']
-        brain = Brain()
+        # plasticity-Gen bestimmt individuelle Lernrate des Gehirns
+        brain = Brain(plasticity=genes.get('plasticity', 1.0))
         agent = cls(
             id=cls.id_counter,
             pos=(x, y),
@@ -130,7 +129,8 @@ class Agent:
     @classmethod
     def spawn_child(cls, x, y, genes, generation=1, parent_id=None, tribe_id=None):
         cls.id_counter += 1
-        brain = Brain()
+        # plasticity-Gen des Kindes bestimmt seine Lernrate
+        brain = Brain(plasticity=genes.get('plasticity', 1.0))
         agent = cls(
             id=cls.id_counter,
             pos=(x, y),
@@ -148,7 +148,6 @@ class Agent:
         return agent
 
     def life_stage(self) -> str:
-        """Returns 'child', 'adult', or 'elder' for renderer / stats."""
         if self.age < STAGE_CHILD:
             return 'child'
         if self.age >= STAGE_ELDER:
@@ -167,7 +166,7 @@ class Agent:
         return (
             self.alive
             and self.age >= MIN_REPRODUCTION_AGE
-            and self.age < ELDER_AGE            # Aeltere reproduzieren sich nicht mehr
+            and self.age < ELDER_AGE
             and self.energy >= REPRODUCTION_ENERGY
             and self.reproduction_cooldown <= 0
             and not self.pregnant
@@ -441,7 +440,6 @@ class Agent:
             other.energy += transfer
 
     def maybe_reproduce(self, agents, action):
-        """Paarung: keine Action-Gates mehr, groesserer Suchradius (2 Zellen)."""
         if self.is_sleeping:
             return False
         if not self.can_reproduce():
@@ -529,7 +527,6 @@ class Agent:
         self.health -= 0.005 * cell['pollution'] + 0.006 * cell['ash']
         self.health -= mods['health_drain']
 
-        # Natuerlicher Altersverfall
         if self.age >= AGE_HEALTH_DECAY_START:
             decay = 0.3 + max(0.0, (self.age - AGE_HEALTH_DECAY_HARD) * 1.5 / (AGE_LIMIT - AGE_HEALTH_DECAY_HARD))
             self.health -= decay

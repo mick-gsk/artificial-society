@@ -23,7 +23,7 @@ device = torch.device('cpu')
 # 'is_night', 'sleep_pressure', or 'disease_level'.  All such information
 # reaches the brain ONLY through its hormonal consequences.  The agent
 # must learn the correlations on its own.
-INPUT_SIZE = 54  # 46 base + 8 hormones
+INPUT_SIZE = 54
 HIDDEN_SIZE = 96
 ACTION_SIZE = 6
 GAMMA = 0.97
@@ -33,13 +33,13 @@ ACTOR_COEF = 1.0
 CRITIC_COEF = 0.5
 WORLD_COEF = 0.35
 ENTROPY_COEF = 0.004
-LEARNING_RATE = 3e-4
+LEARNING_RATE = 3e-4          # Basis-Lernrate; wird durch plasticity-Gen skaliert
 GRAD_CLIP = 1.0
 REWARD_CLAMP = 6.0
-ROLLOUT_HORIZON = 64   # erhoet von 20 -> 64: Agenten sehen laengere Konsequenzen
+ROLLOUT_HORIZON = 64
 PPO_EPOCHS = 6
 
-# --- Phase 1: Model-Based Planning ---
+# --- Model-Based Planning ---
 PLAN_CANDIDATES = 12
 PLAN_HORIZON = 3
 NOVELTY_WEIGHT = 0.15
@@ -47,10 +47,14 @@ VALUE_WEIGHT = 0.50
 REWARD_WEIGHT = 0.35
 
 # --- Neuronale Praedisposition durch Vererbung ---
-# Wie stark die elterlichen Gewichte das Kind beeinflussen (0.0 = kein Einfluss, 1.0 = Klon)
-# Biologisches Vorbild: Epigenetik / neuronale Praedisposition durch Elternteile
-WEIGHT_INHERIT_STRENGTH = 0.55   # Kind erbt 55% der elterlichen Gewichte
-WEIGHT_MUTATION_SCALE   = 0.018  # Gauss'sches Rauschen wie genetische Mutation
+WEIGHT_INHERIT_STRENGTH = 0.55
+WEIGHT_MUTATION_SCALE   = 0.018
+
+# --- Imitationslernen (Spiegelneuronen-Analogie) ---
+# Wie stark ein beobachteter Erfolgsagent die eigenen Gewichte beeinflusst.
+# Sehr klein halten: Imitation ist ein Nudge, kein Klon.
+IMITATION_STRENGTH   = 0.05
+IMITATION_MUTATION   = 0.005
 
 
 class RolloutBuffer:
@@ -68,7 +72,13 @@ class RolloutBuffer:
 
 
 class Brain(nn.Module):
-    def __init__(self, input_size=INPUT_SIZE, hidden_size=HIDDEN_SIZE, action_size=ACTION_SIZE):
+    def __init__(self, input_size=INPUT_SIZE, hidden_size=HIDDEN_SIZE,
+                 action_size=ACTION_SIZE, plasticity: float = 1.0):
+        """
+        plasticity-Gen (0.3..1.8) skaliert die Lernrate.
+        Biologisches Vorbild: Neuronale Plastizitaet variiert zwischen Individuen;
+        hochplastische Individuen lernen schneller aber sind weniger stabil.
+        """
         super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -91,30 +101,47 @@ class Brain(nn.Module):
         )
         self.next_obs_head = nn.Linear(128, input_size)
         self.reward_head = nn.Linear(128, 1)
-        self.optimizer = optim.Adam(self.parameters(), lr=LEARNING_RATE)
+        # Individuelle Lernrate basierend auf plasticity-Gen
+        # Klammerung auf [0.5x .. 2.5x] verhindert Extremwerte
+        effective_lr = LEARNING_RATE * max(0.5, min(2.5, plasticity))
+        self.optimizer = optim.Adam(self.parameters(), lr=effective_lr)
         self.rollout = RolloutBuffer()
 
     # ------------------------------------------------------------------
-    # Biologische Gewichtsvererbung:
-    # Wie bei neuronaler Praedisposition beim Menschen starten Kinder nicht
-    # bei null, sondern mit einer durch die Eltern vorgepraegten Gewichtsmatrix.
-    # Das Kind lernt dann von diesem Startpunkt aus weiter (Epigenetik-Analogie).
+    # Gewichtsvererbung (Epigenetik-Analogie)
     # ------------------------------------------------------------------
-    def inherit_weights_from(self, parent_brain: 'Brain', strength: float = WEIGHT_INHERIT_STRENGTH, mutation_scale: float = WEIGHT_MUTATION_SCALE):
-        """
-        Interpoliert die eigenen (zufaelligen) Gewichte mit denen des Elternteils
-        und fuegt Gauss'sches Rauschen als Mutation hinzu.
-        strength=0.55 bedeutet: 55% Eltern-Gewichte, 45% eigene Zufallsinitialisierung.
-        """
+    def inherit_weights_from(self, parent_brain: 'Brain',
+                              strength: float = WEIGHT_INHERIT_STRENGTH,
+                              mutation_scale: float = WEIGHT_MUTATION_SCALE):
         with torch.no_grad():
-            for (name, child_param), (_, parent_param) in zip(
+            for (_, child_param), (_, parent_param) in zip(
                 self.named_parameters(), parent_brain.named_parameters()
             ):
                 if child_param.shape != parent_param.shape:
-                    continue  # Input-Size-Mismatch -> ueberspringe
+                    continue
                 mutation = torch.randn_like(child_param) * mutation_scale
                 child_param.copy_(
                     strength * parent_param + (1.0 - strength) * child_param + mutation
+                )
+
+    # ------------------------------------------------------------------
+    # Imitationslernen (Spiegelneuronen-Hypothese / Bandura)
+    # Wenn ein Nachbar deutlich erfolgreicher ist und vertrauenswuerdig,
+    # werden die eigenen Gewichte leicht in seine Richtung gezogen.
+    # strength sehr klein (0.05): Imitation ist ein sanfter Nudge, kein Klon.
+    # ------------------------------------------------------------------
+    def imitate_from(self, model_brain: 'Brain',
+                     strength: float = IMITATION_STRENGTH,
+                     mutation_scale: float = IMITATION_MUTATION):
+        with torch.no_grad():
+            for (_, my_param), (_, model_param) in zip(
+                self.named_parameters(), model_brain.named_parameters()
+            ):
+                if my_param.shape != model_param.shape:
+                    continue
+                noise = torch.randn_like(my_param) * mutation_scale
+                my_param.copy_(
+                    (1.0 - strength) * my_param + strength * model_param + noise
                 )
 
     def initial_hidden(self):
