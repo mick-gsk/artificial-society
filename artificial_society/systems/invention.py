@@ -382,7 +382,8 @@ def _evaluate_legacy_outcomes(
             inv['cooked_meat'] = inv.get('cooked_meat', 0.0) + 0.8
             reward += COOK_REWARD
         elif result == 'cooked_root':
-            inv = getattr(agent, 'material_inventory', {})\n            inv['cooked_root'] = inv.get('cooked_root', 0.0) + 0.8
+            inv = getattr(agent, 'material_inventory', {})
+            inv['cooked_root'] = inv.get('cooked_root', 0.0) + 0.8
             reward += COOK_REWARD * 0.7
         elif result == 'sharp_stone':
             inv = getattr(agent, 'material_inventory', {})
