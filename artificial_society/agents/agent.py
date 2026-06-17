@@ -31,9 +31,16 @@ PLANT_ENERGY = 28.0
 MEAT_ENERGY = 40.0
 CORPSE_ENERGY = 36.0
 
-# Tool bonuses now depend on what the agent discovered, not a hardcoded recipe
 SHARP_STONE_FORAGE_BONUS = 0.30
 SHARP_STONE_COLLECT_BONUS = 0.20
+
+
+def _ensure_new_fields(agent):
+    """Backward-compat: inject missing fields into agents loaded from old checkpoints."""
+    if not hasattr(agent, 'causal_memory') or agent.causal_memory is None:
+        agent.causal_memory = CausalMemory(capacity=32)
+    if not hasattr(agent, 'material_inventory') or agent.material_inventory is None:
+        agent.material_inventory = {}
 
 
 @dataclass
@@ -75,9 +82,8 @@ class Agent:
     disease_id: str | None = None
     remedy_knowledge: dict = field(default_factory=dict)
     herbs_carried: dict = field(default_factory=dict)
-    # Emergent invention fields
     causal_memory: CausalMemory = field(default_factory=lambda: CausalMemory(capacity=32))
-    material_inventory: dict = field(default_factory=dict)  # {mat_name: qty}
+    material_inventory: dict = field(default_factory=dict)
 
     @classmethod
     def spawn_random(cls, x, y):
@@ -128,6 +134,7 @@ class Agent:
         return self.alive and self.age >= MIN_REPRODUCTION_AGE and self.energy >= REPRODUCTION_ENERGY and self.reproduction_cooldown <= 0 and not self.pregnant
 
     def local_features(self, world, agents):
+        _ensure_new_fields(self)
         x, y = self.pos
         cell = world.get_cell(x, y)
         near = [a for a in agents if a is not self and abs(a.pos[0] - x) <= int(self.genes['sense_radius']) and abs(a.pos[1] - y) <= int(self.genes['sense_radius']) and a.alive]
@@ -135,10 +142,9 @@ class Agent:
         retrieval = self.memory.retrieval_features(x, y, cell['tick'], world.width, world.height)
         avg_trust = sum(self.trust.values()) / len(self.trust) if self.trust else 0.0
         herb_presence = min(1.0, len(available_herbs(cell)) / 5.0)
-        # Affordance features: what physical states does the agent sense?
         warmth = min(1.0, cell.get('warmth', 0.0))
         mat_count = min(1.0, len(cell.get('materials', {})) / 6.0)
-        causal_feats = self.causal_memory.feature_vector()  # 3 values
+        causal_feats = self.causal_memory.feature_vector()
         inv_size = min(1.0, sum(self.material_inventory.values()) / 5.0)
         return [
             self.energy / MAX_ENERGY,
@@ -207,6 +213,7 @@ class Agent:
                 self.last_action_mode = 'move'
 
     def forage(self, world, intensity):
+        _ensure_new_fields(self)
         cell = world.get_cell(*self.pos)
         if intensity < -0.25:
             return 0.0
@@ -218,9 +225,7 @@ class Agent:
         water_need = max(0.3, 1.0 - self.hydration / 100.0)
         water_take = min(cell['water'], 1.0 + 8.0 * intensity * water_need)
         efficiency = 0.75 + 0.35 * self.genes['efficiency']
-        # Tool bonus only if the agent discovered a sharp tool themselves
         tool_mult = (1.0 + SHARP_STONE_FORAGE_BONUS) if self.tool == 'sharp_stone' else 1.0
-        # Cooked food bonus from inventory
         cook_bonus = 0.0
         for mat in ('cooked_meat', 'cooked_root'):
             if self.material_inventory.get(mat, 0) > 0.1:
@@ -276,6 +281,7 @@ class Agent:
         return reward
 
     def collect_materials(self, world, intensity):
+        _ensure_new_fields(self)
         if intensity < 0.15:
             return 0.0
         cell = world.get_cell(*self.pos)
@@ -290,7 +296,6 @@ class Agent:
         if cell['biome'] in ('grassland', 'swamp') and random.random() < 0.08 + 0.18 * intensity + tool_bonus:
             self.resources['fiber'] += 1
             gain += 0.12
-        # Also pick up physical materials from cell slot
         slot = cell.get('materials', {})
         for mat, qty in list(slot.items()):
             if qty > 0.1 and random.random() < 0.15 * intensity:
@@ -301,7 +306,6 @@ class Agent:
         return gain
 
     def maybe_craft(self, technology, intensity):
-        # Crafting is now purely emergent via invention — no recipe check here
         return 0.0
 
     def maybe_build(self, world, intensity):
@@ -319,6 +323,7 @@ class Agent:
             self.last_action_mode = 'signal'
 
     def update_social(self, agents, tribes, tick, action, features_before):
+        _ensure_new_fields(self)
         nearby = [a for a in agents if a is not self and a.alive and abs(a.pos[0] - self.pos[0]) <= 1 and abs(a.pos[1] - self.pos[1]) <= 1]
         social_reward = 0.0
         for other in nearby:
@@ -342,7 +347,6 @@ class Agent:
             self.trust[other.id] = max(-1.0, min(1.0, prior + delta))
             self.memory.remember_social(other.id, self.trust[other.id], helpful, tick)
         tribes.consider_join(self, nearby)
-        # Social learning of causal sequences
         social_reward += social_learning_step(self, agents, tick)
         return social_reward
 
@@ -382,8 +386,6 @@ class Agent:
             father.children += 1
             self.last_action_mode = 'mate'
             other.last_action_mode = 'mate'
-            # Partial cultural transmission at birth (mother passes sequences to child memory)
-            # This happens in simulation.py after child is created
             return True
         return False
 
@@ -414,7 +416,6 @@ class Agent:
         if self.sick > 0:
             self.health -= 0.018 * self.sick
             self.energy -= 0.01 * self.sick
-        # Warmth from nearby fire reduces sick slightly
         warmth = world.get_cell(*self.pos).get('warmth', 0.0)
         if warmth > 0.5:
             self.sick = max(0.0, self.sick - 0.08 * warmth)
@@ -429,11 +430,10 @@ class Agent:
         self.energy -= 0.003 * cell['danger'] + 0.003 * cell['disturbance']
         self.health -= max(0, abs(cell['temperature'] - 20) - 14) * 0.05
         self.health -= 0.005 * cell['pollution'] + 0.006 * cell['ash']
-        # Warmth from fire in cell provides comfort (reduces cold damage)
         warmth = cell.get('warmth', 0.0)
         if warmth > 0.3:
             cold_exposure = max(0, abs(cell['temperature'] - 20) - 14)
-            self.health += cold_exposure * 0.03 * warmth  # partial compensation
+            self.health += cold_exposure * 0.03 * warmth
             self.hydration += 0.05 * warmth
         if cell['biome'] == 'desert':
             self.energy -= 0.18
@@ -452,6 +452,7 @@ class Agent:
             self.alive = False
 
     def update(self, world, agents, tick, season_state, weather_state, tribes, economy, technology):
+        _ensure_new_fields(self)
         self.age += 1
         self.last_action_mode = 'idle'
         if self.reproduction_cooldown > 0:
@@ -484,7 +485,6 @@ class Agent:
         reward = 0.0
         reward += self.forage(world, max(0.0, (action['eat'] + 1.0) * 0.5))
         reward += self.collect_materials(world, max(0.0, (action['explore'] + 1.0) * 0.5))
-        # Emergent invention: try physical interactions with materials in cell
         if action['explore'] > 0.2 and random.random() < 0.25 + 0.2 * self.genes.get('curiosity', 0.5):
             cell = world.get_cell(*self.pos)
             env = {
