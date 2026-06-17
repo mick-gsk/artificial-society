@@ -15,7 +15,6 @@ from artificial_society.visualization.statistics import StatisticsTracker
 
 # Events only start after this tick to let agents stabilise first
 EVENT_WARMUP_TICKS = 600
-EVENT_SPAWN_RATE = 0.003
 
 
 class Simulation:
@@ -70,11 +69,12 @@ class Simulation:
         self.tick += 1
         season_state = self.seasons.update(self.tick)
         weather_state = self.weather.update(self.world, season_state, self.tick)
-        # Suppress disturbance events during warmup period
+        # Suppress destructive events during warmup period
         if self.tick < EVENT_WARMUP_TICKS:
-            self.world.active_events = [e for e in self.world.active_events if e.get('type') not in ('drought', 'fire', 'blight', 'storm')]
-        elif random.random() < EVENT_SPAWN_RATE:
-            self.world.maybe_spawn_event(self.tick)
+            self.world.active_events = [
+                e for e in self.world.active_events
+                if e.get('kind') not in ('drought', 'fire', 'blight', 'storm')
+            ]
         self.world.update_environment(season_state, weather_state, self.tick)
         self.tribes.update_membership(self.agents)
         births = []
