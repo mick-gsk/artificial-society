@@ -8,6 +8,7 @@ from artificial_society.agents.communication import CommunicationSystem
 from artificial_society.agents.endocrine import EndocrineSystem
 from artificial_society.environment.resources import apply_consumption, maybe_build_structure
 from artificial_society.environment.herbs import available_herbs, collect_herb, regrow_herbs
+from artificial_society.environment.territory import territory_reward_for_agent, get_home_forage_bonus
 from artificial_society.systems.remedy import (
     evaluate_remedy,
     record_cure_discovery,
@@ -45,22 +46,25 @@ SLEEP_HEALTH_REGEN    = 0.12
 STAGE_CHILD = MIN_REPRODUCTION_AGE
 STAGE_ELDER = ELDER_AGE
 
+# Kooperationsparameter
+COOP_FORAGE_BONUS_PER_MEMBER = 0.14
+COOP_FORAGE_MAX_BONUS        = 0.65
+COOP_DEFENSE_HEALTH_BONUS    = 0.08
+COOP_SHARE_THRESHOLD_DONOR   = 160.0
+COOP_SHARE_THRESHOLD_RECV    = 60.0
+COOP_SHARE_AMOUNT            = 18.0
+COOP_SHARE_REWARD            = 0.25
+COOP_RECV_REWARD             = 0.30
+COOP_PROXIMITY_RADIUS        = 2
+
 # ------------------------------------------------------------------
-# Kooperationsvorteil-Parameter
-# Biologisches Vorbild: Gruppenjaeger (Woelfe, Schimpansen, Menschen)
-# erbeuten groessere Beute und fressen effizienter als Einzelgaenger.
-# Gruppenverteidigung senkt Sterblichkeit durch Gefahren/Krankheit.
-# Diese Parameter machen Kooperation messbar und selektierbar.
+# Erfindungs-Trigger: erhoehen von ~4% auf ~25% pro Tick
+# Biologisches Vorbild: Neugier und Exploration sind bei Primaten
+# konstant aktiv, nicht sporadisch. Werkzeugnutzung entsteht durch
+# haeufiges Ausprobieren, nicht durch gelegentliches Zufall-Experiment.
 # ------------------------------------------------------------------
-COOP_FORAGE_BONUS_PER_MEMBER = 0.14   # +14% Nahrungseffizienz pro Stammesmitglied in Reichweite
-COOP_FORAGE_MAX_BONUS        = 0.65   # Deckel bei +65% (entspricht ~5 Mitgliedern)
-COOP_DEFENSE_HEALTH_BONUS    = 0.08   # Gesundheitsregeneration wenn Gruppe in Reichweite
-COOP_SHARE_THRESHOLD_DONOR   = 160.0  # Ab dieser Energie teilt ein Agent aktiv
-COOP_SHARE_THRESHOLD_RECV    = 60.0   # Unter dieser Energie nimmt ein Agent an
-COOP_SHARE_AMOUNT            = 18.0   # Geteilte Energiemenge
-COOP_SHARE_REWARD            = 0.25   # Direkter Reward fuer erfolgreiche Nahrungsteilung
-COOP_RECV_REWARD             = 0.30   # Reward fuer Empfaenger (Ueberleben dank Gruppe)
-COOP_PROXIMITY_RADIUS        = 2      # Wie nah Stammesmitglieder sein muessen
+INVENTION_BASE_PROB      = 0.55   # Basis-Wahrscheinlichkeit (war: 0.25)
+INVENTION_CURIOSITY_MULT = 0.35   # Curiosity-Multiplikator (war: 0.20)
 
 
 def _ensure_new_fields(agent):
@@ -128,14 +132,13 @@ class Agent:
     @classmethod
     def spawn_random(cls, x, y):
         cls.id_counter += 1
-        genes = random_genes()
-        memory_capacity = genes['memory_capacity']
-        brain = Brain(plasticity=genes.get('plasticity', 1.0))
-        agent = cls(
+        genes  = random_genes()
+        brain  = Brain(plasticity=genes.get('plasticity', 1.0))
+        agent  = cls(
             id=cls.id_counter,
             pos=(x, y),
             genes=genes,
-            memory=EpisodicMemory(memory_capacity),
+            memory=EpisodicMemory(genes['memory_capacity']),
             brain=brain,
             sex=random.choice(['m', 'f']),
         )
@@ -145,8 +148,8 @@ class Agent:
     @classmethod
     def spawn_child(cls, x, y, genes, generation=1, parent_id=None, tribe_id=None):
         cls.id_counter += 1
-        brain = Brain(plasticity=genes.get('plasticity', 1.0))
-        agent = cls(
+        brain  = Brain(plasticity=genes.get('plasticity', 1.0))
+        agent  = cls(
             id=cls.id_counter,
             pos=(x, y),
             genes=genes,
@@ -162,19 +165,17 @@ class Agent:
         agent.reproduction_cooldown = REPRODUCTION_COOLDOWN
         return agent
 
-    def life_stage(self) -> str:
-        if self.age < STAGE_CHILD:
-            return 'child'
-        if self.age >= STAGE_ELDER:
-            return 'elder'
+    def life_stage(self):
+        if self.age < STAGE_CHILD:  return 'child'
+        if self.age >= STAGE_ELDER: return 'elder'
         return 'adult'
 
     def display_color(self):
-        meat_bias = max(0.0, min(1.0, (self.genes['diet_preference'] + 1.0) * 0.5))
+        meat_bias  = max(0.0, min(1.0, (self.genes['diet_preference'] + 1.0) * 0.5))
         plant_bias = max(0.0, min(1.0, (-self.genes['diet_preference'] + 1.0) * 0.5))
-        g = max(70, min(255, int(80 + 120 * self.genes['cooperation'] + 35 * self.genes['memory_retention'])))
-        r = max(70, min(255, int(80 + 100 * meat_bias + 60 * self.genes['aggression'])))
-        b = max(70, min(255, int(80 + 100 * plant_bias + 50 * self.genes['plasticity'] / 1.8)))
+        g = max(70, min(255, int(80 + 120*self.genes['cooperation'] + 35*self.genes['memory_retention'])))
+        r = max(70, min(255, int(80 + 100*meat_bias + 60*self.genes['aggression'])))
+        b = max(70, min(255, int(80 + 100*plant_bias + 50*self.genes['plasticity']/1.8)))
         return (r, g, b)
 
     def can_reproduce(self):
@@ -189,25 +190,27 @@ class Agent:
 
     def local_features(self, world, agents):
         _ensure_new_fields(self)
-        x, y = self.pos
-        cell = world.get_cell(x, y)
-        near = [a for a in agents if a is not self and abs(a.pos[0]-x) <= int(self.genes['sense_radius']) and abs(a.pos[1]-y) <= int(self.genes['sense_radius']) and a.alive]
-        friends = sum(1 for a in near if self.trust.get(a.id, 0.0) > 0.2)
-        retrieval = self.memory.retrieval_features(x, y, cell['tick'], world.width, world.height)
-        avg_trust = sum(self.trust.values()) / len(self.trust) if self.trust else 0.0
-        herb_presence = min(1.0, len(available_herbs(cell)) / 5.0)
-        warmth = min(1.0, cell.get('warmth', 0.0))
-        mat_count = min(1.0, len(cell.get('materials', {})) / 6.0)
-        causal_feats = self.causal_memory.feature_vector()
-        inv_size = min(1.0, sum(self.material_inventory.values()) / 5.0)
-        hormones = self.endocrine.as_features()
-
+        x, y  = self.pos
+        cell  = world.get_cell(x, y)
+        near  = [a for a in agents if a is not self
+                 and abs(a.pos[0]-x) <= int(self.genes['sense_radius'])
+                 and abs(a.pos[1]-y) <= int(self.genes['sense_radius'])
+                 and a.alive]
+        friends    = sum(1 for a in near if self.trust.get(a.id, 0.0) > 0.2)
+        retrieval  = self.memory.retrieval_features(x, y, cell['tick'], world.width, world.height)
+        avg_trust  = sum(self.trust.values()) / len(self.trust) if self.trust else 0.0
+        herb_pres  = min(1.0, len(available_herbs(cell)) / 5.0)
+        warmth     = min(1.0, cell.get('warmth', 0.0))
+        mat_count  = min(1.0, len(cell.get('materials', {})) / 6.0)
+        causal_f   = self.causal_memory.feature_vector()
+        inv_size   = min(1.0, sum(self.material_inventory.values()) / 5.0)
+        hormones   = self.endocrine.as_features()
         return [
             self.energy / MAX_ENERGY,
             self.health / 100.0,
             self.hydration / 100.0,
             min(1.0, self.age / AGE_LIMIT),
-            cell['food'] / 180.0,
+            cell['food']  / 180.0,
             cell['water'] / 100.0,
             (cell['temperature'] + 20) / 72.0,
             cell['danger'] / 100.0,
@@ -226,31 +229,31 @@ class Agent:
             self.genes['sociality'],
             1.0 if self.tool else 0.0,
             avg_trust * 0.5 + 0.5,
-            min(1.0, self.resources['wood'] / 4.0),
+            min(1.0, self.resources['wood']  / 4.0),
             min(1.0, self.resources['stone'] / 4.0),
             min(1.0, self.resources['fiber'] / 4.0),
             max(-1.0, min(1.0, self.last_reward / 10.0)),
-            herb_presence,
+            herb_pres,
             warmth,
             mat_count,
             inv_size,
-            *causal_feats,
+            *causal_f,
             *retrieval,
             *hormones,
         ]
 
     def visible_cells(self, world):
         x, y = self.pos
-        melatonin = self.endocrine.h[2]
+        melatonin   = self.endocrine.h[2]
         vision_mult = max(0.4, 1.0 - 0.6 * melatonin)
-        radius = max(1, int(round((self.genes['vision'] + 0.35 * self.genes['sense_radius']) * vision_mult)))
+        radius = max(1, int(round((self.genes['vision'] + 0.35*self.genes['sense_radius']) * vision_mult)))
         return world.neighbors(x, y, radius)
 
     def progress_pregnancy(self):
         child = None
         if self.pregnant:
             self.gestation -= 1
-            self.energy -= 0.03
+            self.energy    -= 0.03
             if self.gestation <= 0 and self.stored_child_genes is not None:
                 child = self.stored_child_genes
                 self.pregnant = False
@@ -274,45 +277,45 @@ class Agent:
 
     def apply_sleep(self, world):
         _ensure_new_fields(self)
-        mods = self.endocrine.modifiers()
+        mods        = self.endocrine.modifiers()
         sleep_drive = mods['sleep_drive']
-        cell = world.get_cell(*self.pos)
+        cell        = world.get_cell(*self.pos)
         danger_here = cell.get('danger', 0.0) + cell.get('disturbance', 0.0)
         safe_enough = danger_here < 25.0
-
         if not self.is_sleeping and sleep_drive > SLEEP_DRIVE_THRESHOLD and safe_enough:
-            warmth = cell.get('warmth', 0.0)
+            warmth  = cell.get('warmth', 0.0)
             shelter = cell.get('structures', {}).get('shelter', False)
-            sleep_chance = 0.20 + 0.30 * (warmth > 0.3) + 0.25 * bool(shelter)
+            sleep_chance = 0.20 + 0.30*(warmth > 0.3) + 0.25*bool(shelter)
             if random.random() < sleep_chance:
-                self.is_sleeping = True
+                self.is_sleeping   = True
                 self.last_action_mode = 'sleep'
-
         if self.is_sleeping:
-            self.energy = min(MAX_ENERGY, self.energy + SLEEP_ENERGY_REGEN)
-            self.health = min(100.0, self.health + SLEEP_HEALTH_REGEN)
+            self.energy   = min(MAX_ENERGY, self.energy + SLEEP_ENERGY_REGEN)
+            self.health   = min(100.0,      self.health + SLEEP_HEALTH_REGEN)
             self.endocrine.h[2] = max(0.0, self.endocrine.h[2] - 0.05)
             self.last_action_mode = 'sleep'
-            adrenaline_wake = self.endocrine.h[1] > 0.55
-            if danger_here > 40.0 or self.endocrine.h[2] < 0.12 or adrenaline_wake:
+            if danger_here > 40.0 or self.endocrine.h[2] < 0.12 or self.endocrine.h[1] > 0.55:
                 self.is_sleeping = False
 
     def forage(self, world, intensity):
         _ensure_new_fields(self)
         if self.is_sleeping:
             return 0.0
-        cell = world.get_cell(*self.pos)
-        mods = self.endocrine.modifiers()
+        cell       = world.get_cell(*self.pos)
+        mods       = self.endocrine.modifiers()
         forage_eff = mods['forage_eff']
         plant_need = max(0.2, 1.0 - self.energy / MAX_ENERGY)
         meat_bias  = max(0.0, self.genes['diet_preference'])
         plant_bias = max(0.0, -self.genes['diet_preference'])
-        plant_take = min(cell['plant_food'], 2.0 + 8.0 * intensity * (0.5 + plant_need + 0.4 * plant_bias))
-        meat_take  = min(cell['meat_food'],  1.0 + 5.5 * intensity * (0.35 + plant_need + 0.5 * meat_bias))
+        plant_take = min(cell['plant_food'], 2.0 + 8.0*intensity*(0.5 + plant_need + 0.4*plant_bias))
+        meat_take  = min(cell['meat_food'],  1.0 + 5.5*intensity*(0.35 + plant_need + 0.5*meat_bias))
         water_need = max(0.3, 1.0 - self.hydration / 100.0)
-        water_take = min(cell['water'], 1.0 + 8.0 * intensity * water_need)
-        efficiency = (0.75 + 0.35 * self.genes['efficiency']) * forage_eff
+        water_take = min(cell['water'], 1.0 + 8.0*intensity*water_need)
+        efficiency = (0.75 + 0.35*self.genes['efficiency']) * forage_eff
         tool_mult  = (1.0 + SHARP_STONE_FORAGE_BONUS) if self.tool == 'sharp_stone' else 1.0
+        # Heimvorteil auf eigenem Territorium
+        home_bonus = get_home_forage_bonus(self, world)
+        efficiency *= (1.0 + home_bonus)
         cook_bonus_health = 0.0
         for mat in ('cooked_meat', 'cooked_root'):
             if self.material_inventory.get(mat, 0) > 0.1:
@@ -321,8 +324,8 @@ class Agent:
                 self.energy = min(MAX_ENERGY, self.energy + val * 22.0)
                 cook_bonus_health += val * 0.5
                 self.endocrine.apply_substance(mat, val)
-        plant_gain = plant_take * (PLANT_ENERGY / 8.0) * (1.0 + 0.55 * plant_bias) * efficiency * tool_mult
-        meat_gain  = meat_take  * (MEAT_ENERGY  / 6.0) * (1.0 + 0.55 * meat_bias)  * efficiency * tool_mult
+        plant_gain = plant_take * (PLANT_ENERGY/8.0) * (1.0 + 0.55*plant_bias) * efficiency * tool_mult
+        meat_gain  = meat_take  * (MEAT_ENERGY /6.0) * (1.0 + 0.55*meat_bias)  * efficiency * tool_mult
         apply_consumption(cell, plant=plant_take, meat=meat_take, water=water_take)
         self.energy    = min(MAX_ENERGY, self.energy + plant_gain + meat_gain)
         self.hydration = min(100.0, self.hydration + water_take * 8.5)
@@ -342,23 +345,20 @@ class Agent:
             self.endocrine.apply_successful_forage(total_gain)
         self.memory.remember_resource(self.pos, cell['food'], cell['water'], cell['tick'])
         consumed_tags: list[str] = []
-        if plant_take > 0.3:
-            consumed_tags.append('plant_food')
-        if meat_take > 0.3:
-            consumed_tags.append('meat')
-        if water_take > 0.3:
-            consumed_tags.append('water')
+        if plant_take > 0.3:  consumed_tags.append('plant_food')
+        if meat_take  > 0.3:  consumed_tags.append('meat')
+        if water_take > 0.3:  consumed_tags.append('water')
         return self._try_use_herbs(cell, consumed_tags)
 
-    def _try_use_herbs(self, cell: dict, consumed_tags: list[str]) -> float:
+    def _try_use_herbs(self, cell, consumed_tags):
         herbs_here = available_herbs(cell)
         if not herbs_here:
             return 0.0
-        reward = 0.0
+        reward       = 0.0
         curiosity    = self.genes.get('curiosity', 0.5)
         dopamine     = self.endocrine.h[4]
         inflammation = self.endocrine.h[6]
-        sample_prob  = 0.10 + 0.25 * curiosity + 0.20 * dopamine + 0.30 * inflammation
+        sample_prob  = 0.10 + 0.25*curiosity + 0.20*dopamine + 0.30*inflammation
         for tag in herbs_here:
             if random.random() < sample_prob:
                 taken = collect_herb(cell, tag, amount=1.0)
@@ -379,13 +379,13 @@ class Agent:
         _ensure_new_fields(self)
         if self.is_sleeping:
             return
-        cell = world.get_cell(*self.pos)
+        cell       = world.get_cell(*self.pos)
         tool_bonus = SHARP_STONE_COLLECT_BONUS if self.tool == 'sharp_stone' else 0.0
-        if cell['biome'] == 'forest'    and random.random() < 0.08 + 0.16 * intensity + tool_bonus:
+        if cell['biome'] == 'forest'    and random.random() < 0.08 + 0.16*intensity + tool_bonus:
             self.resources['wood']  += 1
-        if cell['biome'] == 'mountain'  and random.random() < 0.06 + 0.14 * intensity + tool_bonus:
+        if cell['biome'] == 'mountain'  and random.random() < 0.06 + 0.14*intensity + tool_bonus:
             self.resources['stone'] += 1
-        if cell['biome'] in ('grassland', 'swamp') and random.random() < 0.08 + 0.18 * intensity + tool_bonus:
+        if cell['biome'] in ('grassland','swamp') and random.random() < 0.08 + 0.18*intensity + tool_bonus:
             self.resources['fiber'] += 1
         slot = cell.get('materials', {})
         for mat, qty in list(slot.items()):
@@ -413,54 +413,31 @@ class Agent:
         if abs(sum(self.message_vector)) > 0.35:
             self.last_action_mode = 'signal'
 
-    # ------------------------------------------------------------------
-    # Gruppenfoerderung durch Kooperationsvorteil
-    # ------------------------------------------------------------------
     def cooperative_forage_bonus(self, agents) -> float:
-        """
-        Stammesmitglieder in Reichweite erhoehen die Sammeleffizienz.
-        Biologisches Vorbild: Kooperative Jagd (Woelfe, Schimpansen, Menschen)
-        bringt mehr Beute pro Kopf als Einzeljagd.
-        Gibt den Effizienz-Multiplikator zurueck (1.0 = kein Bonus).
-        """
         if self.tribe_id is None:
             return 1.0
         close_tribe = sum(
             1 for a in agents
             if a is not self and a.alive
             and a.tribe_id == self.tribe_id
-            and abs(a.pos[0] - self.pos[0]) <= COOP_PROXIMITY_RADIUS
-            and abs(a.pos[1] - self.pos[1]) <= COOP_PROXIMITY_RADIUS
+            and abs(a.pos[0]-self.pos[0]) <= COOP_PROXIMITY_RADIUS
+            and abs(a.pos[1]-self.pos[1]) <= COOP_PROXIMITY_RADIUS
         )
-        bonus = min(COOP_FORAGE_MAX_BONUS, close_tribe * COOP_FORAGE_BONUS_PER_MEMBER)
-        return 1.0 + bonus
+        return 1.0 + min(COOP_FORAGE_MAX_BONUS, close_tribe * COOP_FORAGE_BONUS_PER_MEMBER)
 
     def cooperative_defense_bonus(self, agents) -> float:
-        """
-        Stammesmitglieder in Reichweite reduzieren Gesundheitsschaden
-        durch Gefahren und Krankheiten (Gruppenverteidigung, Pflege).
-        Biologisches Vorbild: Soziale Tiere heilen sich gegenseitig
-        (Gegenseitige Fellpflege bei Primaten, Wachdienst bei Erdmaennchen).
-        Gibt Gesundheitsregeneration pro Tick zurueck.
-        """
         if self.tribe_id is None:
             return 0.0
         close_tribe = sum(
             1 for a in agents
             if a is not self and a.alive
             and a.tribe_id == self.tribe_id
-            and abs(a.pos[0] - self.pos[0]) <= COOP_PROXIMITY_RADIUS
-            and abs(a.pos[1] - self.pos[1]) <= COOP_PROXIMITY_RADIUS
+            and abs(a.pos[0]-self.pos[0]) <= COOP_PROXIMITY_RADIUS
+            and abs(a.pos[1]-self.pos[1]) <= COOP_PROXIMITY_RADIUS
         )
         return min(0.40, close_tribe * COOP_DEFENSE_HEALTH_BONUS)
 
     def maybe_share_food(self, agents) -> float:
-        """
-        Energiereiche Agenten teilen Nahrung mit hungernden Stammesmitgliedern.
-        Biologisches Vorbild: Nahrungsteilung ist das Kernmerkmal menschlicher
-        und vieler anderer sozialer Spezies (Vampirfledermaeuse, Schimpansen).
-        Gibt den kombinierten Reward fuer Geber + indirekten Fitness-Nutzen zurueck.
-        """
         if self.tribe_id is None or self.energy < COOP_SHARE_THRESHOLD_DONOR:
             return 0.0
         reward = 0.0
@@ -468,35 +445,31 @@ class Agent:
             a for a in agents
             if a is not self and a.alive
             and a.tribe_id == self.tribe_id
-            and abs(a.pos[0] - self.pos[0]) <= COOP_PROXIMITY_RADIUS
-            and abs(a.pos[1] - self.pos[1]) <= COOP_PROXIMITY_RADIUS
+            and abs(a.pos[0]-self.pos[0]) <= COOP_PROXIMITY_RADIUS
+            and abs(a.pos[1]-self.pos[1]) <= COOP_PROXIMITY_RADIUS
             and a.energy < COOP_SHARE_THRESHOLD_RECV
         ]
-        for recipient in nearby_tribe[:2]:   # max 2 pro Tick teilen
+        for recipient in nearby_tribe[:2]:
             transfer = min(COOP_SHARE_AMOUNT, self.energy - COOP_SHARE_THRESHOLD_RECV)
             if transfer < 5.0:
                 break
-            self.energy    -= transfer
+            self.energy     -= transfer
             recipient.energy = min(MAX_ENERGY, recipient.energy + transfer)
-            # Geber: kleiner direkter Reward (soziale Bestaetigung / Oxytocin)
-            reward += COOP_SHARE_REWARD
-            # Empfaenger bekommt Reward im naechsten Update durch
-            # hoehere Energie -> hoehere Homeostasis-Bewertung
-            # Zusaetzlich: direkter Notfall-Reward fuer den Empfaenger
-            if hasattr(recipient, 'last_reward'):
-                if hasattr(recipient.brain, 'rollout') and recipient.brain.rollout.storage:
-                    recipient.brain.rollout.storage[-1]['reward'] += COOP_RECV_REWARD
-            self.last_action_mode = 'share'
-            # Oxytocin-Ausschuettung bei Geber und Empfaenger
-            self.endocrine.h[5]      = min(1.0, self.endocrine.h[5]      + 0.12)
-            recipient.endocrine.h[5] = min(1.0, recipient.endocrine.h[5] + 0.18)
+            reward          += COOP_SHARE_REWARD
+            if hasattr(recipient.brain, 'rollout') and recipient.brain.rollout.storage:
+                recipient.brain.rollout.storage[-1]['reward'] += COOP_RECV_REWARD
+            self.last_action_mode       = 'share'
+            self.endocrine.h[5]         = min(1.0, self.endocrine.h[5]      + 0.12)
+            recipient.endocrine.h[5]    = min(1.0, recipient.endocrine.h[5] + 0.18)
         return reward
 
     def update_social(self, agents, tribes, tick, action, features_before):
         _ensure_new_fields(self)
         if self.is_sleeping:
             return 0.0
-        nearby = [a for a in agents if a is not self and a.alive and abs(a.pos[0]-self.pos[0]) <= 1 and abs(a.pos[1]-self.pos[1]) <= 1]
+        nearby = [a for a in agents if a is not self and a.alive
+                  and abs(a.pos[0]-self.pos[0]) <= 1
+                  and abs(a.pos[1]-self.pos[1]) <= 1]
         same_tribe_nearby = sum(1 for a in nearby if a.tribe_id == self.tribe_id and self.tribe_id is not None)
         self.endocrine.apply_social_signal(len(nearby), same_tribe_nearby > 0)
         mods = self.endocrine.modifiers()
@@ -504,7 +477,7 @@ class Agent:
             helpful = other.message_vector[0] > -0.15
             prior   = self.trust.get(other.id, 0.0)
             delta   = 0.015 if helpful else -0.008
-            delta  += 0.018 * self.genes['sociality'] + 0.010 * mods['social_bias']
+            delta  += 0.018*self.genes['sociality'] + 0.010*mods['social_bias']
             if action['communicate'] > 0.1:
                 before_food   = features_before[4]
                 before_danger = features_before[7]
@@ -534,27 +507,22 @@ class Agent:
             other.energy += transfer
 
     def maybe_reproduce(self, agents, action):
-        if self.is_sleeping:
+        if self.is_sleeping or not self.can_reproduce():
             return False
-        if not self.can_reproduce():
-            return False
-        nearby = [
-            a for a in agents
-            if a is not self and a.alive
-            and abs(a.pos[0]-self.pos[0]) <= 2
-            and abs(a.pos[1]-self.pos[1]) <= 2
-        ]
+        nearby = [a for a in agents if a is not self and a.alive
+                  and abs(a.pos[0]-self.pos[0]) <= 2
+                  and abs(a.pos[1]-self.pos[1]) <= 2]
         random.shuffle(nearby)
         for other in nearby:
             if not other.can_reproduce() or other.sex == self.sex or other.pregnant:
                 continue
             mother = self if self.sex == 'f' else other
             father = other if mother is self else self
-            mother.pregnant        = True
-            mother.gestation       = GESTATION_TIME / max(0.5, mother.genes['gestation_efficiency'])
+            mother.pregnant           = True
+            mother.gestation          = GESTATION_TIME / max(0.5, mother.genes['gestation_efficiency'])
             mother.stored_child_genes = inherit_genes(mother, father)
-            mother.energy         -= REPRODUCTION_COST
-            father.energy         -= REPRODUCTION_COST
+            mother.energy            -= REPRODUCTION_COST
+            father.energy            -= REPRODUCTION_COST
             mother.reproduction_cooldown = REPRODUCTION_COOLDOWN
             father.reproduction_cooldown = REPRODUCTION_COOLDOWN
             mother.children += 1
@@ -570,14 +538,15 @@ class Agent:
         if self.is_sleeping:
             return
         mods = self.endocrine.modifiers()
-        effective_threshold = 0.55 - 0.15 * mods['aggression_bias']
-        if intensity < effective_threshold:
+        if intensity < 0.55 - 0.15*mods['aggression_bias']:
             return
-        nearby = [a for a in agents if a is not self and a.alive and abs(a.pos[0]-self.pos[0]) <= 1 and abs(a.pos[1]-self.pos[1]) <= 1]
+        nearby = [a for a in agents if a is not self and a.alive
+                  and abs(a.pos[0]-self.pos[0]) <= 1
+                  and abs(a.pos[1]-self.pos[1]) <= 1]
         if not nearby:
             return
-        target = max(nearby, key=lambda a: self.trust.get(a.id, 0.0) * -1 + random.random() * 0.1)
-        damage = 1.0 + 3.5 * self.genes['aggression']
+        target = max(nearby, key=lambda a: self.trust.get(a.id, 0.0)*-1 + random.random()*0.1)
+        damage = 1.0 + 3.5*self.genes['aggression']
         target.health -= damage
         target.trust[self.id] = max(-1.0, min(1.0, target.trust.get(self.id, 0.0) - 0.18))
         target.endocrine.apply_attack_received()
@@ -585,46 +554,45 @@ class Agent:
         self.last_action_mode = 'attack'
 
     def apply_disease(self, world):
-        cell       = world.get_cell(*self.pos)
-        exposure   = 0.004 * cell['disease'] + 0.002 * cell['pollution'] + 0.001 * cell['disturbance']
+        cell     = world.get_cell(*self.pos)
+        exposure = 0.004*cell['disease'] + 0.002*cell['pollution'] + 0.001*cell['disturbance']
         if random.random() < max(0.0, exposure - 0.30):
-            self.sick = min(100.0, self.sick + 2.0 + 0.02 * cell['disease'])
+            self.sick = min(100.0, self.sick + 2.0 + 0.02*cell['disease'])
             if self.disease_id is None and self.sick > 15.0:
                 self.disease_id = random.choice(list(REMEDY_REGISTRY.keys()))
         inflammation = self.endocrine.h[6]
-        recovery = 0.15 * (self.health/100.0) + 0.05 * (self.hydration/100.0)
-        recovery *= max(0.3, 1.0 - 0.5 * inflammation)
+        recovery = 0.15*(self.health/100.0) + 0.05*(self.hydration/100.0)
+        recovery *= max(0.3, 1.0 - 0.5*inflammation)
         self.sick = max(0.0, self.sick - recovery)
         if self.sick <= 2.0:
             self.disease_id = None
         if self.sick > 0:
-            self.health -= 0.010 * self.sick
-            self.energy -= 0.006 * self.sick
-        warmth = cell.get('warmth', 0.0)
-        if warmth > 0.2:
-            self.sick = max(0.0, self.sick - 0.15 * warmth)
+            self.health -= 0.010*self.sick
+            self.energy -= 0.006*self.sick
+        if cell.get('warmth', 0.0) > 0.2:
+            self.sick = max(0.0, self.sick - 0.15*cell['warmth'])
 
     def apply_environmental_effects(self, world):
         _ensure_new_fields(self)
         cell       = world.get_cell(*self.pos)
         biome_cost = world.biome_move_cost(*self.pos)
         mods       = self.endocrine.modifiers()
-        move_cost  = (0.22 + (1.0 / max(0.6, self.genes['speed'])) * 0.10) * biome_cost
+        move_cost  = (0.22 + (1.0/max(0.6, self.genes['speed']))*0.10) * biome_cost
         move_cost *= (1.75 - min(1.5, self.genes['efficiency']))
         move_cost *= mods['move_cost_mult']
-        self.energy -= move_cost
-        self.hydration -= 0.30 + 0.008 * cell['temperature'] + 0.010 * biome_cost + 0.012 * cell['disturbance']
-        self.energy    -= 0.003 * cell['danger'] + 0.003 * cell['disturbance']
-        self.health    -= max(0, abs(cell['temperature'] - 20) - 14) * 0.05
-        self.health    -= 0.005 * cell['pollution'] + 0.006 * cell['ash']
+        self.energy    -= move_cost
+        self.hydration -= 0.30 + 0.008*cell['temperature'] + 0.010*biome_cost + 0.012*cell['disturbance']
+        self.energy    -= 0.003*cell['danger'] + 0.003*cell['disturbance']
+        self.health    -= max(0, abs(cell['temperature']-20) - 14) * 0.05
+        self.health    -= 0.005*cell['pollution'] + 0.006*cell['ash']
         self.health    -= mods['health_drain']
         if self.age >= AGE_HEALTH_DECAY_START:
-            decay = 0.3 + max(0.0, (self.age - AGE_HEALTH_DECAY_HARD) * 1.5 / (AGE_LIMIT - AGE_HEALTH_DECAY_HARD))
+            decay = 0.3 + max(0.0, (self.age-AGE_HEALTH_DECAY_HARD)*1.5/(AGE_LIMIT-AGE_HEALTH_DECAY_HARD))
             self.health -= decay
         warmth = cell.get('warmth', 0.0)
         if warmth > 0.3:
-            cold_exposure = max(0, abs(cell['temperature'] - 20) - 14)
-            self.health   += cold_exposure * 0.03 * warmth
+            cold_exp = max(0, abs(cell['temperature']-20) - 14)
+            self.health    += cold_exp * 0.03 * warmth
             self.hydration += 0.05 * warmth
         if cell['biome'] == 'desert':
             self.energy    -= 0.18
@@ -639,9 +607,8 @@ class Agent:
         if self.age > AGE_LIMIT:
             self.energy  = 0
             self.health -= 5.0
-        adrenaline = self.endocrine.h[1]
-        if adrenaline > 0.5:
-            self.energy -= 0.02 * (adrenaline - 0.5)
+        if self.endocrine.h[1] > 0.5:
+            self.energy -= 0.02 * (self.endocrine.h[1] - 0.5)
         if self.health <= 0:
             self.alive = False
 
@@ -658,9 +625,9 @@ class Agent:
 
         if not self.is_sleeping:
             for xx, yy, cell, biome in self.visible_cells(world):
-                if cell['food'] > 50 or cell['water'] > 55:
+                if cell['food'] > 30 or cell['water'] > 40:
                     self.memory.remember_resource((xx, yy), cell['food'], cell['water'], tick)
-                if cell['danger'] > 60 or cell['disease'] > 35:
+                if cell['danger'] > 50 or cell['disease'] > 30:
                     self.memory.remember_danger((xx, yy), max(cell['danger'], cell['disease']), tick)
 
         features = self.local_features(world, agents)
@@ -674,25 +641,14 @@ class Agent:
             brain_step = self.brain.act(features, self.hidden_state)
             self.apply_disease(world)
             self.apply_environmental_effects(world)
-            reward = _homeostasis_reward(
-                self.energy, prev_energy,
-                self.hydration, prev_hydration,
-                self.health, prev_health,
-                self.alive,
-            )
+            reward = _homeostasis_reward(self.energy, prev_energy, self.hydration, prev_hydration, self.health, prev_health, self.alive)
             self.brain.store_transition(
-                obs_tensor=brain_step['obs_tensor'],
-                hidden_in=brain_step['hidden_in'],
-                action_tensor=brain_step['action_tensor'],
-                log_prob=brain_step['log_prob'],
-                value=brain_step['value'],
-                reward=reward,
-                done=not self.alive,
-                next_obs=features,
+                obs_tensor=brain_step['obs_tensor'], hidden_in=brain_step['hidden_in'],
+                action_tensor=brain_step['action_tensor'], log_prob=brain_step['log_prob'],
+                value=brain_step['value'], reward=reward, done=not self.alive, next_obs=features,
             )
             loss = self.brain.maybe_train()
-            if loss is not None:
-                self.last_loss = loss
+            if loss is not None: self.last_loss = loss
             self.hidden_state = self.brain.initial_hidden() if not self.alive else brain_step['next_hidden'] * self.genes['memory_retention']
             self.energy    = max(0.0, min(MAX_ENERGY, self.energy))
             self.hydration = max(0.0, min(100.0, self.hydration))
@@ -713,22 +669,27 @@ class Agent:
 
         self.primitive_move(world, action)
 
-        # Kooperativer Sammelbonus: Effizienz steigt mit Stammesmitgliedern in Naehe
-        coop_mult = self.cooperative_forage_bonus(agents)
+        # Kooperativer Sammelbonus
+        coop_mult        = self.cooperative_forage_bonus(agents)
         herb_heal_reward = self.forage(world, max(0.0, (action['eat'] + 1.0) * 0.5) * coop_mult)
         self.collect_materials(world, max(0.0, (action['explore'] + 1.0) * 0.5))
 
-        # Nahrungsteilung: direkt belohntes altruistisches Verhalten
-        share_reward = self.maybe_share_food(agents)
+        # Nahrungsteilung
+        share_reward  = self.maybe_share_food(agents)
 
-        # Gruppenverteidigung: Gesundheitsbonus durch Stammesmitglieder
+        # Gruppenverteidigung
         defense_bonus = self.cooperative_defense_bonus(agents)
         if defense_bonus > 0:
             self.health = min(100.0, self.health + defense_bonus)
 
-        if action['explore'] > 0.2 and random.random() < 0.25 + 0.2 * self.genes.get('curiosity', 0.5):
-            cell = world.get_cell(*self.pos)
-            env  = {
+        # ------------------------------------------------------------------
+        # Erfindungen: deutlich haeufiger triggern
+        # Erfindungs-Trigger von ~4% auf ~25-50% erhoehen.
+        # Agenten mit hoher Curiosity experimentieren fast jeden Tick.
+        # ------------------------------------------------------------------
+        cell = world.get_cell(*self.pos)
+        if action['explore'] > 0.1 and random.random() < INVENTION_BASE_PROB + INVENTION_CURIOSITY_MULT * self.genes.get('curiosity', 0.5):
+            env = {
                 'wind':        cell.get('disturbance', 0) / 100.0,
                 'moisture':    cell.get('moisture', 50)   / 100.0,
                 'temperature': cell.get('temperature', 20),
@@ -750,36 +711,35 @@ class Agent:
         if self.sick > 60:
             self.last_action_mode = 'sick'
 
-        reward = _homeostasis_reward(
-            self.energy, prev_energy,
-            self.hydration, prev_hydration,
-            self.health, prev_health,
-            self.alive,
-        )
+        # ------------------------------------------------------------------
+        # Reward zusammensetzen: Homeostasis + Kooperation + Gedaechtnis + Territorium
+        # ------------------------------------------------------------------
+        reward  = _homeostasis_reward(self.energy, prev_energy, self.hydration, prev_hydration, self.health, prev_health, self.alive)
         reward += herb_heal_reward + share_reward
 
+        # Gedaechtnis-Reward: Belohnung fuer gedaechtniskonformes Verhalten
+        # (Revierbesuche, Meiden bekannter Gefahren)
+        mem_reward = self.memory.position_reward(self.pos, tick)
+        reward    += mem_reward
+
+        # Territorium-Reward: Heimvorteil / Eindringling-Malus
+        terr_reward = territory_reward_for_agent(self, world)
+        reward     += terr_reward
+
         next_features = self.local_features(world, agents)
-        intrinsic = self.brain.intrinsic_reward(
-            brain_step['hidden_in'], brain_step['action_tensor'], next_features
-        )
-        reward += 0.10 * intrinsic
+        intrinsic = self.brain.intrinsic_reward(brain_step['hidden_in'], brain_step['action_tensor'], next_features)
+        reward   += 0.10 * intrinsic
 
         mods    = self.endocrine.modifiers()
         reward *= mods['cognition']
 
         self.brain.store_transition(
-            obs_tensor=brain_step['obs_tensor'],
-            hidden_in=brain_step['hidden_in'],
-            action_tensor=brain_step['action_tensor'],
-            log_prob=brain_step['log_prob'],
-            value=brain_step['value'],
-            reward=reward,
-            done=not self.alive,
-            next_obs=next_features,
+            obs_tensor=brain_step['obs_tensor'],   hidden_in=brain_step['hidden_in'],
+            action_tensor=brain_step['action_tensor'], log_prob=brain_step['log_prob'],
+            value=brain_step['value'], reward=reward, done=not self.alive, next_obs=next_features,
         )
         loss = self.brain.maybe_train()
-        if loss is not None:
-            self.last_loss = loss
+        if loss is not None: self.last_loss = loss
         self.hidden_state = self.brain.initial_hidden() if not self.alive else brain_step['next_hidden'] * self.genes['memory_retention']
         self.energy    = max(0.0, min(MAX_ENERGY, self.energy))
         self.hydration = max(0.0, min(100.0, self.hydration))
@@ -789,12 +749,7 @@ class Agent:
         return child_genes
 
 
-def _homeostasis_reward(
-    energy, prev_energy,
-    hydration, prev_hydration,
-    health, prev_health,
-    alive: bool,
-) -> float:
+def _homeostasis_reward(energy, prev_energy, hydration, prev_hydration, health, prev_health, alive):
     d_energy    = (energy    - prev_energy)    / MAX_ENERGY * 3.0
     d_hydration = (hydration - prev_hydration) / 100.0      * 2.5
     d_health    = (health    - prev_health)    / 100.0      * 4.0

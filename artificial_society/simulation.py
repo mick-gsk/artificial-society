@@ -12,6 +12,7 @@ from artificial_society.environment.resources import add_carcass
 from artificial_society.environment.seasons import SeasonCycle
 from artificial_society.environment.weather import WeatherSystem
 from artificial_society.environment.daynight import day_phase
+from artificial_society.environment.territory import update_territory_claims
 from artificial_society.systems.tribes import TribeSystem
 from artificial_society.systems.economy import EconomySystem
 from artificial_society.systems.technology import TechnologySystem
@@ -34,81 +35,58 @@ INHERIT_FIDELITY = 0.70
 DEATH_BROADCAST_FIDELITY = 0.45
 DEATH_BROADCAST_RADIUS = 4
 
-# --------------------------------------------------------------------------
-# Hamilton's Rule: r * B > C
-# Biologisches Vorbild: Verwandtenselektion (W.D. Hamilton, 1964)
-# Agenten erhalten einen kleinen Bonus-Reward wenn ihre nahen Verwandten
-# (Kinder, Eltern) oder Stammesmitglieder ueberleben und gut versorgt sind.
-# Das schafft evolutionaeren Druck hin zu kooperativem/altruistischem Verhalten.
-# r = Verwandtschaftsgrad (0.5 fuer direktes Kind/Elternteil, 0.1 fuer Stammesmitglied)
-# B = Fitness-Benefit des Verwandten (normierter Energie-/Gesundheitszustand)
-# Skalierungsfaktor klein halten damit Eigeninteresse dominant bleibt (wie in Natur)
-# --------------------------------------------------------------------------
-HAMILTON_CHILD_R         = 0.50   # Verwandtschaftsgrad Kind/Elternteil
-HAMILTON_TRIBE_R         = 0.10   # Verwandtschaftsgrad Stammesmitglied
-HAMILTON_REWARD_SCALE    = 0.08   # Gesamtskalierung damit es Eigeninteresse nicht dominiert
-HAMILTON_TICK_INTERVAL   = 20     # Nur alle N Ticks berechnen (Performance)
+HAMILTON_CHILD_R       = 0.50
+HAMILTON_TRIBE_R       = 0.10
+HAMILTON_REWARD_SCALE  = 0.08
+HAMILTON_TICK_INTERVAL = 20
 
 
 def _migrate_agent(agent):
-    """
-    Bring a pickled agent up to the current code version.
-    Called for every agent after checkpoint load.
-    """
     if not hasattr(agent, 'brain') or agent.brain is None:
         agent.brain = Brain()
         agent.hidden_state = agent.brain.initial_hidden()
     elif getattr(agent.brain, 'input_size', None) != INPUT_SIZE:
-        print(f'[migrate] agent {agent.id}: brain input_size '
-              f'{agent.brain.input_size} -> {INPUT_SIZE}, rebuilding')
         agent.brain = Brain()
         agent.hidden_state = agent.brain.initial_hidden()
-
     if not hasattr(agent, 'hidden_state') or agent.hidden_state is None:
         agent.hidden_state = agent.brain.initial_hidden()
-
     if not hasattr(agent, 'endocrine') or agent.endocrine is None:
         agent.endocrine = EndocrineSystem()
-
     if not hasattr(agent, 'causal_memory') or agent.causal_memory is None:
         agent.causal_memory = CausalMemory(capacity=32)
-
     if not hasattr(agent, 'material_inventory') or agent.material_inventory is None:
         agent.material_inventory = {}
-
     if not hasattr(agent, 'is_sleeping'):
         agent.is_sleeping = False
-
     if not hasattr(agent, 'remedy_knowledge'):
         agent.remedy_knowledge = {}
-
     if not hasattr(agent, 'herbs_carried'):
         agent.herbs_carried = {}
 
 
 class Simulation:
     def __init__(self, width=1200, height=800, grid_w=60, grid_h=40, initial_population=36):
-        self.width = width
-        self.height = height
-        self.grid_w = grid_w
-        self.grid_h = grid_h
-        self.cell_px = min((width - 300) // grid_w, height // grid_h)
-        self.world = World(grid_w, grid_h)
-        self.seasons = SeasonCycle()
-        self.weather = WeatherSystem()
-        self.tribes = TribeSystem()
-        self.economy = EconomySystem()
+        self.width    = width
+        self.height   = height
+        self.grid_w   = grid_w
+        self.grid_h   = grid_h
+        self.cell_px  = min((width - 300) // grid_w, height // grid_h)
+        self.world    = World(grid_w, grid_h)
+        self.seasons  = SeasonCycle()
+        self.weather  = WeatherSystem()
+        self.tribes   = TribeSystem()
+        self.economy  = EconomySystem()
         self.technology = TechnologySystem()
-        self.evolution = EvolutionSystem()
-        self.stats = StatisticsTracker()
+        self.evolution  = EvolutionSystem()
+        self.stats      = StatisticsTracker()
         self.screen = pygame.display.set_mode((width, height))
-        self.clock = pygame.time.Clock()
-        pygame.display.set_caption('Artificial Society v3.3')
+        self.clock  = pygame.time.Clock()
+        pygame.display.set_caption('Artificial Society v3.4')
         self.renderer = Renderer(width, height, self.cell_px)
-        self.font = pygame.font.SysFont('consolas', 16)
-        self.running = True
-        self.tick = 0
-        self.agents = []
+        self.font     = pygame.font.SysFont('consolas', 16)
+        self.running  = True
+        self.tick     = 0
+        self.agents   = []
         if os.path.exists(CHECKPOINT_PATH):
             self._load_checkpoint()
         else:
@@ -124,27 +102,20 @@ class Simulation:
         x, y = self.world.find_free_neighbor(parent.pos)
         if x is None:
             x, y = parent.pos
-        child = self.evolution.make_child(parent, x, y, genes=genes)
+        # Finde den anderen Elternteil anhand stored_child_genes-Kontext
+        other_parent = None
+        for a in self.agents:
+            if a.alive and a is not parent and a.id == getattr(parent, '_last_mate_id', None):
+                other_parent = a
+                break
+        child = self.evolution.make_child(parent, x, y, genes=genes, other_parent=other_parent)
         child.hidden_state = child.brain.initial_hidden()
-        child.birth_tick = self.tick
-
-        # --------------------------------------------------------------
-        # Neuronale Praedisposition durch Gewichtsvererbung
-        # Biologisches Vorbild: Saeugetiere (inkl. Menschen) werden mit
-        # vorstrukturierten neuronalen Schaltkreisen geboren die durch
-        # die Eltern vorgepraegt sind (Epigenetik, Priming).
-        # Das Kind startet nicht bei null sondern erbt 55% der elterlichen
-        # Gewichte + Gauss'sches Mutationsrauschen.
-        # Ergebnis: Successful strategies propagate through generations.
-        # --------------------------------------------------------------
+        child.birth_tick   = self.tick
         child.brain.inherit_weights_from(parent.brain)
-
-        # Kausales Gedaechtnis vererben
         parent_mem = getattr(parent, 'causal_memory', None)
         if parent_mem:
             child.causal_memory = CausalMemory(capacity=32)
-            seqs = list(parent_mem.sequences.keys())[:INHERIT_SEQUENCES]
-            for seq in seqs:
+            for seq in list(parent_mem.sequences.keys())[:INHERIT_SEQUENCES]:
                 child.causal_memory.receive_transmitted(seq, fidelity=INHERIT_FIDELITY)
         if parent.remedy_knowledge:
             for disease, herbs in parent.remedy_knowledge.items():
@@ -159,14 +130,11 @@ class Simulation:
         ax, ay = agent.pos
         recipients = [
             a for a in self.agents
-            if a is not agent
-            and a.alive
-            and abs(a.pos[0] - ax) <= DEATH_BROADCAST_RADIUS
-            and abs(a.pos[1] - ay) <= DEATH_BROADCAST_RADIUS
+            if a is not agent and a.alive
+            and abs(a.pos[0]-ax) <= DEATH_BROADCAST_RADIUS
+            and abs(a.pos[1]-ay) <= DEATH_BROADCAST_RADIUS
             and (a.tribe_id == agent.tribe_id or a.parent_id == agent.id or agent.parent_id == a.id)
         ]
-        if not recipients:
-            return
         seqs = list(causal_mem.sequences.keys()) if causal_mem else []
         for recipient in recipients:
             if not hasattr(recipient, 'causal_memory') or recipient.causal_memory is None:
@@ -195,11 +163,10 @@ class Simulation:
             add_carcass(self.world.get_cell(*agent.pos), CORPSE_ENERGY)
         self.agents = survivors
 
-    def _is_immune(self, agent, disease_id: str) -> bool:
-        immunity_map = getattr(agent, '_disease_immunity', {})
-        return self.tick < immunity_map.get(disease_id, 0)
+    def _is_immune(self, agent, disease_id):
+        return self.tick < getattr(agent, '_disease_immunity', {}).get(disease_id, 0)
 
-    def _grant_immunity(self, agent, disease_id: str):
+    def _grant_immunity(self, agent, disease_id):
         if not hasattr(agent, '_disease_immunity'):
             agent._disease_immunity = {}
         window = REMEDY_REGISTRY.get(disease_id, {}).get('immunity_after', IMMUNITY_WINDOW_DEFAULT)
@@ -216,10 +183,7 @@ class Simulation:
             agent._prev_disease_id = curr
 
     def spread_diseases(self):
-        infectious = [
-            a for a in self.agents
-            if a.alive and getattr(a, 'disease_id', None) is not None
-        ]
+        infectious = [a for a in self.agents if a.alive and getattr(a, 'disease_id', None) is not None]
         for carrier in infectious:
             disease_id = carrier.disease_id
             rec = REMEDY_REGISTRY.get(disease_id, {})
@@ -227,76 +191,47 @@ class Simulation:
                 continue
             radius = 2 if rec.get('vector') == 'airborne' else 1
             cx, cy = carrier.pos
-            biome = self.world.get_biome(cx, cy)
-            neighbours = [
-                a for a in self.agents
-                if a is not carrier
-                and a.alive
-                and abs(a.pos[0] - cx) <= radius
-                and abs(a.pos[1] - cy) <= radius
-                and getattr(a, 'disease_id', None) is None
-                and not self._is_immune(a, disease_id)
-            ]
-            for neighbour in neighbours:
-                try_infect_agent(neighbour, disease_id, biome=biome)
+            biome   = self.world.get_biome(cx, cy)
+            for a in self.agents:
+                if (a is not carrier and a.alive
+                        and abs(a.pos[0]-cx) <= radius
+                        and abs(a.pos[1]-cy) <= radius
+                        and getattr(a, 'disease_id', None) is None
+                        and not self._is_immune(a, disease_id)):
+                    try_infect_agent(a, disease_id, biome=biome)
 
-    # --------------------------------------------------------------------------
-    # Hamilton's Rule Reward-Verteilung
-    # Alle N Ticks erhaelt jeder lebende Agent einen kleinen zusaetzlichen Reward
-    # basierend auf dem Wohlbefinden seiner Nachkommen und Stammesmitglieder.
-    # r * B: Verwandtschaftsgrad mal Fitness-Benefit des Verwandten.
-    # Dies ist KEIN kuenstlicher Mechanismus: Hamilton's Regel beschreibt exakt
-    # warum altruistisches Verhalten in der Natur entstehen kann.
-    # --------------------------------------------------------------------------
     def _apply_hamilton_rewards(self):
         if self.tick % HAMILTON_TICK_INTERVAL != 0:
             return
-        # Baue schnelle Lookup-Maps
         agent_by_id = {a.id: a for a in self.agents if a.alive}
-        tribe_members: dict[int, list] = {}
+        tribe_members = {}
         for a in self.agents:
             if a.alive and a.tribe_id is not None:
                 tribe_members.setdefault(a.tribe_id, []).append(a)
-
         for agent in self.agents:
             if not agent.alive:
                 continue
-            hamilton_bonus = 0.0
-
-            # Direkter Verwandter: eigene Kinder (parent_id == agent.id)
+            bonus = 0.0
             for other in self.agents:
                 if not other.alive:
                     continue
                 if other.parent_id == agent.id or agent.parent_id == other.id:
-                    # B = normierter Fitness-Zustand des Verwandten
-                    fitness_b = (other.energy / MAX_ENERGY) * 0.5 + (other.health / 100.0) * 0.5
-                    hamilton_bonus += HAMILTON_CHILD_R * fitness_b
-
-            # Stammesmitglieder (schwaecher gewichtet)
+                    fitness_b = (other.energy/MAX_ENERGY)*0.5 + (other.health/100.0)*0.5
+                    bonus += HAMILTON_CHILD_R * fitness_b
             if agent.tribe_id is not None:
-                members = tribe_members.get(agent.tribe_id, [])
-                for other in members:
+                for other in tribe_members.get(agent.tribe_id, []):
                     if other is agent:
                         continue
-                    fitness_b = (other.energy / MAX_ENERGY) * 0.5 + (other.health / 100.0) * 0.5
-                    hamilton_bonus += HAMILTON_TRIBE_R * fitness_b
-
-            if hamilton_bonus > 0:
-                scaled = hamilton_bonus * HAMILTON_REWARD_SCALE
-                # Den Bonus rueckwirkend ins letzte Rollout-Element einfliessen lassen
-                if agent.brain.rollout.storage:
-                    agent.brain.rollout.storage[-1]['reward'] += scaled
-                agent.last_reward += scaled
+                    fitness_b = (other.energy/MAX_ENERGY)*0.5 + (other.health/100.0)*0.5
+                    bonus += HAMILTON_TRIBE_R * fitness_b
+            if bonus > 0 and agent.brain.rollout.storage:
+                agent.brain.rollout.storage[-1]['reward'] += bonus * HAMILTON_REWARD_SCALE
+                agent.last_reward += bonus * HAMILTON_REWARD_SCALE
 
     def _save_checkpoint(self):
         try:
-            data = {
-                'tick': self.tick,
-                'agents': self.agents,
-                'tribes': self.tribes,
-                'technology': self.technology,
-                'economy': self.economy,
-            }
+            data = {'tick': self.tick, 'agents': self.agents, 'tribes': self.tribes,
+                    'technology': self.technology, 'economy': self.economy}
             with open(CHECKPOINT_PATH, 'wb') as f:
                 pickle.dump(data, f)
         except Exception as e:
@@ -320,38 +255,33 @@ class Simulation:
 
     def step(self):
         self.tick += 1
-
-        dn = day_phase(self.tick)
+        dn           = day_phase(self.tick)
         self.world.day_state = dn
-
         season_state = self.seasons.update(self.tick)
-        weather_state = self.weather.update(self.world, season_state, self.tick)
+        weather_state= self.weather.update(self.world, season_state, self.tick)
         if self.tick < EVENT_WARMUP_TICKS:
-            self.world.active_events = [
-                e for e in self.world.active_events
-                if e.get('kind') not in ('drought', 'fire', 'blight', 'storm')
-            ]
+            self.world.active_events = [e for e in self.world.active_events
+                                         if e.get('kind') not in ('drought','fire','blight','storm')]
         self.world.update_environment(season_state, weather_state, self.tick)
         tick_materials(self.world)
+
+        # Territorium-Claims aktualisieren (einmal pro Tick)
+        update_territory_claims(self.world, self.agents)
+
         self.tribes.update_membership(self.agents)
         births = []
         for agent in list(self.agents):
             child_genes = agent.update(
-                world=self.world,
-                agents=self.agents,
-                tick=self.tick,
-                season_state=season_state,
-                weather_state=weather_state,
-                tribes=self.tribes,
-                economy=self.economy,
-                technology=self.technology,
+                world=self.world, agents=self.agents, tick=self.tick,
+                season_state=season_state, weather_state=weather_state,
+                tribes=self.tribes, economy=self.economy, technology=self.technology,
             )
             if agent.alive and child_genes is not None:
                 births.append(self.spawn_child_from_parent(agent, child_genes))
         self.agents.extend(births)
         self.tick_immunity_and_recovery()
         self.spread_diseases()
-        self._apply_hamilton_rewards()   # <-- Hamilton's Rule
+        self._apply_hamilton_rewards()
         self.remove_dead()
         self.tribes.cleanup(self.agents)
         self.technology.update(self.agents, self.tribes)
