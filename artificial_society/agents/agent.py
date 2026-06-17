@@ -30,7 +30,7 @@ GESTATION_TIME = 190
 AGE_LIMIT = 5000
 PLANT_ENERGY = 28.0
 MEAT_ENERGY = 40.0
-CORPSE_ENERGY = 36.0
+CORPOSE_ENERGY = 36.0
 
 SHARP_STONE_FORAGE_BONUS = 0.30
 SHARP_STONE_COLLECT_BONUS = 0.20
@@ -268,8 +268,8 @@ class Agent:
 
     def apply_sleep(self, world):
         """
-        Sleep is now entirely driven by melatonin (endocrine).
-        No direct light/time check here — the endocrine system
+        Sleep is entirely driven by melatonin (endocrine).
+        No direct light/time check — the endocrine system
         converts darkness to melatonin which drives sleep_drive.
         """
         _ensure_new_fields(self)
@@ -299,14 +299,17 @@ class Agent:
                 self.is_sleeping = False
 
     def forage(self, world, intensity):
+        """
+        No minimum-intensity guard: the agent decides fully when to eat.
+        No direct forage_reward bonus — gain flows into energy/hydration
+        which is picked up by the homeostasis reward in update().
+        """
         _ensure_new_fields(self)
         if self.is_sleeping:
             return 0.0
         cell = world.get_cell(*self.pos)
-        if intensity < -0.25:
-            return 0.0
         mods = self.endocrine.modifiers()
-        forage_eff = mods['forage_eff']   # high melatonin = less efficient
+        forage_eff = mods['forage_eff']
         plant_need = max(0.2, 1.0 - self.energy / MAX_ENERGY)
         meat_bias = max(0.0, self.genes['diet_preference'])
         plant_bias = max(0.0, -self.genes['diet_preference'])
@@ -316,20 +319,20 @@ class Agent:
         water_take = min(cell['water'], 1.0 + 8.0 * intensity * water_need)
         efficiency = (0.75 + 0.35 * self.genes['efficiency']) * forage_eff
         tool_mult = (1.0 + SHARP_STONE_FORAGE_BONUS) if self.tool == 'sharp_stone' else 1.0
-        cook_bonus = 0.0
+        cook_bonus_health = 0.0
         for mat in ('cooked_meat', 'cooked_root'):
             if self.material_inventory.get(mat, 0) > 0.1:
                 val = min(self.material_inventory[mat], 1.0)
                 self.material_inventory[mat] -= val
                 self.energy = min(MAX_ENERGY, self.energy + val * 22.0)
-                cook_bonus += 0.25
+                cook_bonus_health += val * 0.5   # small direct health boost
                 self.endocrine.apply_substance(mat, val)
         plant_gain = plant_take * (PLANT_ENERGY / 8.0) * (1.0 + 0.55 * plant_bias) * efficiency * tool_mult
         meat_gain = meat_take * (MEAT_ENERGY / 6.0) * (1.0 + 0.55 * meat_bias) * efficiency * tool_mult
         apply_consumption(cell, plant=plant_take, meat=meat_take, water=water_take)
         self.energy = min(MAX_ENERGY, self.energy + plant_gain + meat_gain)
         self.hydration = min(100.0, self.hydration + water_take * 8.5)
-        self.health = min(100.0, self.health + water_take * 0.16)
+        self.health = min(100.0, self.health + water_take * 0.16 + cook_bonus_health)
         if plant_take > 0.5:
             self.plant_eaten += 1
             self.endocrine.apply_substance('plant_food', plant_take * 0.3)
@@ -351,9 +354,8 @@ class Agent:
             consumed_tags.append('meat')
         if water_take > 0.3:
             consumed_tags.append('water')
-        forage_reward = 0.025 * total_gain + 0.18 * water_take + cook_bonus
-        forage_reward += self._try_use_herbs(cell, consumed_tags)
-        return forage_reward
+        # Only herb-healing returns reward: it is a direct pain reduction (homeostasis)
+        return self._try_use_herbs(cell, consumed_tags)
 
     def _try_use_herbs(self, cell: dict, consumed_tags: list[str]) -> float:
         herbs_here = available_herbs(cell)
@@ -361,9 +363,8 @@ class Agent:
             return 0.0
         reward = 0.0
         curiosity = self.genes.get('curiosity', 0.5)
-        # Curiosity to sample herbs driven by dopamine + illness (no direct sick label)
-        dopamine = self.endocrine.h[4]   # DOPAMINE
-        inflammation = self.endocrine.h[6]  # INFLAMMATION
+        dopamine = self.endocrine.h[4]       # DOPAMINE
+        inflammation = self.endocrine.h[6]   # INFLAMMATION
         sample_prob = 0.10 + 0.25 * curiosity + 0.20 * dopamine + 0.30 * inflammation
         for tag in herbs_here:
             if random.random() < sample_prob:
@@ -372,46 +373,49 @@ class Agent:
                     self.herbs_carried[tag] = self.herbs_carried.get(tag, 0.0) + taken
                     consumed_tags.append(tag)
                     self.last_action_mode = 'forage_herb'
-                    # Apply substance effect — agent doesn't know what this does
                     self.endocrine.apply_substance(tag, taken)
         if self.disease_id and consumed_tags:
             prev_disease = self.disease_id
             cure_bonus = evaluate_remedy(self, consumed_tags)
             if cure_bonus > 0:
                 record_cure_discovery(self, prev_disease, consumed_tags)
+                # Cure reward = homeostasis: directly reduces sick/health-drain
                 reward += cure_bonus * 2.5
         return reward
 
     def collect_materials(self, world, intensity):
+        """
+        No minimum-intensity guard.
+        No reward returned — material gains only pay off downstream
+        (building shelter → warmth → health, cooking → energy, etc.)
+        """
         _ensure_new_fields(self)
-        if self.is_sleeping or intensity < 0.15:
-            return 0.0
+        if self.is_sleeping:
+            return
         cell = world.get_cell(*self.pos)
-        gain = 0.0
         tool_bonus = SHARP_STONE_COLLECT_BONUS if self.tool == 'sharp_stone' else 0.0
         if cell['biome'] == 'forest' and random.random() < 0.08 + 0.16 * intensity + tool_bonus:
             self.resources['wood'] += 1
-            gain += 0.15
         if cell['biome'] == 'mountain' and random.random() < 0.06 + 0.14 * intensity + tool_bonus:
             self.resources['stone'] += 1
-            gain += 0.15
         if cell['biome'] in ('grassland', 'swamp') and random.random() < 0.08 + 0.18 * intensity + tool_bonus:
             self.resources['fiber'] += 1
-            gain += 0.12
         slot = cell.get('materials', {})
         for mat, qty in list(slot.items()):
             if qty > 0.1 and random.random() < 0.15 * intensity:
                 take = min(qty, 0.5)
                 slot[mat] -= take
                 self.material_inventory[mat] = self.material_inventory.get(mat, 0.0) + take
-                gain += 0.05
-        return gain
 
     def maybe_craft(self, technology, intensity):
         return 0.0
 
     def maybe_build(self, world, intensity):
-        if self.is_sleeping or intensity < 0.55:
+        """
+        No minimum-intensity guard, no reward — the agent must learn
+        that shelter improves warmth → health, not because we told it so.
+        """
+        if self.is_sleeping:
             return None
         cell = world.get_cell(*self.pos)
         built = maybe_build_structure(cell, self.resources)
@@ -427,19 +431,21 @@ class Agent:
             self.last_action_mode = 'signal'
 
     def update_social(self, agents, tribes, tick, action, features_before):
+        """
+        Social interactions update trust and trigger tribe logic.
+        No direct reward for communicating or sharing — cooperation
+        must emerge because it leads to better homeostasis outcomes.
+        """
         _ensure_new_fields(self)
         if self.is_sleeping:
             return 0.0
         nearby = [a for a in agents if a is not self and a.alive and abs(a.pos[0] - self.pos[0]) <= 1 and abs(a.pos[1] - self.pos[1]) <= 1]
-        # Oxytocin signal from social proximity
         same_tribe_nearby = sum(1 for a in nearby if a.tribe_id == self.tribe_id and self.tribe_id is not None)
         self.endocrine.apply_social_signal(len(nearby), same_tribe_nearby > 0)
-        social_reward = 0.0
         mods = self.endocrine.modifiers()
         for other in nearby:
             helpful = other.message_vector[0] > -0.15
             prior = self.trust.get(other.id, 0.0)
-            # Social bias from oxytocin/serotonin increases delta
             delta = 0.015 if helpful else -0.008
             delta += 0.018 * self.genes['sociality'] + 0.010 * mods['social_bias']
             if action['communicate'] > 0.1:
@@ -449,32 +455,26 @@ class Agent:
                 after_danger = other.local_features_cache[7] if hasattr(other, 'local_features_cache') else before_danger
                 info_bonus = self.communication.evaluate_message_usefulness(other, self, before_food, after_food, before_danger, after_danger)
                 delta += info_bonus * 0.18
-                social_reward += info_bonus
                 if self.tribe_id is not None and other.tribe_id == self.tribe_id:
-                    social_reward += self._share_tribe_resources(other)
+                    self._share_tribe_resources(other)
                 if self.trust.get(other.id, 0.0) > 0.3:
-                    if share_remedy_knowledge(self, other):
-                        social_reward += 0.15
+                    share_remedy_knowledge(self, other)
             self.trust[other.id] = max(-1.0, min(1.0, prior + delta))
             self.memory.remember_social(other.id, self.trust[other.id], helpful, tick)
         tribes.consider_join(self, nearby)
-        social_reward += social_learning_step(self, agents, tick)
-        return social_reward
+        social_learning_step(self, agents, tick)
+        return 0.0
 
-    def _share_tribe_resources(self, other) -> float:
-        reward = 0.0
+    def _share_tribe_resources(self, other):
         for res in ('wood', 'stone', 'fiber'):
             if self.resources[res] >= 3 and other.resources[res] == 0:
                 self.resources[res] -= 1
                 other.resources[res] += 1
-                reward += 0.08
                 break
         if self.energy > 180.0 and other.energy < 80.0:
             transfer = min(20.0, self.energy - 160.0)
             self.energy -= transfer
             other.energy += transfer
-            reward += 0.10
-        return reward
 
     def maybe_reproduce(self, agents, action):
         if self.is_sleeping:
@@ -497,7 +497,6 @@ class Agent:
             father.reproduction_cooldown = REPRODUCTION_COOLDOWN
             mother.children += 1
             father.children += 1
-            # Oxytocin from reproduction bond
             mother.endocrine.h[5] = min(1.0, mother.endocrine.h[5] + 0.25)
             father.endocrine.h[5] = min(1.0, father.endocrine.h[5] + 0.15)
             self.last_action_mode = 'mate'
@@ -506,16 +505,20 @@ class Agent:
         return False
 
     def maybe_attack(self, agents, intensity):
+        """
+        No minimum-intensity guard, no direct reward.
+        Attack costs energy; any gain comes from changes in
+        health/energy/hydration captured by homeostasis reward.
+        """
         if self.is_sleeping:
-            return 0.0
+            return
         mods = self.endocrine.modifiers()
-        # Aggression bias from cortisol/adrenaline lowers the threshold
         effective_threshold = 0.55 - 0.15 * mods['aggression_bias']
         if intensity < effective_threshold:
-            return 0.0
+            return
         nearby = [a for a in agents if a is not self and a.alive and abs(a.pos[0] - self.pos[0]) <= 1 and abs(a.pos[1] - self.pos[1]) <= 1]
         if not nearby:
-            return -0.05
+            return
         target = max(nearby, key=lambda a: self.trust.get(a.id, 0.0) * -1 + random.random() * 0.1)
         damage = 1.0 + 3.5 * self.genes['aggression']
         target.health -= damage
@@ -523,7 +526,6 @@ class Agent:
         target.endocrine.apply_attack_received()
         self.energy -= 0.5
         self.last_action_mode = 'attack'
-        return 0.12 if target.health < 30 else -0.04
 
     def apply_disease(self, world):
         cell = world.get_cell(*self.pos)
@@ -532,10 +534,8 @@ class Agent:
             self.sick = min(100.0, self.sick + 2.0 + 0.02 * cell['disease'])
             if self.disease_id is None and self.sick > 15.0:
                 self.disease_id = random.choice(list(REMEDY_REGISTRY.keys()))
-        # Inflammation directly reduces sick progression (endocrine feedback)
         inflammation = self.endocrine.h[6]
         recovery = 0.15 * (self.health / 100.0) + 0.05 * (self.hydration / 100.0)
-        # High inflammation slows recovery (body fighting disease = resource drain)
         recovery *= max(0.3, 1.0 - 0.5 * inflammation)
         self.sick = max(0.0, self.sick - recovery)
         if self.sick <= 2.0:
@@ -562,7 +562,6 @@ class Agent:
         self.energy -= 0.003 * cell['danger'] + 0.003 * cell['disturbance']
         self.health -= max(0, abs(cell['temperature'] - 20) - 14) * 0.05
         self.health -= 0.005 * cell['pollution'] + 0.006 * cell['ash']
-        # Endocrine health drain (inflammation, cortisol)
         self.health -= mods['health_drain']
 
         warmth = cell.get('warmth', 0.0)
@@ -583,10 +582,9 @@ class Agent:
         if self.age > AGE_LIMIT:
             self.energy = 0
             self.health -= 2.0
-        # Night predator pressure through adrenaline (not direct label)
         adrenaline = self.endocrine.h[1]
         if adrenaline > 0.5:
-            self.energy -= 0.02 * (adrenaline - 0.5)  # fight-or-flight cost
+            self.energy -= 0.02 * (adrenaline - 0.5)
         if self.health <= 0:
             self.alive = False
 
@@ -599,7 +597,6 @@ class Agent:
         child_genes = self.progress_pregnancy()
 
         # --- Endocrine tick (BEFORE any action or perception) ---
-        # This converts world state -> hormone levels -> behaviour inputs
         self.endocrine.update(self, world)
 
         self.apply_sleep(world)
@@ -613,18 +610,25 @@ class Agent:
 
         features = self.local_features(world, agents)
         self.local_features_cache = features
-        prev_energy = self.energy
+
+        # Snapshot homeostasis BEFORE actions
+        prev_energy    = self.energy
         prev_hydration = self.hydration
-        prev_health = self.health
+        prev_health    = self.health
 
         if self.is_sleeping:
             brain_step = self.brain.act(features, self.hidden_state)
             self.apply_disease(world)
             self.apply_environmental_effects(world)
-            reward = 0.05 if self.alive else -4.5
-            d_energy = (self.energy - prev_energy) / 30.0
-            d_health = (self.health - prev_health) / 20.0
-            reward += 0.45 * d_energy + 0.42 * d_health
+
+            # Pure homeostasis reward during sleep
+            reward = _homeostasis_reward(
+                self.energy, prev_energy,
+                self.hydration, prev_hydration,
+                self.health, prev_health,
+                self.alive,
+            )
+
             self.brain.store_transition(
                 obs_tensor=brain_step['obs_tensor'],
                 hidden_in=brain_step['hidden_in'],
@@ -639,69 +643,74 @@ class Agent:
             if loss is not None:
                 self.last_loss = loss
             self.hidden_state = self.brain.initial_hidden() if not self.alive else brain_step['next_hidden'] * self.genes['memory_retention']
-            self.energy = max(0.0, min(MAX_ENERGY, self.energy))
+            self.energy    = max(0.0, min(MAX_ENERGY, self.energy))
             self.hydration = max(0.0, min(100.0, self.hydration))
-            self.health = max(0.0, min(100.0, self.health))
+            self.health    = max(0.0, min(100.0, self.health))
             self.last_reward = reward
             return child_genes
 
         brain_step = self.brain.act(features, self.hidden_state)
         values = brain_step['action_list']
         action = {
-            'move_x': values[0],
-            'move_y': values[1],
-            'eat': values[2],
-            'explore': values[3],
+            'move_x':      values[0],
+            'move_y':      values[1],
+            'eat':         values[2],
+            'explore':     values[3],
             'communicate': values[4],
-            'attack': values[5],
+            'attack':      values[5],
         }
 
         self.primitive_move(world, action)
-        reward = 0.0
-        reward += self.forage(world, max(0.0, (action['eat'] + 1.0) * 0.5))
-        reward += self.collect_materials(world, max(0.0, (action['explore'] + 1.0) * 0.5))
+
+        # --- Actions (none return reward directly anymore) ---
+        herb_heal_reward = self.forage(world, max(0.0, (action['eat'] + 1.0) * 0.5))
+        self.collect_materials(world, max(0.0, (action['explore'] + 1.0) * 0.5))
+
         if action['explore'] > 0.2 and random.random() < 0.25 + 0.2 * self.genes.get('curiosity', 0.5):
             cell = world.get_cell(*self.pos)
             env = {
-                'wind': cell.get('disturbance', 0) / 100.0,
-                'moisture': cell.get('moisture', 50) / 100.0,
+                'wind':        cell.get('disturbance', 0) / 100.0,
+                'moisture':    cell.get('moisture', 50) / 100.0,
                 'temperature': cell.get('temperature', 20),
             }
             inv_reward = agent_try_invention(self, cell, env)
             if inv_reward > 0:
                 self.endocrine.apply_discovery(min(1.0, inv_reward))
-            reward += inv_reward
             self.last_action_mode = 'experiment'
-        built = self.maybe_build(world, action['explore'])
-        if built is not None:
-            reward += 1.2
+
+        self.maybe_build(world, action['explore'])
         self.maybe_signal(features, values)
-        reward += self.update_social(agents, tribes, tick, action, features)
+        self.update_social(agents, tribes, tick, action, features)
         economy.maybe_trade(self, agents)
-        if self.maybe_reproduce(agents, action):
-            reward += 2.2 * self.genes['fertility']
-        reward += self.maybe_attack(agents, action['attack'])
+        self.maybe_reproduce(agents, action)
+        self.maybe_attack(agents, action['attack'])
         self.apply_disease(world)
         self.apply_environmental_effects(world)
 
-        d_energy = (self.energy - prev_energy) / 30.0
-        d_hydration = (self.hydration - prev_hydration) / 30.0
-        d_health = (self.health - prev_health) / 20.0
-        reward += 0.45 * d_energy + 0.38 * d_hydration + 0.42 * d_health
-        reward += 0.05 if self.alive else -4.5
-        if child_genes is not None:
-            reward += 2.5
-        if self.pregnant:
-            reward -= 0.01
         if self.sick > 60:
             self.last_action_mode = 'sick'
-        # Cognition modifier scales learning quality (dopamine = better learning)
+
+        # --- Pure homeostasis reward ---
+        reward = _homeostasis_reward(
+            self.energy, prev_energy,
+            self.hydration, prev_hydration,
+            self.health, prev_health,
+            self.alive,
+        )
+        # Herb-healing: homeostasis (pain relief) — keep
+        reward += herb_heal_reward
+
+        # Intrinsic curiosity (world-model surprise) — emergent, keep
+        next_features = self.local_features(world, agents)
+        intrinsic = self.brain.intrinsic_reward(
+            brain_step['hidden_in'], brain_step['action_tensor'], next_features
+        )
+        reward += 0.10 * intrinsic
+
+        # Cognition modifier (dopamine improves learning quality)
         mods = self.endocrine.modifiers()
         reward *= mods['cognition']
 
-        next_features = self.local_features(world, agents)
-        intrinsic = self.brain.intrinsic_reward(brain_step['hidden_in'], brain_step['action_tensor'], next_features)
-        reward += 0.12 * intrinsic
         self.brain.store_transition(
             obs_tensor=brain_step['obs_tensor'],
             hidden_in=brain_step['hidden_in'],
@@ -716,9 +725,38 @@ class Agent:
         if loss is not None:
             self.last_loss = loss
         self.hidden_state = self.brain.initial_hidden() if not self.alive else brain_step['next_hidden'] * self.genes['memory_retention']
-        self.energy = max(0.0, min(MAX_ENERGY, self.energy))
+        self.energy    = max(0.0, min(MAX_ENERGY, self.energy))
         self.hydration = max(0.0, min(100.0, self.hydration))
-        self.health = max(0.0, min(100.0, self.health))
+        self.health    = max(0.0, min(100.0, self.health))
         self.last_reward = reward
         self.learning_score += reward * 0.02 * self.genes['plasticity']
         return child_genes
+
+
+# ---------------------------------------------------------------------------
+# Pure homeostasis reward function
+# ---------------------------------------------------------------------------
+
+def _homeostasis_reward(
+    energy, prev_energy,
+    hydration, prev_hydration,
+    health, prev_health,
+    alive: bool,
+) -> float:
+    """
+    Reward signal derived exclusively from changes in vital homeostasis.
+
+    Weights reflect physiological urgency:
+      health    → highest weight (damage is hard to reverse)
+      energy    → medium weight (directly limits action)
+      hydration → medium weight (fast-acting deprivation)
+      alive     → strong survival signal
+
+    No bonuses for any specific action (build, mate, attack, collect).
+    Emergent behaviour must justify itself through these three signals alone.
+    """
+    d_energy    = (energy    - prev_energy)    / MAX_ENERGY  * 3.0
+    d_hydration = (hydration - prev_hydration) / 100.0       * 2.5
+    d_health    = (health    - prev_health)    / 100.0       * 4.0
+    alive_bonus = 0.04 if alive else -5.0
+    return d_energy + d_hydration + d_health + alive_bonus
