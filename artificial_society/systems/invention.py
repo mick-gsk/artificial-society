@@ -7,7 +7,7 @@ artificial_society.environment.materials.apply_interaction().
 
 An agent's brain decides WHAT to try based on local features.
 The effects of trying (energy gain, warmth, damage, social attraction)
-are fed back as reward — the brain learns purely from consequences.
+are fed back as reward -- the brain learns purely from consequences.
 """
 
 import random
@@ -22,31 +22,17 @@ from artificial_society.environment.materials import (
 
 PRIMITIVE_ACTIONS = ['rub', 'strike', 'place_on_heat', 'bundle', 'blow', 'carry', 'eat']
 
-# How much warmth contributes to comfort (reward)
-WARMTH_REWARD = 0.08
-# Light at night contributes to safety
-LIGHT_REWARD = 0.06
-# Cooking reward bonus per successful cooked item created
-COOK_REWARD = 0.35
-# Sharp tool creation bonus
-SHARP_REWARD = 0.45
-# Danger penalty from fire/heat exposure
+WARMTH_REWARD  = 0.08
+LIGHT_REWARD   = 0.06
+COOK_REWARD    = 0.35
+SHARP_REWARD   = 0.45
 DANGER_PENALTY = -0.12
 
 
 def agent_try_invention(agent, cell: dict, env: dict) -> float:
-    """
-    Agent picks up to 2 materials from the cell and tries a random
-    primitive action on them.  Outcomes are fed back as reward and
-    stored in the agent's CausalMemory.
-
-    Returns the immediate reward signal.
-    """
     slot = cell.get('materials', {})
     if not slot:
         return 0.0
-
-    # Pick materials available in cell
     available = [m for m, q in slot.items() if q > 0.05]
     if not available:
         return 0.0
@@ -54,31 +40,75 @@ def agent_try_invention(agent, cell: dict, env: dict) -> float:
     mat_a = random.choice(available)
     mat_b = random.choice([m for m in available if m != mat_a]) if len(available) > 1 else None
 
-    # Agent also uses materials in their own inventory
     inv = getattr(agent, 'material_inventory', {})
     if not mat_b and inv:
         mat_b = random.choice(list(inv.keys()))
 
-    # Choose action — biased by agent's existing causal memory
     causal_mem = getattr(agent, 'causal_memory', None)
     action = _choose_action(agent, causal_mem, mat_a, mat_b)
-
     outcomes = apply_interaction(action, mat_a, mat_b, env)
     reward = _evaluate_outcomes(agent, cell, slot, outcomes, env)
 
-    # Store in causal memory
     if causal_mem is not None:
         causal_mem.record(action, mat_a, mat_b, outcomes, reward)
 
     return reward
 
 
+def agent_try_cook(agent, cell: dict) -> float:
+    """
+    Explizites Kochversuch-Interface fuer maybe_craft().
+    Agent versucht Rohfleisch oder Rohwurzel auf einem Feuer/Ember
+    in der aktuellen Zelle zu garen.
+    Kein vordefiniertes Rezept -- der Agent muss 'place_on_heat' mit
+    dem richtigen Material und einer Hitzequelle kombinieren.
+    Gibt 0.0 zurueck wenn keine Hitzequelle oder kein rohes Essen vorhanden.
+    Reward kommt ausschliesslich durch den Energiegewinn beim spaetere Essen.
+    """
+    slot = cell.get('materials', {})
+    heat_sources = [m for m in slot if slot[m] > 0.1 and m in ('fire', 'ember')]
+    if not heat_sources:
+        return 0.0
+
+    inv = getattr(agent, 'material_inventory', {})
+    cookable = [m for m in inv if m in ('raw_meat', 'raw_root') and inv[m] > 0.1]
+    if not cookable:
+        # Auch in der Zelle nach kochbarem suchen
+        cookable = [m for m in slot if m in ('raw_meat', 'raw_root') and slot[m] > 0.1]
+        source = slot
+    else:
+        source = inv
+
+    if not cookable:
+        return 0.0
+
+    heat_mat = heat_sources[0]
+    food_mat = cookable[0]
+    env = {
+        'wind':        cell.get('disturbance', 0) / 100.0,
+        'moisture':    cell.get('moisture', 50)   / 100.0,
+        'temperature': cell.get('temperature', 20),
+    }
+    outcomes = apply_interaction('place_on_heat', food_mat, heat_mat, env)
+    if not outcomes:
+        return 0.0
+
+    causal_mem = getattr(agent, 'causal_memory', None)
+    reward = _evaluate_outcomes(agent, cell, slot, outcomes, env)
+    if causal_mem is not None:
+        causal_mem.record('place_on_heat', food_mat, heat_mat, outcomes, reward)
+    # Rohes Material verbrauchen wenn Ergebnis produziert wurde
+    result_mats = [o for o in outcomes if not o.startswith('_')]
+    if result_mats:
+        source[food_mat] = max(0.0, source.get(food_mat, 0) - 0.5)
+    return reward
+
+
 def _choose_action(agent, causal_mem, mat_a: str, mat_b: str | None) -> str:
-    """Bias action choice toward known successful sequences."""
     if causal_mem is None:
         return random.choice(PRIMITIVE_ACTIONS)
     good = causal_mem.best_known(min_successes=1)
-    if good and random.random() < 0.55:  # 55% exploit known good sequences
+    if good and random.random() < 0.55:
         for (act, ma, mb), _ in good:
             if ma == mat_a or mb == (mat_b or ''):
                 return act
@@ -89,11 +119,10 @@ def _evaluate_outcomes(agent, cell: dict, slot: dict, outcomes: list[str], env: 
     reward = 0.0
     for result in outcomes:
         if result == '_spark':
-            pass  # no direct reward, but if fire emerges later, that will reward
+            pass
         elif result == '_heat_trace':
             pass
         elif result == '_tinder_bundle':
-            # Store virtual bundle in inventory
             inv = getattr(agent, 'material_inventory', {})
             inv['_tinder_bundle'] = inv.get('_tinder_bundle', 0) + 1.0
         elif result.startswith('_nutrition:'):
@@ -103,11 +132,11 @@ def _evaluate_outcomes(agent, cell: dict, slot: dict, outcomes: list[str], env: 
         elif result == 'ember':
             slot['ember'] = slot.get('ember', 0.0) + 0.6
             cell['materials'] = slot
-            reward += 0.12  # something warm appeared — interesting
+            reward += 0.12
         elif result == 'fire':
             slot['fire'] = slot.get('fire', 0.0) + 1.0
             cell['materials'] = slot
-            reward += 0.55  # very interesting — warm, bright, social
+            reward += 0.55
         elif result == 'ash':
             slot['ash'] = slot.get('ash', 0.0) + 0.5
         elif result == 'cooked_meat':
@@ -122,42 +151,34 @@ def _evaluate_outcomes(agent, cell: dict, slot: dict, outcomes: list[str], env: 
             inv = getattr(agent, 'material_inventory', {})
             inv['sharp_stone'] = inv.get('sharp_stone', 0.0) + 1.0
             reward += SHARP_REWARD
-            if not getattr(agent, 'tool', None):
-                agent.tool = 'sharp_stone'
+            # Tool setzen -- auch wenn bereits eines vorhanden ist
+            # (Agent traegt jetzt explizit das scharfe Werkzeug)
+            agent.tool = 'sharp_stone'
 
-    # Environmental effects of heat/fire in cell
-    heat = material_heat(slot)
-    light = material_light(slot)
+    heat   = material_heat(slot)
+    light  = material_light(slot)
     danger = material_danger(slot)
     reward += heat * WARMTH_REWARD
     reward += light * LIGHT_REWARD
     reward += danger * DANGER_PENALTY
-    # Standing near fire increases social attraction (warmth draws others)
     cell['warmth'] = heat
-
     return reward
 
 
 def tick_materials(world):
-    """Decay all material slots in the world every tick."""
     for y in range(world.height):
         for x in range(world.width):
             cell = world.cells[y][x]
             if 'materials' in cell and cell['materials']:
                 env = {
-                    'wind': cell.get('disturbance', 0) / 100.0,
-                    'moisture': cell.get('moisture', 50) / 100.0,
+                    'wind':        cell.get('disturbance', 0) / 100.0,
+                    'moisture':    cell.get('moisture', 50)   / 100.0,
                     'temperature': cell.get('temperature', 20),
                 }
                 decay_materials(cell['materials'], env)
 
 
 def seed_world_materials(world):
-    """
-    Place raw materials in the world at spawn.
-    Agents never know what they are by name — they discover properties
-    through interaction and remember the causal sequences that work.
-    """
     from artificial_society.environment.biomes import BIOME_BASE
     import random
     biome_mats = {
