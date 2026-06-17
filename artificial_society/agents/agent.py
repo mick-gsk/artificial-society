@@ -1,7 +1,7 @@
 import random
 from dataclasses import dataclass, field
 
-from artificial_society.agents.brain import Brain
+from artificial_society.agents.brain import Brain, INPUT_SIZE
 from artificial_society.agents.memory import EpisodicMemory
 from artificial_society.agents.genetics import random_genes, inherit_genes
 from artificial_society.agents.communication import CommunicationSystem
@@ -36,11 +36,19 @@ SHARP_STONE_COLLECT_BONUS = 0.20
 
 
 def _ensure_new_fields(agent):
-    """Backward-compat: inject missing fields into agents loaded from old checkpoints."""
+    """Backward-compat: inject missing fields and rebuild brain if input size changed."""
     if not hasattr(agent, 'causal_memory') or agent.causal_memory is None:
         agent.causal_memory = CausalMemory(capacity=32)
     if not hasattr(agent, 'material_inventory') or agent.material_inventory is None:
         agent.material_inventory = {}
+    # Rebuild brain if its encoder input size doesn't match current INPUT_SIZE
+    if not hasattr(agent, 'brain') or agent.brain is None:
+        agent.brain = Brain()
+        agent.hidden_state = agent.brain.initial_hidden()
+    elif agent.brain.input_size != INPUT_SIZE:
+        print(f'[compat] Agent {agent.id}: brain input_size={agent.brain.input_size} != {INPUT_SIZE}, rebuilding.')
+        agent.brain = Brain()
+        agent.hidden_state = agent.brain.initial_hidden()
 
 
 @dataclass

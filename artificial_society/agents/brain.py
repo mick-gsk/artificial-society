@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 device = torch.device('cpu')
 
-INPUT_SIZE = 47  # updated to match current local_features() output (was 41)
+INPUT_SIZE = 47  # 41 base + warmth + mat_count + inv_size + 3x causal_feats
 HIDDEN_SIZE = 96
 ACTION_SIZE = 6
 GAMMA = 0.97
