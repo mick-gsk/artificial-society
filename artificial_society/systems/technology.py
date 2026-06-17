@@ -1,50 +1,61 @@
-TECH_TREE = {
-    'axe':     {'requires': [],          'description': 'Basic tool; improves foraging and collection'},
-    'shelter': {'requires': ['axe'],      'description': 'Reduces environmental health loss by 40%'},
-    'pottery': {'requires': ['axe'],      'description': 'Reduces water-loss rate by 30%'},
-    'medicine':{'requires': ['shelter'],  'description': 'Passively reduces sick level by +0.05/tick'},
-}
+"""
+TechnologySystem — Emergent Only
+---------------------------------
+The old hardcoded tech tree (axe, shelter, pottery, medicine) is REMOVED.
+Technology now emerges from what agents have actually discovered via
+causal experimentation and cultural transmission.
 
-# Bonus constants applied in agent code via has_tech()
-TECH_EFFECTS = {
-    'shelter': {'health_loss_mult': 0.60},
-    'pottery': {'hydration_drain_mult': 0.70},
-    'medicine': {'sick_reduction_bonus': 0.05},
-}
+This module tracks WHAT capabilities have spread through the population
+without assigning any predefined recipes or names.
+"""
+
+from artificial_society.systems.culture import CultureTracker
 
 
 class TechnologySystem:
     def __init__(self):
-        self.discoveries = {}   # tribe_id -> set of tech names
+        self.culture_tracker = CultureTracker()
+        # capability_map: sequence -> set of tribe_ids that have agents knowing it
+        self.capability_map: dict[tuple, set] = {}
 
     def discover(self, tribe_id, tech_name):
-        tribe_id = tribe_id or 0
-        existing = self.discoveries.setdefault(tribe_id, set())
-        if tech_name in existing:
-            return False
-        req = TECH_TREE.get(tech_name, {}).get('requires', [])
-        if all(r in existing for r in req):
-            existing.add(tech_name)
-            return True
-        return False
+        """No-op stub kept for backward compatibility. Real discovery is emergent."""
+        pass
 
     def tribe_technologies(self, tribe_id):
-        return sorted(self.discoveries.get(tribe_id or 0, set()))
+        """Return list of sequences known by at least one member of the tribe."""
+        known = []
+        for seq, tribes in self.capability_map.items():
+            if (tribe_id or 0) in tribes:
+                known.append(seq)
+        return known
 
     def has_tech(self, tribe_id, tech_name) -> bool:
-        return tech_name in self.discoveries.get(tribe_id or 0, set())
+        """Always False — there are no named techs anymore."""
+        return False
+
+    def cultural_diversity(self) -> float:
+        return self.culture_tracker.cultural_diversity()
+
+    def culture_summary(self) -> dict:
+        return self.culture_tracker.summary()
 
     def update(self, agents, tribes):
+        self.culture_tracker.update(agents, self._current_tick(agents))
+        self.capability_map.clear()
         for agent in agents:
             if not agent.alive:
                 continue
-            if agent.tool == 'axe':
-                self.discover(agent.tribe_id, 'axe')
-            # Unlock shelter when camp is built on agent's cell
-            # (world cell access not available here; agent carries last_action_mode)
-            if agent.last_action_mode == 'build:camp' and self.has_tech(agent.tribe_id, 'axe'):
-                self.discover(agent.tribe_id, 'shelter')
-            if agent.last_action_mode == 'build:well' and self.has_tech(agent.tribe_id, 'axe'):
-                self.discover(agent.tribe_id, 'pottery')
-            if self.has_tech(agent.tribe_id, 'shelter'):
-                self.discover(agent.tribe_id, 'medicine')
+            causal_mem = getattr(agent, 'causal_memory', None)
+            if causal_mem is None:
+                continue
+            for seq in causal_mem.sequences:
+                if seq not in self.capability_map:
+                    self.capability_map[seq] = set()
+                self.capability_map[seq].add(agent.tribe_id or 0)
+
+    def _current_tick(self, agents):
+        for a in agents:
+            if hasattr(a, 'birth_tick'):
+                return getattr(a, 'age', 0)
+        return 0

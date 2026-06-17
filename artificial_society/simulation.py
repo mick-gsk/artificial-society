@@ -15,14 +15,11 @@ from artificial_society.systems.technology import TechnologySystem
 from artificial_society.systems.evolution import EvolutionSystem
 from artificial_society.visualization.statistics import StatisticsTracker
 from artificial_society.systems.remedy import try_infect_agent
+from artificial_society.systems.invention import tick_materials, seed_world_materials
 
-# Events only start after this tick to let agents stabilise first
 EVENT_WARMUP_TICKS = 600
-# Minimum alive population before emergency respawn kicks in
 MIN_POPULATION = 8
-# How many agents to respawn when below floor
 RESPAWN_COUNT = 6
-# Save checkpoint every N ticks
 CHECKPOINT_INTERVAL = 500
 CHECKPOINT_PATH = 'checkpoint.pkl'
 
@@ -44,7 +41,7 @@ class Simulation:
         self.stats = StatisticsTracker()
         self.screen = pygame.display.set_mode((width, height))
         self.clock = pygame.time.Clock()
-        pygame.display.set_caption('Artificial Society v3.1')
+        pygame.display.set_caption('Artificial Society v3.2')
         self.renderer = Renderer(width, height, self.cell_px)
         self.font = pygame.font.SysFont('consolas', 16)
         self.running = True
@@ -54,10 +51,8 @@ class Simulation:
             self._load_checkpoint()
         else:
             self.spawn_initial_population(initial_population)
-
-    # ------------------------------------------------------------------
-    # Population management
-    # ------------------------------------------------------------------
+        # Seed physical materials in world (no labels visible to agents)
+        seed_world_materials(self.world)
 
     def spawn_initial_population(self, n):
         for _ in range(n):
@@ -71,10 +66,16 @@ class Simulation:
         child = self.evolution.make_child(parent, x, y, genes=genes)
         child.hidden_state = child.brain.initial_hidden()
         child.birth_tick = self.tick
+        # Cultural inheritance: child receives some of mother's causal sequences
+        from artificial_society.systems.culture import CausalMemory
+        parent_mem = getattr(parent, 'causal_memory', None)
+        if parent_mem:
+            child.causal_memory = CausalMemory(capacity=32)
+            for seq in list(parent_mem.sequences.keys())[:8]:  # max 8 inherited sequences
+                child.causal_memory.receive_transmitted(seq, fidelity=0.65)  # imperfect inheritance
         return child
 
     def emergency_respawn(self):
-        """If population drops too low, inject fresh random agents to prevent extinction."""
         for _ in range(RESPAWN_COUNT):
             x, y = self.world.random_land_position()
             a = Agent.spawn_random(x, y)
@@ -90,12 +91,7 @@ class Simulation:
             add_carcass(self.world.get_cell(*agent.pos), CORPSE_ENERGY)
         self.agents = survivors
 
-    # ------------------------------------------------------------------
-    # Disease spreading between nearby agents
-    # ------------------------------------------------------------------
-
     def spread_diseases(self):
-        """Infected agents try to spread their disease to adjacent alive neighbours."""
         infectious = [a for a in self.agents if a.alive and getattr(a, 'disease_id', None) is not None]
         for carrier in infectious:
             cx, cy = carrier.pos
@@ -107,10 +103,6 @@ class Simulation:
             ]
             for neighbour in neighbours:
                 try_infect_agent(neighbour, carrier.disease_id)
-
-    # ------------------------------------------------------------------
-    # Checkpoint persistence
-    # ------------------------------------------------------------------
 
     def _save_checkpoint(self):
         try:
@@ -140,10 +132,6 @@ class Simulation:
             print(f'[checkpoint] load failed: {e}, starting fresh')
             self.spawn_initial_population(36)
 
-    # ------------------------------------------------------------------
-    # Main loop
-    # ------------------------------------------------------------------
-
     def step(self):
         self.tick += 1
         season_state = self.seasons.update(self.tick)
@@ -154,6 +142,8 @@ class Simulation:
                 if e.get('kind') not in ('drought', 'fire', 'blight', 'storm')
             ]
         self.world.update_environment(season_state, weather_state, self.tick)
+        # Decay physical materials every tick
+        tick_materials(self.world)
         self.tribes.update_membership(self.agents)
         births = []
         for agent in list(self.agents):
@@ -170,17 +160,14 @@ class Simulation:
             if agent.alive and child_genes is not None:
                 births.append(self.spawn_child_from_parent(agent, child_genes))
         self.agents.extend(births)
-        # FIX 1: spread diseases between neighbouring agents each tick
         self.spread_diseases()
         self.remove_dead()
         self.tribes.cleanup(self.agents)
         self.technology.update(self.agents, self.tribes)
         self.economy.update(self.agents, self.tribes)
         self.stats.update(self.tick, self.agents, self.world, self.tribes, self.technology)
-        # FIX 3: population floor guard
         if len(self.agents) < MIN_POPULATION:
             self.emergency_respawn()
-        # FIX 6: periodic checkpoint
         if self.tick % CHECKPOINT_INTERVAL == 0:
             self._save_checkpoint()
 
