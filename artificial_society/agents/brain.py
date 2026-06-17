@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 device = torch.device('cpu')
 
-INPUT_SIZE = 40
+INPUT_SIZE = 41  # +1 for herb_presence feature added in agent.local_features()
 HIDDEN_SIZE = 96
 ACTION_SIZE = 6
 GAMMA = 0.97
