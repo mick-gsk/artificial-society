@@ -28,6 +28,10 @@ PLANT_ENERGY = 28.0
 MEAT_ENERGY = 40.0
 CORPSE_ENERGY = 36.0
 
+# FIX 4: axe gives foraging efficiency bonus
+AXE_FORAGE_BONUS = 0.30   # +30% plant/meat yield when carrying axe
+AXE_COLLECT_BONUS = 0.20  # +20% material collection chance
+
 
 @dataclass
 class Agent:
@@ -65,10 +69,10 @@ class Agent:
     birth_tick: int = 0
     sick: float = 0.0
     last_action_mode: str = 'idle'
-    # --- remedy / herb fields (not exposed to brain as labelled knowledge) ---
-    disease_id: str | None = None           # which disease (hidden from brain)
-    remedy_knowledge: dict = field(default_factory=dict)  # partial cure clues
-    herbs_carried: dict = field(default_factory=dict)     # tag -> amount
+    # --- remedy / herb fields ---
+    disease_id: str | None = None
+    remedy_knowledge: dict = field(default_factory=dict)
+    herbs_carried: dict = field(default_factory=dict)
 
     @classmethod
     def spawn_random(cls, x, y):
@@ -125,7 +129,6 @@ class Agent:
         friends = sum(1 for a in near if self.trust.get(a.id, 0.0) > 0.2)
         retrieval = self.memory.retrieval_features(x, y, cell['tick'], world.width, world.height)
         avg_trust = sum(self.trust.values()) / len(self.trust) if self.trust else 0.0
-        # herb_presence: how many distinct herbs are available on this cell (normalised)
         herb_presence = min(1.0, len(available_herbs(cell)) / 5.0)
         return [
             self.energy / MAX_ENERGY,
@@ -156,7 +159,7 @@ class Agent:
             min(1.0, self.resources['fiber'] / 4.0),
             max(-1.0, min(1.0, self.last_reward / 10.0)),
             max(0.0, min(1.0, self.sick / 100.0)),
-            herb_presence,                      # new feature: herbs nearby
+            herb_presence,
             *retrieval,
         ]
 
@@ -201,8 +204,10 @@ class Agent:
         water_need = max(0.3, 1.0 - self.hydration / 100.0)
         water_take = min(cell['water'], 1.0 + 8.0 * intensity * water_need)
         efficiency = 0.75 + 0.35 * self.genes['efficiency']
-        plant_gain = plant_take * (PLANT_ENERGY / 8.0) * (1.0 + 0.55 * plant_bias) * efficiency
-        meat_gain = meat_take * (MEAT_ENERGY / 6.0) * (1.0 + 0.55 * meat_bias) * efficiency
+        # FIX 4: axe gives foraging bonus
+        axe_mult = (1.0 + AXE_FORAGE_BONUS) if self.tool == 'axe' else 1.0
+        plant_gain = plant_take * (PLANT_ENERGY / 8.0) * (1.0 + 0.55 * plant_bias) * efficiency * axe_mult
+        meat_gain = meat_take * (MEAT_ENERGY / 6.0) * (1.0 + 0.55 * meat_bias) * efficiency * axe_mult
         apply_consumption(cell, plant=plant_take, meat=meat_take, water=water_take)
         self.energy = min(MAX_ENERGY, self.energy + plant_gain + meat_gain)
         self.hydration = min(100.0, self.hydration + water_take * 8.5)
@@ -214,8 +219,6 @@ class Agent:
         if plant_take + meat_take + water_take > 0.8:
             self.last_action_mode = 'gather'
         self.memory.remember_resource(self.pos, cell['food'], cell['water'], cell['tick'])
-
-        # Build consumed_tags for remedy evaluation (agent doesn't know what helps)
         consumed_tags: list[str] = []
         if plant_take > 0.3:
             consumed_tags.append('plant_food')
@@ -223,28 +226,18 @@ class Agent:
             consumed_tags.append('meat')
         if water_take > 0.3:
             consumed_tags.append('water')
-
         forage_reward = 0.025 * (plant_gain + meat_gain) + 0.18 * water_take
         forage_reward += self._try_use_herbs(cell, consumed_tags)
         return forage_reward
 
     def _try_use_herbs(self, cell: dict, consumed_tags: list[str]) -> float:
-        """
-        Opportunistically collect and consume available herbs from the cell.
-        Agents do NOT know which herbs cure which disease — they simply pick
-        herbs they encounter (curiosity-weighted) and the remedy system
-        silently evaluates whether the combination works.
-        """
         herbs_here = available_herbs(cell)
         if not herbs_here:
             return 0.0
-
         reward = 0.0
-        # Curious agents sample more herbs; sick agents sample more aggressively
         curiosity = self.genes.get('curiosity', 0.5)
         sick_drive = min(1.0, self.sick / 60.0)
         sample_prob = 0.12 + 0.25 * curiosity + 0.35 * sick_drive
-
         for tag in herbs_here:
             if random.random() < sample_prob:
                 taken = collect_herb(cell, tag, amount=1.0)
@@ -252,31 +245,28 @@ class Agent:
                     self.herbs_carried[tag] = self.herbs_carried.get(tag, 0.0) + taken
                     consumed_tags.append(tag)
                     self.last_action_mode = 'forage_herb'
-
         if self.disease_id and consumed_tags:
-            prev_sick = self.sick
             prev_disease = self.disease_id
             cure_bonus = evaluate_remedy(self, consumed_tags)
             if cure_bonus > 0:
-                # Agent experienced positive feedback — record partial knowledge
                 record_cure_discovery(self, prev_disease, consumed_tags)
-                reward += cure_bonus * 2.5   # strong reward signal for brain
+                reward += cure_bonus * 2.5
         return reward
 
     def collect_materials(self, world, intensity):
         if intensity < 0.15:
             return 0.0
         cell = world.get_cell(*self.pos)
-        # Also regrow herbs on this cell each time an agent actively explores
-        regrow_herbs(cell, cell.get('biome', 'grassland'))
         gain = 0.0
-        if cell['biome'] == 'forest' and random.random() < 0.08 + 0.16 * intensity:
+        # FIX 4: axe improves material collection probability
+        axe_bonus = AXE_COLLECT_BONUS if self.tool == 'axe' else 0.0
+        if cell['biome'] == 'forest' and random.random() < 0.08 + 0.16 * intensity + axe_bonus:
             self.resources['wood'] += 1
             gain += 0.15
-        if cell['biome'] == 'mountain' and random.random() < 0.06 + 0.14 * intensity:
+        if cell['biome'] == 'mountain' and random.random() < 0.06 + 0.14 * intensity + axe_bonus:
             self.resources['stone'] += 1
             gain += 0.15
-        if cell['biome'] in ('grassland', 'swamp') and random.random() < 0.08 + 0.18 * intensity:
+        if cell['biome'] in ('grassland', 'swamp') and random.random() < 0.08 + 0.18 * intensity + axe_bonus:
             self.resources['fiber'] += 1
             gain += 0.12
         return gain
@@ -321,15 +311,33 @@ class Agent:
                 info_bonus = self.communication.evaluate_message_usefulness(other, self, before_food, after_food, before_danger, after_danger)
                 delta += info_bonus * 0.18
                 social_reward += info_bonus
-                # Share remedy knowledge with willing neighbours
+                # FIX 5: tribe members share resources and remedy knowledge
+                if self.tribe_id is not None and other.tribe_id == self.tribe_id:
+                    social_reward += self._share_tribe_resources(other)
                 if self.trust.get(other.id, 0.0) > 0.3:
-                    shared = share_remedy_knowledge(self, other)
-                    if shared:
-                        social_reward += 0.15  # small bonus for useful knowledge transfer
+                    if share_remedy_knowledge(self, other):
+                        social_reward += 0.15
             self.trust[other.id] = max(-1.0, min(1.0, prior + delta))
             self.memory.remember_social(other.id, self.trust[other.id], helpful, tick)
         tribes.consider_join(self, nearby)
         return social_reward
+
+    def _share_tribe_resources(self, other) -> float:
+        """FIX 5: Tribe members with surplus share one unit of their most abundant resource."""
+        reward = 0.0
+        for res in ('wood', 'stone', 'fiber'):
+            if self.resources[res] >= 3 and other.resources[res] == 0:
+                self.resources[res] -= 1
+                other.resources[res] += 1
+                reward += 0.08
+                break
+        # Also share energy if far ahead
+        if self.energy > 180.0 and other.energy < 80.0:
+            transfer = min(20.0, self.energy - 160.0)
+            self.energy -= transfer
+            other.energy += transfer
+            reward += 0.10
+        return reward
 
     def maybe_reproduce(self, agents, action):
         if not self.can_reproduce() or action['communicate'] < 0.15 or action['explore'] < 0.05:
@@ -374,16 +382,11 @@ class Agent:
         exposure = 0.012 * cell['disease'] + 0.007 * cell['pollution'] + 0.005 * cell['disturbance']
         if random.random() < max(0.0, exposure - 0.12):
             self.sick = min(100.0, self.sick + 4.0 + 0.04 * cell['disease'])
-            # Assign a specific disease if none yet (randomly from registry)
             if self.disease_id is None and self.sick > 10.0:
                 self.disease_id = random.choice(list(REMEDY_REGISTRY.keys()))
-        # Disease spread between nearby agents
-        if self.disease_id:
-            # Try to spread to a random nearby alive agent
-            pass  # Spread handled externally in simulation.py via try_infect_agent
         self.sick = max(0.0, self.sick - 0.03 * self.health / 100.0)
         if self.sick <= 2.0:
-            self.disease_id = None  # recovered naturally
+            self.disease_id = None
         if self.sick > 0:
             self.health -= 0.018 * self.sick
             self.energy -= 0.01 * self.sick

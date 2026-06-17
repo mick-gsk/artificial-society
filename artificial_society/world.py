@@ -2,6 +2,7 @@ import math
 import random
 from artificial_society.environment.biomes import BIOME_BASE, biome_color, generate_biome_grid
 from artificial_society.environment.resources import clamp, diffuse_step, initial_cell_state, regrow_cell
+from artificial_society.environment.herbs import regrow_herbs
 
 
 class World:
@@ -160,7 +161,11 @@ class World:
         for y in range(self.height):
             for x in range(self.width):
                 biome = self.biomes[y][x]
-                regrow_cell(self.cells[y][x], biome, season_state, weather_state, tick, self.event_field(x, y))
+                cell = self.cells[y][x]
+                regrow_cell(cell, biome, season_state, weather_state, tick, self.event_field(x, y))
+                # FIX 2: regrow herbs on every land cell every tick
+                if biome != 'water':
+                    regrow_herbs(cell, biome)
         self.diffuse_fields()
 
     def color_at(self, x, y):
