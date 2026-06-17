@@ -6,6 +6,8 @@ import pygame
 from artificial_society.world import World
 from artificial_society.renderer import Renderer
 from artificial_society.agents.agent import Agent, CORPSE_ENERGY
+from artificial_society.agents.brain import Brain, INPUT_SIZE
+from artificial_society.agents.endocrine import EndocrineSystem
 from artificial_society.environment.resources import add_carcass
 from artificial_society.environment.seasons import SeasonCycle
 from artificial_society.environment.weather import WeatherSystem
@@ -17,6 +19,7 @@ from artificial_society.systems.evolution import EvolutionSystem
 from artificial_society.visualization.statistics import StatisticsTracker
 from artificial_society.systems.remedy import try_infect_agent, REMEDY_REGISTRY
 from artificial_society.systems.invention import tick_materials, seed_world_materials
+from artificial_society.systems.culture import CausalMemory
 
 EVENT_WARMUP_TICKS = 600
 MIN_POPULATION = 8
@@ -26,13 +29,53 @@ CHECKPOINT_PATH = 'checkpoint.pkl'
 
 IMMUNITY_WINDOW_DEFAULT = 200
 
-# How many causal-memory sequences a child inherits from each parent
 INHERIT_SEQUENCES = 10
-# Fidelity of knowledge transmission parent->child
 INHERIT_FIDELITY = 0.70
-# Fidelity of knowledge shared to tribe members on death
 DEATH_BROADCAST_FIDELITY = 0.45
 DEATH_BROADCAST_RADIUS = 4
+
+
+def _migrate_agent(agent):
+    """
+    Bring a pickled agent up to the current code version.
+    Called for every agent after checkpoint load.
+    """
+    # Brain: rebuild if missing or wrong input size
+    if not hasattr(agent, 'brain') or agent.brain is None:
+        agent.brain = Brain()
+        agent.hidden_state = agent.brain.initial_hidden()
+    elif getattr(agent.brain, 'input_size', None) != INPUT_SIZE:
+        print(f'[migrate] agent {agent.id}: brain input_size '
+              f'{agent.brain.input_size} -> {INPUT_SIZE}, rebuilding')
+        agent.brain = Brain()
+        agent.hidden_state = agent.brain.initial_hidden()
+
+    if not hasattr(agent, 'hidden_state') or agent.hidden_state is None:
+        agent.hidden_state = agent.brain.initial_hidden()
+
+    # Endocrine: inject if missing (old checkpoint)
+    if not hasattr(agent, 'endocrine') or agent.endocrine is None:
+        agent.endocrine = EndocrineSystem()
+
+    # CausalMemory
+    if not hasattr(agent, 'causal_memory') or agent.causal_memory is None:
+        agent.causal_memory = CausalMemory(capacity=32)
+
+    # Material inventory
+    if not hasattr(agent, 'material_inventory') or agent.material_inventory is None:
+        agent.material_inventory = {}
+
+    # Sleep flag
+    if not hasattr(agent, 'is_sleeping'):
+        agent.is_sleeping = False
+
+    # Remedy knowledge
+    if not hasattr(agent, 'remedy_knowledge'):
+        agent.remedy_knowledge = {}
+
+    # Herbs carried
+    if not hasattr(agent, 'herbs_carried'):
+        agent.herbs_carried = {}
 
 
 class Simulation:
@@ -76,15 +119,12 @@ class Simulation:
         child = self.evolution.make_child(parent, x, y, genes=genes)
         child.hidden_state = child.brain.initial_hidden()
         child.birth_tick = self.tick
-        from artificial_society.systems.culture import CausalMemory
         parent_mem = getattr(parent, 'causal_memory', None)
         if parent_mem:
             child.causal_memory = CausalMemory(capacity=32)
-            # Inherit top sequences from parent with fidelity
             seqs = list(parent_mem.sequences.keys())[:INHERIT_SEQUENCES]
             for seq in seqs:
                 child.causal_memory.receive_transmitted(seq, fidelity=INHERIT_FIDELITY)
-        # Inherit remedy knowledge from parent
         if parent.remedy_knowledge:
             for disease, herbs in parent.remedy_knowledge.items():
                 if random.random() < INHERIT_FIDELITY:
@@ -92,11 +132,6 @@ class Simulation:
         return child
 
     def _broadcast_death_knowledge(self, agent):
-        """
-        When an agent dies, nearby tribe-mates and family receive a portion
-        of their causal memory and remedy knowledge — simulating oral tradition
-        and deathbed knowledge transfer.
-        """
         causal_mem = getattr(agent, 'causal_memory', None)
         if causal_mem is None and not agent.remedy_knowledge:
             return
@@ -111,16 +146,13 @@ class Simulation:
         ]
         if not recipients:
             return
-        from artificial_society.systems.culture import CausalMemory
         seqs = list(causal_mem.sequences.keys()) if causal_mem else []
         for recipient in recipients:
-            # Transfer causal sequences
             if not hasattr(recipient, 'causal_memory') or recipient.causal_memory is None:
                 recipient.causal_memory = CausalMemory(capacity=32)
             for seq in seqs:
                 if random.random() < DEATH_BROADCAST_FIDELITY:
                     recipient.causal_memory.receive_transmitted(seq, fidelity=DEATH_BROADCAST_FIDELITY)
-            # Transfer remedy knowledge
             for disease, herbs in agent.remedy_knowledge.items():
                 if disease not in recipient.remedy_knowledge and random.random() < DEATH_BROADCAST_FIDELITY:
                     recipient.remedy_knowledge[disease] = list(herbs)
@@ -138,7 +170,6 @@ class Simulation:
             if agent.alive:
                 survivors.append(agent)
                 continue
-            # Broadcast knowledge before removing
             self._broadcast_death_knowledge(agent)
             add_carcass(self.world.get_cell(*agent.pos), CORPSE_ENERGY)
         self.agents = survivors
@@ -211,6 +242,9 @@ class Simulation:
             self.tribes = data['tribes']
             self.technology = data['technology']
             self.economy = data['economy']
+            # Migrate every agent to the current code version
+            for agent in self.agents:
+                _migrate_agent(agent)
             print(f'[checkpoint] loaded tick={self.tick}, agents={len(self.agents)}')
         except Exception as e:
             print(f'[checkpoint] load failed: {e}, starting fresh')
@@ -219,7 +253,6 @@ class Simulation:
     def step(self):
         self.tick += 1
 
-        # --- Day/Night ---
         dn = day_phase(self.tick)
         self.world.day_state = dn
 
