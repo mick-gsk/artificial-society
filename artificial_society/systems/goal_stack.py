@@ -3,12 +3,7 @@ Goal Stack: Vorausplanung ueber mehrere Ticks
 ----------------------------------------------
 Agenten reagieren nicht nur reaktiv auf den aktuellen Tick.
 Sie koennen Zwischenziele stapeln und ueber mehrere Ticks
-verfolgen. Das ist die Grundlage fuer:
-
-  - Keramik herstellen (form -> trocknen -> brennen -> befuellen)
-  - Feld anlegen     (raeumen -> saeen -> bewaessern -> ernten)
-  - Huette bauen     (material sammeln -> form -> arch -> versiegeln)
-  - Handel vorbereiten (inventar aufbauen -> zu Agent gehen -> tauschen)
+verfolgen.
 
 Die Ziele werden NICHT von aussen vorgegeben.
 Sie entstehen emergent wenn der Brain lernt, dass bestimmte
@@ -17,8 +12,12 @@ Aktionssequenzen mehr Reward bringen als Einzelaktionen.
 Architektur:
   GoalStack    -- LIFO-Stack von SubGoals pro Agent
   SubGoal      -- Ein atomares Zwischenziel mit Abbruchbedingung
-  GoalPlanner  -- Leichtgewichtiger Heuristik-Planer (kein MCTS)
-                  Ergaenzt den PPO-Brain um kurzfristige Planung
+  GoalPlanner  -- Emergenter Planer basierend auf Need-Vektoren
+                  (keine hardcodierten Rezepte)
+
+NEU: GoalPlanner nutzt compute_need_vector aus need_driven_invention.
+Ziele werden rein aus physikalischen Eigenschaften und aktuellen Beduerfnissen
+abgeleitet, nicht aus fest programmierten if-cold-then-fire Regeln.
 """
 
 import numpy as np
@@ -49,12 +48,11 @@ class SubGoal:
     done_fn:     Optional[Callable] = None
     max_ticks:   int            = 20
     ticks_spent: int            = 0
-    label:       str            = ''   # human-readable fuer Logging
+    label:       str            = ''
 
     def is_done(self, agent, cell: dict) -> bool:
         if self.done_fn is not None:
             return self.done_fn(agent, cell)
-        # Default: Material im Inventar?
         if self.target_mat:
             inv = getattr(agent, 'material_inventory', {})
             return inv.get(self.target_mat, 0.0) > 0.1
@@ -68,15 +66,11 @@ class SubGoal:
 # GoalStack
 # ---------------------------------------------------------------------------
 class GoalStack:
-    """
-    LIFO-Stack von SubGoals fuer einen Agenten.
-    Der Agent verfolgt immer das oberste (aktuellste) Ziel.
-    """
     def __init__(self, max_depth: int = 6):
         self.stack:     list[SubGoal] = []
         self.max_depth: int           = max_depth
-        self.completed: list[dict]    = []  # Log abgeschlossener Goals
-        self.failed:    list[dict]    = []  # Log fehlgeschlagener Goals
+        self.completed: list[dict]    = []
+        self.failed:    list[dict]    = []
 
     def push(self, goal: SubGoal):
         if len(self.stack) < self.max_depth:
@@ -89,17 +83,10 @@ class GoalStack:
         return self.stack.pop() if self.stack else None
 
     def tick(self, agent, cell: dict) -> tuple[Optional[str], float]:
-        """
-        Prueft ob das aktuelle Ziel erreicht/abgelaufen ist.
-        Gibt (action, reward_shaping) zurueck.
-        """
         if not self.stack:
             return None, 0.0
-
         goal = self.stack[-1]
         goal.ticks_spent += 1
-
-        # Ziel erreicht?
         if goal.is_done(agent, cell):
             self.stack.pop()
             self.completed.append({
@@ -107,18 +94,14 @@ class GoalStack:
                 'ticks':  goal.ticks_spent,
                 'reward': goal.reward_pred,
             })
-            return goal.action, goal.reward_pred  # Bonus-Reward
-
-        # Abgelaufen?
+            return goal.action, goal.reward_pred
         if goal.is_expired():
             self.stack.pop()
             self.failed.append({
                 'label': goal.label,
                 'ticks': goal.ticks_spent,
             })
-            return None, -0.05  # kleiner Penalty
-
-        # Noch aktiv: naechste Action ist die des aktuellen Goals
+            return None, -0.05
         return goal.action, 0.0
 
     def depth(self) -> int:
@@ -129,17 +112,26 @@ class GoalStack:
 
 
 # ---------------------------------------------------------------------------
-# GoalPlanner: erstellt Goal-Sequenzen aus bekannten Heuristiken
+# GoalPlanner: vollstaendig emergent, keine hardcodierten Rezepte
 # ---------------------------------------------------------------------------
 class GoalPlanner:
     """
-    Leichtgewichtiger Planer. Kein MCTS, kein A*.
-    Erkennt Opportunitaeten und schreibt SubGoal-Sequenzen in den Stack.
+    Emergenter Planer basierend auf Need-Vektoren.
 
-    Regeln sind NICHT hardcodiert als Rezepte.
-    Sie sind Heuristiken der Form:
-      'wenn Bedingung X, dann versuche Aktion Y um Ziel Z zu erreichen'
-    Der Brain entscheidet ob er dem Planer folgt oder nicht.
+    KEIN hardcodiertes if-cold-then-fire.
+    KEIN hardcodiertes if-hungry-then-cook.
+
+    Stattdessen:
+      1. Berechne Need-Vektor des Agenten
+      2. Finde Materialien im Inventar/Zelle die den Need erfuellen koennen
+      3. Schlage SubGoal vor das diese Materialien kombiniert
+      4. Der Agent entscheidet selbst ob er dem Vorschlag folgt
+
+    Der Planer hat kein Wissen ueber Rezepte. Er weiss nur:
+    - Was der Agent braucht (Need-Vektor)
+    - Was verfuegbar ist (Inventar + Zelle)
+    - Welche Actions es gibt (PRIMITIVE_ACTIONS)
+    Der Rest wird durch Trial-and-Error und CausalMemory gelernt.
     """
 
     def suggest_goals(
@@ -148,98 +140,72 @@ class GoalPlanner:
         cell: dict,
         world_context: dict,
     ) -> list[SubGoal]:
-        """
-        Gibt Liste von empfohlenen SubGoals zurueck.
-        Agent kann diese in seinen GoalStack pushen.
-        """
+        from artificial_society.systems.need_driven_invention import (
+            compute_need_vector, _select_materials_by_need,
+            _select_action_by_need, NEED_THRESHOLD, PROP_DIMS,
+        )
+        from artificial_society.environment.materials import IDX, N_PROPS, get_vector
+        import numpy as np
+
         suggestions = []
-        inv    = getattr(agent, 'material_inventory', {})
-        energy = getattr(agent, 'energy', 100) / 240.0
-        cold   = world_context.get('temperature', 20) < 8
-        dark   = world_context.get('light', 1.0) < 0.3
+        need = compute_need_vector(agent, cell)
+        import numpy as _np
+        need_magnitude = float(_np.linalg.norm(_np.maximum(need, 0.0)))
 
-        # --- Hunger: Nahrung beschaffen ---
-        if energy < 0.4:
-            if inv.get('raw_meat', 0) > 0.1 or inv.get('raw_root', 0) > 0.1:
-                # Feuer suchen und kochen
-                mat = 'raw_meat' if inv.get('raw_meat',0) > inv.get('raw_root',0) else 'raw_root'
-                suggestions.append(SubGoal(
-                    action     = 'place_on_heat',
-                    target_mat = 'cooked_meat' if mat == 'raw_meat' else 'cooked_root',
-                    reward_pred = 0.8,
-                    max_ticks   = 15,
-                    label       = f'cook_{mat}',
-                    done_fn     = lambda a, c: (
-                        a.material_inventory.get('cooked_meat', 0) > 0.1
-                        or a.material_inventory.get('cooked_root', 0) > 0.1
-                    ),
-                ))
-            else:
-                # Nahrung sammeln
-                suggestions.append(SubGoal(
-                    action      = 'eat',
-                    target_mat  = 'raw_meat',
-                    reward_pred = 0.5,
-                    max_ticks   = 30,
-                    label       = 'forage_food',
-                ))
+        # Nur Ziele vorschlagen wenn echter Need besteht
+        if need_magnitude < NEED_THRESHOLD:
+            return []
 
-        # --- Kalt: Feuer machen ---
-        if cold:
-            if inv.get('dry_grass', 0) > 0.2 or inv.get('dry_wood', 0) > 0.2:
-                suggestions.append(SubGoal(
-                    action      = 'rub',
-                    target_mat  = 'ember',
-                    reward_pred = 1.2,
-                    max_ticks   = 25,
-                    label       = 'make_fire',
-                    done_fn     = lambda a, c: c.get('materials', {}).get('fire', 0) > 0.3,
-                ))
+        # Top-Need identifizieren (welche physikalische Eigenschaft wird gebraucht?)
+        positive_need = np.maximum(need, 0.0)
+        top_prop_idx  = int(np.argmax(positive_need))
+        top_prop      = PROP_DIMS[top_prop_idx]
+        top_need_val  = float(positive_need[top_prop_idx])
 
-        # --- Ton vorhanden: Keramik-Sequenz ---
-        clay_in_cell = cell.get('materials', {}).get('clay', 0.0)
-        if clay_in_cell > 0.3 and not any(g.label == 'make_pottery' for g in agent.goal_stack.stack
-                                          if hasattr(agent, 'goal_stack')):
-            suggestions.append(SubGoal(
-                action      = 'form',
-                target_mat  = None,
-                reward_pred = 0.6,
-                max_ticks   = 10,
-                label       = 'make_pottery',
-                done_fn     = lambda a, c: any(
-                    getattr(o, 'shape', '') == 'hollow'
-                    for o in c.get('objects', [])
-                ),
-            ))
+        if top_need_val < 0.2:
+            return []
 
-        # --- Samen vorhanden + guter Boden: Pflanzen ---
-        plantable = [m for m, q in inv.items()
-                     if q > 0.1 and m in ('seed_grain','seed_herb','seed_fiber','root_cut')]
-        good_soil = world_context.get('soil', 'rock') in ('loam', 'clay')
-        season    = world_context.get('season', 'summer')
-        if plantable and good_soil and season in ('spring', 'summer'):
-            suggestions.append(SubGoal(
-                action      = 'plant',
-                target_mat  = plantable[0],
-                reward_pred = 1.0,
-                max_ticks   = 5,
-                label       = f'plant_{plantable[0]}',
-            ))
+        # Materialien auswaehlen die den Need am besten erfuellen
+        mat_a, mat_b = _select_materials_by_need(agent, cell, need)
+        if mat_a is None:
+            return []
 
-        # --- Werkzeug fehlt: binden ---
-        has_tool = getattr(agent, 'tool', None) is not None
-        has_fiber = inv.get('fiber', 0) > 0.1
-        has_flint = inv.get('flint', 0) > 0.1 or inv.get('sharp_stone', 0) > 0.1
-        if not has_tool and has_fiber and has_flint:
-            suggestions.append(SubGoal(
-                action      = 'bind',
-                reward_pred = 0.9,
-                max_ticks   = 8,
-                label       = 'craft_tool',
-                done_fn     = lambda a, c: (
-                    getattr(a, 'tool', None) is not None
-                ),
-            ))
+        vec_a = get_vector(mat_a)
+        vec_b = get_vector(mat_b) if mat_b else None
+        causal_mem = getattr(agent, 'causal_memory', None)
+        action = _select_action_by_need(need, vec_a, vec_b, causal_mem)
+
+        # done_fn: Ziel erreicht wenn Need-Vektor in Inventar befriedigt wird
+        # (d.h. irgendein Material mit der benoetigten Eigenschaft > Schwellenwert)
+        needed_prop_idx = top_prop_idx
+        needed_threshold = 0.3
+
+        def need_fulfilled(a, c, prop_idx=needed_prop_idx, threshold=needed_threshold):
+            inv = getattr(a, 'material_inventory', {})
+            for mat_id, qty in inv.items():
+                if qty > 0.1:
+                    v = get_vector(mat_id)
+                    if float(v[prop_idx]) > threshold:
+                        return True
+            # Auch Zelle pruefen (z.B. Feuer in Zelle loest Kaelte-Need)
+            slot = c.get('materials', {})
+            for mat_id, qty in slot.items():
+                if qty > 0.1:
+                    v = get_vector(mat_id)
+                    if float(v[prop_idx]) > threshold:
+                        return True
+            return False
+
+        reward_pred = top_need_val * 0.8  # proportional zum Need
+
+        suggestions.append(SubGoal(
+            action      = action,
+            target_mat  = None,   # kein hardcodiertes Ziel-Material
+            reward_pred = reward_pred,
+            max_ticks   = 20,
+            label       = f'need_{top_prop}',
+            done_fn     = need_fulfilled,
+        ))
 
         return suggestions
 
@@ -256,27 +222,16 @@ def agent_tick_with_goals(
     world_context: dict,
     tick: int,
 ) -> tuple[str, float]:
-    """
-    Kombiniert GoalStack + GoalPlanner.
-    Gibt (action, reward_shaping) zurueck fuer diesen Tick.
-
-    Der PPO-Brain bekommt reward_shaping als zusaetzliches Signal.
-    Er lernt selbst ob Planung besser ist als reaktives Handeln.
-    """
-    # GoalStack initialisieren wenn noetig
     if not hasattr(agent, 'goal_stack'):
         agent.goal_stack = GoalStack()
 
-    # Stack-Tick: pruefen ob aktuelles Ziel erledigt/abgelaufen
     action_from_stack, shaping = agent.goal_stack.tick(agent, cell)
 
-    # Wenn Stack leer: Planer konsultieren (nicht immer -- 30% Wahrscheinlichkeit)
     import random
     if agent.goal_stack.is_empty() and random.random() < 0.30:
         suggestions = GOAL_PLANNER.suggest_goals(agent, cell, world_context)
-        for goal in suggestions[:2]:  # max 2 neue Ziele auf einmal
+        for goal in suggestions[:2]:
             agent.goal_stack.push(goal)
-        # Neue Action vom frisch gefuellten Stack
         if not agent.goal_stack.is_empty():
             action_from_stack, shaping = agent.goal_stack.tick(agent, cell)
 

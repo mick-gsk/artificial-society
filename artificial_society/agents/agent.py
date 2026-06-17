@@ -19,6 +19,7 @@ from artificial_society.systems.remedy import (
 )
 from artificial_society.systems.culture import CausalMemory
 from artificial_society.systems.invention import agent_try_invention, agent_try_cook
+from artificial_society.systems.need_driven_invention import agent_invent_from_need, compute_need_vector
 from artificial_society.systems.social_learning import social_learning_step
 
 MAX_ENERGY = 240.0
@@ -57,8 +58,13 @@ COOP_SHARE_REWARD            = 0.25
 COOP_RECV_REWARD             = 0.30
 COOP_PROXIMITY_RADIUS        = 2
 
+# Need-driven Invention: ersetzt zufaelliges Explorieren
+# Probability wird durch Need-Magnitude dynamisch gesteuert (kein fester Wert)
 INVENTION_BASE_PROB      = 0.55
 INVENTION_CURIOSITY_MULT = 0.35
+# Neues System: Need-driven Invention laeuft zusaetzlich zum exploration-path
+# aber nur wenn ein echter Need vorhanden ist (wird intern geprueft)
+NEED_INVENTION_INTERVAL  = 8   # alle N Ticks Gelegenheit fuer need-driven Erfindung
 
 
 def _ensure_new_fields(agent):
@@ -83,6 +89,8 @@ def _ensure_new_fields(agent):
         agent.tool = 'sharp_stone'
     if not hasattr(agent, '_last_mate_id'):
         agent._last_mate_id = None
+    if not hasattr(agent, '_need_inv_cooldown'):
+        agent._need_inv_cooldown = 0
 
 
 @dataclass
@@ -128,7 +136,8 @@ class Agent:
     causal_memory: CausalMemory = field(default_factory=lambda: CausalMemory(capacity=32))
     material_inventory: dict = field(default_factory=dict)
     is_sleeping: bool = False
-    _last_mate_id: int | None = None   # NEU: speichert ID des Partners fuer Geburts-Kontext
+    _last_mate_id: int | None = None
+    _need_inv_cooldown: int = 0   # Cooldown fuer need-driven invention
 
     @classmethod
     def spawn_random(cls, x, y):
@@ -337,7 +346,6 @@ class Agent:
         total_gain = plant_gain + meat_gain
         if total_gain > 0.5:
             self.endocrine.apply_successful_forage(total_gain)
-        # Jahreszeit aus world.day_state oder seasons -- fuer Gedaechtnis-Tag
         season_id = getattr(world, 'current_season', None)
         self.memory.remember_resource(self.pos, cell['food'], cell['water'], cell['tick'], season_id=season_id)
         consumed_tags: list[str] = []
@@ -491,8 +499,7 @@ class Agent:
                     self._share_tribe_resources(other)
                 if self.trust.get(other.id, 0.0) > 0.3:
                     share_remedy_knowledge(self, other)
-            self.trust[other.id] = max(-1.0, min(1.0, prior + delta))
-            self.memory.remember_social(other.id, self.trust[other.id], helpful, tick)
+        self.trust[other.id] = max(-1.0, min(1.0, prior + delta)) if nearby else self.trust.get(0, 0.0)
         tribes.consider_join(self, nearby)
         social_learning_step(self, agents, tick)
         return 0.0
@@ -529,7 +536,6 @@ class Agent:
             father.reproduction_cooldown = REPRODUCTION_COOLDOWN
             mother.children += 1
             father.children += 1
-            # NEU: Partner-ID fuer Geburtskontext speichern
             mother._last_mate_id = father.id
             father._last_mate_id = mother.id
             mother.endocrine.h[5] = min(1.0, mother.endocrine.h[5] + 0.25)
@@ -627,6 +633,8 @@ class Agent:
         self.last_action_mode = 'idle'
         if self.reproduction_cooldown > 0:
             self.reproduction_cooldown -= 1
+        if self._need_inv_cooldown > 0:
+            self._need_inv_cooldown -= 1
         child_genes = self.progress_pregnancy()
 
         self.endocrine.update(self, world)
@@ -684,6 +692,12 @@ class Agent:
         self.collect_materials(world, max(0.0, (action['explore'] + 1.0) * 0.5))
 
         cell = world.get_cell(*self.pos)
+        env  = {
+            'wind':        cell.get('disturbance', 0) / 100.0,
+            'moisture':    cell.get('moisture', 50)   / 100.0,
+            'temperature': cell.get('temperature', 20),
+        }
+
         if random.random() < 0.35 + 0.30 * self.genes.get('curiosity', 0.5):
             agent_try_cook(self, cell)
 
@@ -693,12 +707,22 @@ class Agent:
         if defense_bonus > 0:
             self.health = min(100.0, self.health + defense_bonus)
 
-        if action['explore'] > 0.1 and random.random() < INVENTION_BASE_PROB + INVENTION_CURIOSITY_MULT * self.genes.get('curiosity', 0.5):
-            env = {
-                'wind':        cell.get('disturbance', 0) / 100.0,
-                'moisture':    cell.get('moisture', 50)   / 100.0,
-                'temperature': cell.get('temperature', 20),
-            }
+        inv_reward = 0.0
+
+        # --- NEED-DRIVEN INVENTION (Hauptpfad) ---
+        # Laeuft alle NEED_INVENTION_INTERVAL Ticks wenn kein Cooldown aktiv.
+        # Prueft intern ob ein echter Need vorhanden ist (Need-Magnitude > Threshold).
+        # Kein zufaelliges Explorieren mehr als alleinige Quelle.
+        if self._need_inv_cooldown <= 0 and not self.is_sleeping:
+            inv_reward = agent_invent_from_need(self, cell, env, tick=tick)
+            if inv_reward > 0:
+                self._need_inv_cooldown = NEED_INVENTION_INTERVAL
+                self.last_action_mode   = 'invent'
+                self.endocrine.apply_discovery(min(1.0, inv_reward * 0.5))
+
+        # --- EXPLORATION-INVENTION (Sekundaerpfad, nur bei hoher Neugier) ---
+        # Bleibt als Ergaenzung fuer Agenten mit hoher curiosity wenn kein Druck besteht.
+        elif action['explore'] > 0.1 and random.random() < INVENTION_BASE_PROB + INVENTION_CURIOSITY_MULT * self.genes.get('curiosity', 0.5):
             inv_reward = agent_try_invention(self, cell, env)
             if inv_reward > 0:
                 self.endocrine.apply_discovery(min(1.0, inv_reward))
@@ -717,9 +741,8 @@ class Agent:
             self.last_action_mode = 'sick'
 
         reward  = _homeostasis_reward(self.energy, prev_energy, self.hydration, prev_hydration, self.health, prev_health, self.alive)
-        reward += herb_heal_reward + share_reward
+        reward += herb_heal_reward + share_reward + inv_reward * 0.4
 
-        # position_reward mit world und aktueller Jahreszeit
         current_season = getattr(world, 'current_season', None)
         mem_reward  = self.memory.position_reward(self.pos, tick, world=world, current_season=current_season)
         reward     += mem_reward
