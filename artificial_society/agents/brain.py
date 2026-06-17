@@ -6,7 +6,9 @@ import torch.nn.functional as F
 
 device = torch.device('cpu')
 
-INPUT_SIZE = 48  # 41 base + warmth + mat_count + inv_size + stage_enc + 3x causal_feats
+INPUT_SIZE = 53  # 15 base + 2 social + 4 genes + 11 misc
+                 # + 3 day/night + 3 tech/knowledge
+                 # + 3 causal_feats + 12 retrieval_features
 HIDDEN_SIZE = 96
 ACTION_SIZE = 6
 GAMMA = 0.97
