@@ -499,7 +499,9 @@ class Agent:
                     self._share_tribe_resources(other)
                 if self.trust.get(other.id, 0.0) > 0.3:
                     share_remedy_knowledge(self, other)
-        self.trust[other.id] = max(-1.0, min(1.0, prior + delta)) if nearby else self.trust.get(0, 0.0)
+            # Fix: trust update moved inside the for-loop so 'other' is always defined
+            # and each nearby agent gets their trust updated individually
+            self.trust[other.id] = max(-1.0, min(1.0, prior + delta))
         tribes.consider_join(self, nearby)
         social_learning_step(self, agents, tick)
         return 0.0
