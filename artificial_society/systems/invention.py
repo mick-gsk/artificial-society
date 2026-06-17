@@ -11,6 +11,15 @@ Two parallel code paths run simultaneously:
 
 An agent's brain learns WHAT combinations are valuable purely through
 homeostatic reward. No label lookup, no hardcoded recipe tree.
+
+EMERGENZ-ERWEITERUNGEN (v2):
+  - Rekursive Kombinierbarkeit: Entdeckte mat_XXXX aus dem Inventory werden
+    als gleichberechtigte Inputs für neue Kombinationen genutzt. Agenten
+    können also aus bereits verarbeiteten Materialien weitere neue Dinge
+    erfinden (Parfüm-Prinzip: erst Öl, dann Öl+Blüten → Parfüm).
+  - Bedürfnisgetriebene Aktionswahl: Je nach aktuellem Zustand des Agenten
+    (Hunger, Kälte, Krankheit, Neugier) werden passende Actions priorisiert.
+    Erfindungen entstehen aus Not, nicht aus Zufall.
 """
 
 import random
@@ -33,11 +42,20 @@ from artificial_society.environment.materials import (
 
 PRIMITIVE_ACTIONS = ['rub', 'strike', 'place_on_heat', 'bundle', 'blow', 'carry', 'eat', 'bind']
 
+# Bedürfnis-basierte Action-Cluster
+ACTIONS_FOR_HUNGER  = ['eat', 'place_on_heat', 'bundle']
+ACTIONS_FOR_COLD    = ['rub', 'strike', 'blow', 'carry']
+ACTIONS_FOR_SICK    = ['bundle', 'bind', 'eat']
+ACTIONS_FOR_CURIOUS = PRIMITIVE_ACTIONS  # Kein Druck → maximale Exploration
+
 WARMTH_REWARD  = 0.08
 LIGHT_REWARD   = 0.06
 COOK_REWARD    = 0.35
 SHARP_REWARD   = 0.45
 DANGER_PENALTY = -0.12
+
+# Maximale Anzahl entdeckter Materialien die als rekursive Inputs berücksichtigt werden
+MAX_RECURSIVE_INPUTS = 4
 
 
 # ---------------------------------------------------------------------------
@@ -46,9 +64,23 @@ DANGER_PENALTY = -0.12
 
 def agent_try_invention(agent, cell: dict, env: dict) -> float:
     slot = cell.get('materials', {})
-    if not slot:
-        return 0.0
-    available = [m for m, q in slot.items() if q > 0.05]
+    inv  = getattr(agent, 'material_inventory', {})
+
+    # --- SCHICHT 1: Rekursive Kombinierbarkeit ---
+    # Rohstoffe aus der Zelle
+    cell_available = [m for m, q in slot.items() if q > 0.05]
+    # Bereits entdeckte mat_XXXX aus dem eigenen Inventory als gleichberechtigte Inputs
+    discovered_inv = [m for m, q in inv.items() if q > 0.1 and m.startswith('mat_')]
+    # Bekannte Nicht-mat Materialien aus Inventory (z.B. sharp_stone, cooked_meat)
+    known_inv = [m for m, q in inv.items() if q > 0.1 and not m.startswith('_')]
+
+    # Kombiniere alle Quellen; entdeckte Materialien werden priorisiert
+    available = list(set(cell_available + known_inv))
+    if discovered_inv:
+        # Mindestens ein entdecktes Material als potenzieller Input einmischen
+        recursive_sample = random.sample(discovered_inv, min(MAX_RECURSIVE_INPUTS, len(discovered_inv)))
+        available = list(set(available + recursive_sample))
+
     if not available:
         return 0.0
 
@@ -56,13 +88,11 @@ def agent_try_invention(agent, cell: dict, env: dict) -> float:
     mat_b = None
     if len(available) > 1:
         mat_b = random.choice([m for m in available if m != mat_a])
-    if mat_b is None:
-        inv = getattr(agent, 'material_inventory', {})
-        if inv:
-            mat_b = random.choice(list(inv.keys()))
 
     causal_mem = getattr(agent, 'causal_memory', None)
-    action     = _choose_action(agent, causal_mem, mat_a, mat_b)
+
+    # --- SCHICHT 2: Bedürfnisgetriebene Aktionswahl ---
+    action = _choose_action_by_need(agent, causal_mem, mat_a, mat_b, cell)
 
     legacy_outcomes = apply_interaction(action, mat_a, mat_b, env)
     legacy_reward   = _evaluate_legacy_outcomes(agent, cell, slot, legacy_outcomes, env)
@@ -82,6 +112,7 @@ def agent_try_invention(agent, cell: dict, env: dict) -> float:
         )
         inv = getattr(agent, 'material_inventory', {})
         inv[mat_id] = inv.get(mat_id, 0.0) + 0.5
+        agent.material_inventory = inv
         _maybe_upgrade_tool(agent, mat_id, new_vec)
         if emergent_reward > 0.3 and hasattr(agent, 'endocrine'):
             agent.endocrine.apply_discovery(min(1.0, emergent_reward))
@@ -157,6 +188,7 @@ def share_discovery(teacher, student, mat_id: str) -> bool:
     inv = getattr(student, 'material_inventory', {})
     if inv.get(mat_id, 0.0) < 0.1:
         inv[mat_id] = 0.3
+        student.material_inventory = inv
         if hasattr(student, 'endocrine'):
             student.endocrine.apply_discovery(0.3)
         return True
@@ -253,15 +285,51 @@ def seed_world_materials(world):
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _choose_action(agent, causal_mem, mat_a: str, mat_b: str | None) -> str:
-    if causal_mem is None:
+def _choose_action_by_need(agent, causal_mem, mat_a: str, mat_b, cell: dict) -> str:
+    """
+    SCHICHT 2: Bedürfnisgetriebene Aktionswahl.
+    Agenten erfinden aus Not, nicht aus Zufall. Je nach aktuellem Zustand
+    werden bestimmte Aktions-Cluster bevorzugt — aber Exploration bleibt möglich.
+    """
+    from artificial_society.agents.agent import MAX_ENERGY
+
+    max_energy = MAX_ENERGY if MAX_ENERGY else 240.0
+    energy_ratio = agent.energy / max_energy
+    health_ratio = agent.health / 100.0
+    temperature  = cell.get('temperature', 20)
+    is_sick      = getattr(agent, 'disease_id', None) is not None
+
+    # Bestimme dominantes Bedürfnis
+    if energy_ratio < 0.25:
+        preferred = ACTIONS_FOR_HUNGER   # Hunger ist stärkstes Motiv
+    elif temperature < 5 or (hasattr(agent, 'endocrine') and getattr(agent.endocrine, 'cortisol', 0) > 0.7):
+        preferred = ACTIONS_FOR_COLD     # Kälte/Stress → Feuer/Wärme
+    elif is_sick or health_ratio < 0.4:
+        preferred = ACTIONS_FOR_SICK     # Krank → Heilmittel
+    else:
+        preferred = ACTIONS_FOR_CURIOUS  # Keine Not → maximale Exploration
+
+    # CausalMemory-Bias: Erfolgreiche bekannte Sequenzen bevorzugen (55%)
+    if causal_mem is not None:
+        good = causal_mem.best_known(min_successes=1)
+        if good and random.random() < 0.55:
+            for (act, ma, mb), _ in good:
+                if (ma == mat_a or mb == (mat_b or '')) and act in preferred:
+                    return act
+            # Fallback: irgendeine bekannte gute Action
+            for (act, ma, mb), _ in good:
+                if ma == mat_a or mb == (mat_b or ''):
+                    return act
+
+    # Bedürfnis-basierte Zufallswahl (mit 20% Chance auf völlig freie Exploration)
+    if random.random() < 0.20:
         return random.choice(PRIMITIVE_ACTIONS)
-    good = causal_mem.best_known(min_successes=1)
-    if good and random.random() < 0.55:
-        for (act, ma, mb), _ in good:
-            if ma == mat_a or mb == (mat_b or ''):
-                return act
-    return random.choice(PRIMITIVE_ACTIONS)
+    return random.choice(preferred)
+
+
+# Legacy-Wrapper für alten Code der _choose_action nutzt
+def _choose_action(agent, causal_mem, mat_a: str, mat_b) -> str:
+    return _choose_action_by_need(agent, causal_mem, mat_a, mat_b, {})
 
 
 def _agent_homeostatic_state(agent, cell: dict) -> dict:
@@ -314,8 +382,7 @@ def _evaluate_legacy_outcomes(
             inv['cooked_meat'] = inv.get('cooked_meat', 0.0) + 0.8
             reward += COOK_REWARD
         elif result == 'cooked_root':
-            inv = getattr(agent, 'material_inventory', {})
-            inv['cooked_root'] = inv.get('cooked_root', 0.0) + 0.8
+            inv = getattr(agent, 'material_inventory', {})\n            inv['cooked_root'] = inv.get('cooked_root', 0.0) + 0.8
             reward += COOK_REWARD * 0.7
         elif result == 'sharp_stone':
             inv = getattr(agent, 'material_inventory', {})
