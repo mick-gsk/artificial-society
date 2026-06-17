@@ -62,8 +62,7 @@ def apply_interaction(action: str, mat_a: str, mat_b: str | None, env: dict) -> 
         spark_chance = props_a.get('spark_on_strike', 0.0) + props_b.get('spark_on_strike', 0.0)
         spark_chance *= (1.0 - env.get('moisture', 0.5))
         if random.random() < spark_chance:
-            # Spark produced — if flammable tinder nearby, ember can form
-            results.append('_spark')  # internal signal, not a storable object
+            results.append('_spark')
         if props_a.get('sharp_when_knapped', 0) > 0.5 and random.random() < props_a['sharp_when_knapped']:
             results.append('sharp_stone')
 
@@ -94,12 +93,10 @@ def apply_interaction(action: str, mat_a: str, mat_b: str | None, env: dict) -> 
     elif action == 'bundle':
         combined_flamm = max(props_a.get('flammable', 0), props_b.get('flammable', 0))
         combined_dry = (props_a.get('dryness', 0) + props_b.get('dryness', 0)) / 2
-        # Bundling flammables increases ignition potential stored in the bundle
         if combined_flamm > 0.5 and combined_dry > 0.6:
-            results.append('_tinder_bundle')  # virtual: better flammable score
+            results.append('_tinder_bundle')
 
     elif action == 'carry':
-        # carrying ember keeps it alive with some probability
         if mat_a == 'ember':
             results.append('ember' if random.random() < 0.55 else 'ash')
 
@@ -111,7 +108,7 @@ def apply_interaction(action: str, mat_a: str, mat_b: str | None, env: dict) -> 
             else:
                 results.append('ember')
         elif mat_a == 'fire':
-            results.append('fire')  # stays alive
+            results.append('fire')
 
     elif action == 'eat':
         edibility = props_a.get('edible_cooked', 0) if mat_a.startswith('cooked') else props_a.get('edible_raw', 0)
@@ -133,23 +130,27 @@ def empty_material_slot():
 def decay_materials(slot: dict, env: dict) -> dict:
     """Tick-wise decay for perishables and burning materials."""
     remove = []
-    for mat, qty in slot.items():
+    ash_add = 0.0
+    # Iterate over a snapshot to allow safe mutation of slot during loop
+    for mat, qty in list(slot.items()):
         props = get_material(mat)
         if props.get('decays'):
-            # fire/ember diminish over time unless fed
             slot[mat] = max(0.0, qty - 0.05 - 0.03 * env.get('wind', 0.3))
             if slot[mat] < 0.05:
                 remove.append(mat)
                 if mat == 'fire':
-                    slot['ash'] = slot.get('ash', 0.0) + qty * 0.4
+                    ash_add += qty * 0.4
                 elif mat == 'ember':
-                    slot['ash'] = slot.get('ash', 0.0) + qty * 0.8
+                    ash_add += qty * 0.8
         elif props.get('perishable') and env.get('moisture', 0.5) > 0.6:
             slot[mat] = max(0.0, qty - 0.01)
             if slot[mat] < 0.01:
                 remove.append(mat)
     for m in remove:
         del slot[m]
+    # Apply ash accumulation after iteration is complete
+    if ash_add > 0.0:
+        slot['ash'] = slot.get('ash', 0.0) + ash_add
     return slot
 
 
