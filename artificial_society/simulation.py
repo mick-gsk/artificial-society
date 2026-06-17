@@ -5,7 +5,7 @@ import pygame
 
 from artificial_society.world import World
 from artificial_society.renderer import Renderer
-from artificial_society.agents.agent import Agent, CORPSE_ENERGY
+from artificial_society.agents.agent import Agent, CORPSE_ENERGY, MAX_ENERGY
 from artificial_society.agents.brain import Brain, INPUT_SIZE
 from artificial_society.agents.endocrine import EndocrineSystem
 from artificial_society.environment.resources import add_carcass
@@ -34,13 +34,27 @@ INHERIT_FIDELITY = 0.70
 DEATH_BROADCAST_FIDELITY = 0.45
 DEATH_BROADCAST_RADIUS = 4
 
+# --------------------------------------------------------------------------
+# Hamilton's Rule: r * B > C
+# Biologisches Vorbild: Verwandtenselektion (W.D. Hamilton, 1964)
+# Agenten erhalten einen kleinen Bonus-Reward wenn ihre nahen Verwandten
+# (Kinder, Eltern) oder Stammesmitglieder ueberleben und gut versorgt sind.
+# Das schafft evolutionaeren Druck hin zu kooperativem/altruistischem Verhalten.
+# r = Verwandtschaftsgrad (0.5 fuer direktes Kind/Elternteil, 0.1 fuer Stammesmitglied)
+# B = Fitness-Benefit des Verwandten (normierter Energie-/Gesundheitszustand)
+# Skalierungsfaktor klein halten damit Eigeninteresse dominant bleibt (wie in Natur)
+# --------------------------------------------------------------------------
+HAMILTON_CHILD_R         = 0.50   # Verwandtschaftsgrad Kind/Elternteil
+HAMILTON_TRIBE_R         = 0.10   # Verwandtschaftsgrad Stammesmitglied
+HAMILTON_REWARD_SCALE    = 0.08   # Gesamtskalierung damit es Eigeninteresse nicht dominiert
+HAMILTON_TICK_INTERVAL   = 20     # Nur alle N Ticks berechnen (Performance)
+
 
 def _migrate_agent(agent):
     """
     Bring a pickled agent up to the current code version.
     Called for every agent after checkpoint load.
     """
-    # Brain: rebuild if missing or wrong input size
     if not hasattr(agent, 'brain') or agent.brain is None:
         agent.brain = Brain()
         agent.hidden_state = agent.brain.initial_hidden()
@@ -53,27 +67,21 @@ def _migrate_agent(agent):
     if not hasattr(agent, 'hidden_state') or agent.hidden_state is None:
         agent.hidden_state = agent.brain.initial_hidden()
 
-    # Endocrine: inject if missing (old checkpoint)
     if not hasattr(agent, 'endocrine') or agent.endocrine is None:
         agent.endocrine = EndocrineSystem()
 
-    # CausalMemory
     if not hasattr(agent, 'causal_memory') or agent.causal_memory is None:
         agent.causal_memory = CausalMemory(capacity=32)
 
-    # Material inventory
     if not hasattr(agent, 'material_inventory') or agent.material_inventory is None:
         agent.material_inventory = {}
 
-    # Sleep flag
     if not hasattr(agent, 'is_sleeping'):
         agent.is_sleeping = False
 
-    # Remedy knowledge
     if not hasattr(agent, 'remedy_knowledge'):
         agent.remedy_knowledge = {}
 
-    # Herbs carried
     if not hasattr(agent, 'herbs_carried'):
         agent.herbs_carried = {}
 
@@ -95,7 +103,7 @@ class Simulation:
         self.stats = StatisticsTracker()
         self.screen = pygame.display.set_mode((width, height))
         self.clock = pygame.time.Clock()
-        pygame.display.set_caption('Artificial Society v3.2')
+        pygame.display.set_caption('Artificial Society v3.3')
         self.renderer = Renderer(width, height, self.cell_px)
         self.font = pygame.font.SysFont('consolas', 16)
         self.running = True
@@ -119,6 +127,19 @@ class Simulation:
         child = self.evolution.make_child(parent, x, y, genes=genes)
         child.hidden_state = child.brain.initial_hidden()
         child.birth_tick = self.tick
+
+        # --------------------------------------------------------------
+        # Neuronale Praedisposition durch Gewichtsvererbung
+        # Biologisches Vorbild: Saeugetiere (inkl. Menschen) werden mit
+        # vorstrukturierten neuronalen Schaltkreisen geboren die durch
+        # die Eltern vorgepraegt sind (Epigenetik, Priming).
+        # Das Kind startet nicht bei null sondern erbt 55% der elterlichen
+        # Gewichte + Gauss'sches Mutationsrauschen.
+        # Ergebnis: Successful strategies propagate through generations.
+        # --------------------------------------------------------------
+        child.brain.inherit_weights_from(parent.brain)
+
+        # Kausales Gedaechtnis vererben
         parent_mem = getattr(parent, 'causal_memory', None)
         if parent_mem:
             child.causal_memory = CausalMemory(capacity=32)
@@ -219,6 +240,54 @@ class Simulation:
             for neighbour in neighbours:
                 try_infect_agent(neighbour, disease_id, biome=biome)
 
+    # --------------------------------------------------------------------------
+    # Hamilton's Rule Reward-Verteilung
+    # Alle N Ticks erhaelt jeder lebende Agent einen kleinen zusaetzlichen Reward
+    # basierend auf dem Wohlbefinden seiner Nachkommen und Stammesmitglieder.
+    # r * B: Verwandtschaftsgrad mal Fitness-Benefit des Verwandten.
+    # Dies ist KEIN kuenstlicher Mechanismus: Hamilton's Regel beschreibt exakt
+    # warum altruistisches Verhalten in der Natur entstehen kann.
+    # --------------------------------------------------------------------------
+    def _apply_hamilton_rewards(self):
+        if self.tick % HAMILTON_TICK_INTERVAL != 0:
+            return
+        # Baue schnelle Lookup-Maps
+        agent_by_id = {a.id: a for a in self.agents if a.alive}
+        tribe_members: dict[int, list] = {}
+        for a in self.agents:
+            if a.alive and a.tribe_id is not None:
+                tribe_members.setdefault(a.tribe_id, []).append(a)
+
+        for agent in self.agents:
+            if not agent.alive:
+                continue
+            hamilton_bonus = 0.0
+
+            # Direkter Verwandter: eigene Kinder (parent_id == agent.id)
+            for other in self.agents:
+                if not other.alive:
+                    continue
+                if other.parent_id == agent.id or agent.parent_id == other.id:
+                    # B = normierter Fitness-Zustand des Verwandten
+                    fitness_b = (other.energy / MAX_ENERGY) * 0.5 + (other.health / 100.0) * 0.5
+                    hamilton_bonus += HAMILTON_CHILD_R * fitness_b
+
+            # Stammesmitglieder (schwaecher gewichtet)
+            if agent.tribe_id is not None:
+                members = tribe_members.get(agent.tribe_id, [])
+                for other in members:
+                    if other is agent:
+                        continue
+                    fitness_b = (other.energy / MAX_ENERGY) * 0.5 + (other.health / 100.0) * 0.5
+                    hamilton_bonus += HAMILTON_TRIBE_R * fitness_b
+
+            if hamilton_bonus > 0:
+                scaled = hamilton_bonus * HAMILTON_REWARD_SCALE
+                # Den Bonus rueckwirkend ins letzte Rollout-Element einfliessen lassen
+                if agent.brain.rollout.storage:
+                    agent.brain.rollout.storage[-1]['reward'] += scaled
+                agent.last_reward += scaled
+
     def _save_checkpoint(self):
         try:
             data = {
@@ -242,7 +311,6 @@ class Simulation:
             self.tribes = data['tribes']
             self.technology = data['technology']
             self.economy = data['economy']
-            # Migrate every agent to the current code version
             for agent in self.agents:
                 _migrate_agent(agent)
             print(f'[checkpoint] loaded tick={self.tick}, agents={len(self.agents)}')
@@ -283,6 +351,7 @@ class Simulation:
         self.agents.extend(births)
         self.tick_immunity_and_recovery()
         self.spread_diseases()
+        self._apply_hamilton_rewards()   # <-- Hamilton's Rule
         self.remove_dead()
         self.tribes.cleanup(self.agents)
         self.technology.update(self.agents, self.tribes)
