@@ -23,6 +23,11 @@ RESPAWN_COUNT = 6
 CHECKPOINT_INTERVAL = 500
 CHECKPOINT_PATH = 'checkpoint.pkl'
 
+# Disease spread tuning
+SPREAD_RADIUS = 1          # cells (Manhattan distance)
+SPREAD_COOLDOWN = 60       # ticks an agent cannot re-infect after recovering
+IMMUNITY_WINDOW = 200      # ticks of immunity after full recovery from a disease
+
 
 class Simulation:
     def __init__(self, width=1200, height=800, grid_w=60, grid_h=40, initial_population=36):
@@ -51,7 +56,6 @@ class Simulation:
             self._load_checkpoint()
         else:
             self.spawn_initial_population(initial_population)
-        # Seed physical materials in world (no labels visible to agents)
         seed_world_materials(self.world)
 
     def spawn_initial_population(self, n):
@@ -66,13 +70,12 @@ class Simulation:
         child = self.evolution.make_child(parent, x, y, genes=genes)
         child.hidden_state = child.brain.initial_hidden()
         child.birth_tick = self.tick
-        # Cultural inheritance: child receives some of mother's causal sequences
         from artificial_society.systems.culture import CausalMemory
         parent_mem = getattr(parent, 'causal_memory', None)
         if parent_mem:
             child.causal_memory = CausalMemory(capacity=32)
-            for seq in list(parent_mem.sequences.keys())[:8]:  # max 8 inherited sequences
-                child.causal_memory.receive_transmitted(seq, fidelity=0.65)  # imperfect inheritance
+            for seq in list(parent_mem.sequences.keys())[:8]:
+                child.causal_memory.receive_transmitted(seq, fidelity=0.65)
         return child
 
     def emergency_respawn(self):
@@ -92,17 +95,56 @@ class Simulation:
         self.agents = survivors
 
     def spread_diseases(self):
-        infectious = [a for a in self.agents if a.alive and getattr(a, 'disease_id', None) is not None]
+        """
+        Realistic disease spread:
+        - Only agents with active disease_id can infect neighbours.
+        - Neighbours must not already be sick AND must not be immune.
+        - Immunity is tracked per-disease as a cooldown on the agent.
+        - Spread is probabilistic via try_infect_agent (uses per-disease spread_rate).
+        """
+        infectious = [
+            a for a in self.agents
+            if a.alive and getattr(a, 'disease_id', None) is not None
+        ]
         for carrier in infectious:
             cx, cy = carrier.pos
             neighbours = [
                 a for a in self.agents
-                if a is not carrier and a.alive
-                and abs(a.pos[0] - cx) <= 1 and abs(a.pos[1] - cy) <= 1
+                if a is not carrier
+                and a.alive
+                and abs(a.pos[0] - cx) <= SPREAD_RADIUS
+                and abs(a.pos[1] - cy) <= SPREAD_RADIUS
                 and getattr(a, 'disease_id', None) is None
+                and not self._is_immune(a, carrier.disease_id)
             ]
             for neighbour in neighbours:
-                try_infect_agent(neighbour, carrier.disease_id)
+                if try_infect_agent(neighbour, carrier.disease_id):
+                    # Mark as recently infected so immunity check makes sense
+                    pass
+
+    def _is_immune(self, agent, disease_id: str) -> bool:
+        """Return True if agent has recent immunity to disease_id."""
+        immunity_map = getattr(agent, '_disease_immunity', {})
+        cooldown_until = immunity_map.get(disease_id, 0)
+        return self.tick < cooldown_until
+
+    def _grant_immunity(self, agent, disease_id: str):
+        """Grant post-recovery immunity to disease_id for IMMUNITY_WINDOW ticks."""
+        if not hasattr(agent, '_disease_immunity'):
+            agent._disease_immunity = {}
+        agent._disease_immunity[disease_id] = self.tick + IMMUNITY_WINDOW
+
+    def tick_immunity_and_recovery(self):
+        """Track full recoveries and grant immunity. Called once per step."""
+        for agent in self.agents:
+            if not agent.alive:
+                continue
+            prev_disease = getattr(agent, '_prev_disease_id', None)
+            curr_disease = getattr(agent, 'disease_id', None)
+            # Detect transition from sick → healthy
+            if prev_disease is not None and curr_disease is None:
+                self._grant_immunity(agent, prev_disease)
+            agent._prev_disease_id = curr_disease
 
     def _save_checkpoint(self):
         try:
@@ -142,7 +184,6 @@ class Simulation:
                 if e.get('kind') not in ('drought', 'fire', 'blight', 'storm')
             ]
         self.world.update_environment(season_state, weather_state, self.tick)
-        # Decay physical materials every tick
         tick_materials(self.world)
         self.tribes.update_membership(self.agents)
         births = []
@@ -160,6 +201,7 @@ class Simulation:
             if agent.alive and child_genes is not None:
                 births.append(self.spawn_child_from_parent(agent, child_genes))
         self.agents.extend(births)
+        self.tick_immunity_and_recovery()
         self.spread_diseases()
         self.remove_dead()
         self.tribes.cleanup(self.agents)

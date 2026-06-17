@@ -18,15 +18,18 @@ REMEDY_REGISTRY: dict[str, dict] = {
         'window': 4,
         'cure_health': 25.0,
         'cure_sick': 50.0,
-        'spread_rate': 0.018,   # was 0.04
+        'spread_rate': 0.012,   # further reduced from 0.018
+        # Partial cure: any single ingredient gives minor relief
+        'partial_ingredients': {'herb_willow': 8.0, 'water': 5.0},
     },
     'plague': {
         'name': 'Plague',
         'ingredients': ['herb_garlic', 'herb_elderberry', 'meat'],
-        'window': 3,
+        'window': 5,
         'cure_health': 35.0,
         'cure_sick': 70.0,
-        'spread_rate': 0.025,   # was 0.07
+        'spread_rate': 0.015,   # reduced from 0.025
+        'partial_ingredients': {'herb_garlic': 10.0, 'herb_elderberry': 10.0, 'meat': 5.0},
     },
     'blight_sickness': {
         'name': 'Blight Sickness',
@@ -34,15 +37,17 @@ REMEDY_REGISTRY: dict[str, dict] = {
         'window': 5,
         'cure_health': 20.0,
         'cure_sick': 40.0,
-        'spread_rate': 0.012,   # was 0.03
+        'spread_rate': 0.008,   # reduced from 0.012
+        'partial_ingredients': {'herb_mushroom': 8.0, 'plant_food': 4.0},
     },
     'swamp_rot': {
         'name': 'Swamp Rot',
         'ingredients': ['herb_moss', 'herb_willow', 'water'],
-        'window': 4,
+        'window': 5,
         'cure_health': 30.0,
         'cure_sick': 55.0,
-        'spread_rate': 0.020,   # was 0.05
+        'spread_rate': 0.012,   # reduced from 0.020
+        'partial_ingredients': {'herb_moss': 8.0, 'herb_willow': 8.0, 'water': 4.0},
     },
 }
 
@@ -68,7 +73,7 @@ def try_infect_agent(agent, disease_id: str) -> bool:
         return False          # already sick with something
     if random.random() < rec['spread_rate']:
         agent.disease_id = disease_id
-        agent.sick = min(100.0, agent.sick + 15.0)  # was 20.0 — softer initial hit
+        agent.sick = min(100.0, agent.sick + 12.0)  # softer initial hit (was 15)
         return True
     return False
 
@@ -79,8 +84,11 @@ def try_infect_agent(agent, disease_id: str) -> bool:
 
 def evaluate_remedy(agent, consumed_tags: list[str]) -> float:
     """
-    Check whether the recently consumed ingredient set triggers a cure for the
-    agent's current disease.  Returns a health-bonus float (0 if no cure).
+    Two-tier healing system:
+    1. FULL CURE: all ingredients consumed within window → big heal.
+    2. PARTIAL CURE: any single known ingredient → minor sick reduction each use.
+       This gives agents a fighting chance even before discovering the full recipe.
+    Returns a health-bonus float (0 if nothing matched).
     """
     disease_id = getattr(agent, 'disease_id', None)
     if disease_id is None:
@@ -88,6 +96,7 @@ def evaluate_remedy(agent, consumed_tags: list[str]) -> float:
 
     rec = REMEDY_REGISTRY[disease_id]
     required = set(rec['ingredients'])
+    partial_map: dict = rec.get('partial_ingredients', {})
 
     # Build rolling window of consumed tags
     if not hasattr(agent, '_remedy_window'):
@@ -100,8 +109,8 @@ def evaluate_remedy(agent, consumed_tags: list[str]) -> float:
     max_per_tick = 4
     agent._remedy_window = agent._remedy_window[-(window_limit * max_per_tick):]
 
+    # --- Tier 1: Full cure ---
     if required.issubset(set(agent._remedy_window)):
-        # Cure triggered!
         agent.health = min(100.0, agent.health + rec['cure_health'])
         agent.sick = max(0.0, agent.sick - rec['cure_sick'])
         if agent.sick <= 0:
@@ -110,7 +119,19 @@ def evaluate_remedy(agent, consumed_tags: list[str]) -> float:
         agent._remedy_window_ticks = 0
         return rec['cure_health'] / 25.0
 
-    return 0.0
+    # --- Tier 2: Partial cure (any matching ingredient gives minor relief) ---
+    partial_bonus = 0.0
+    for tag in consumed_tags:
+        if tag in partial_map:
+            sick_reduction = partial_map[tag] * 0.25   # 25% of full partial value per use
+            health_gain = sick_reduction * 0.3
+            agent.sick = max(0.0, agent.sick - sick_reduction)
+            agent.health = min(100.0, agent.health + health_gain)
+            partial_bonus += health_gain / 25.0
+            if agent.sick <= 0:
+                agent.disease_id = None
+                break
+    return partial_bonus
 
 
 # ---------------------------------------------------------------------------
