@@ -41,7 +41,6 @@ def _ensure_new_fields(agent):
         agent.causal_memory = CausalMemory(capacity=32)
     if not hasattr(agent, 'material_inventory') or agent.material_inventory is None:
         agent.material_inventory = {}
-    # Rebuild brain if its encoder input size doesn't match current INPUT_SIZE
     if not hasattr(agent, 'brain') or agent.brain is None:
         agent.brain = Brain()
         agent.hidden_state = agent.brain.initial_hidden()
@@ -271,8 +270,8 @@ class Agent:
             return 0.0
         reward = 0.0
         curiosity = self.genes.get('curiosity', 0.5)
-        sick_drive = min(1.0, self.sick / 60.0)
-        sample_prob = 0.12 + 0.25 * curiosity + 0.35 * sick_drive
+        sick_drive = min(1.0, self.sick / 40.0)  # more urgency when sick (was /60)
+        sample_prob = 0.15 + 0.30 * curiosity + 0.40 * sick_drive  # slightly higher baseline
         for tag in herbs_here:
             if random.random() < sample_prob:
                 taken = collect_herb(cell, tag, amount=1.0)
@@ -413,20 +412,25 @@ class Agent:
 
     def apply_disease(self, world):
         cell = world.get_cell(*self.pos)
-        exposure = 0.012 * cell['disease'] + 0.007 * cell['pollution'] + 0.005 * cell['disturbance']
-        if random.random() < max(0.0, exposure - 0.12):
-            self.sick = min(100.0, self.sick + 4.0 + 0.04 * cell['disease'])
-            if self.disease_id is None and self.sick > 10.0:
+        # Exposure only triggers at much higher disease levels (was 0.12 threshold)
+        # Scale down the per-tick accumulation significantly
+        exposure = 0.004 * cell['disease'] + 0.002 * cell['pollution'] + 0.001 * cell['disturbance']
+        if random.random() < max(0.0, exposure - 0.30):  # threshold raised from 0.12 to 0.30
+            self.sick = min(100.0, self.sick + 2.0 + 0.02 * cell['disease'])  # softer hit (was 4.0)
+            if self.disease_id is None and self.sick > 15.0:  # higher threshold to get disease_id (was 10)
                 self.disease_id = random.choice(list(REMEDY_REGISTRY.keys()))
-        self.sick = max(0.0, self.sick - 0.03 * self.health / 100.0)
+        # Natural recovery: significantly faster, scaled by health AND hydration
+        recovery = 0.15 * (self.health / 100.0) + 0.05 * (self.hydration / 100.0)  # was 0.03
+        self.sick = max(0.0, self.sick - recovery)
         if self.sick <= 2.0:
             self.disease_id = None
         if self.sick > 0:
-            self.health -= 0.018 * self.sick
-            self.energy -= 0.01 * self.sick
-        warmth = world.get_cell(*self.pos).get('warmth', 0.0)
-        if warmth > 0.5:
-            self.sick = max(0.0, self.sick - 0.08 * warmth)
+            self.health -= 0.010 * self.sick   # reduced damage per tick (was 0.018)
+            self.energy -= 0.006 * self.sick   # reduced drain (was 0.01)
+        # Warmth bonus (expanded: warmth > 0.2 instead of 0.5)
+        warmth = cell.get('warmth', 0.0)
+        if warmth > 0.2:
+            self.sick = max(0.0, self.sick - 0.15 * warmth)  # was 0.08
 
     def apply_environmental_effects(self, world):
         cell = world.get_cell(*self.pos)
