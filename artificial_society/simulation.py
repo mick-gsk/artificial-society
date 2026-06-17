@@ -19,7 +19,7 @@ from artificial_society.systems.technology import TechnologySystem
 from artificial_society.systems.evolution import EvolutionSystem
 from artificial_society.visualization.statistics import StatisticsTracker
 from artificial_society.systems.remedy import try_infect_agent, REMEDY_REGISTRY
-from artificial_society.systems.invention import tick_materials, seed_world_materials
+from artificial_society.systems.invention import tick_materials, seed_world_materials, share_discovery
 from artificial_society.systems.culture import CausalMemory
 
 EVENT_WARMUP_TICKS = 600
@@ -39,6 +39,17 @@ HAMILTON_CHILD_R       = 0.50
 HAMILTON_TRIBE_R       = 0.10
 HAMILTON_REWARD_SCALE  = 0.08
 HAMILTON_TICK_INTERVAL = 20
+
+# --- SCHICHT 3: Soziales Wissens-Bootstrapping ---
+# Wie oft pro Tick wird social sharing aktiviert
+SOCIAL_SHARING_INTERVAL      = 15   # Alle 15 Ticks
+SOCIAL_SHARING_RADIUS        = 2    # Maximale Entfernung fuer Wissensaustausch
+SOCIAL_SHARING_ENERGY_REWARD = 1.5  # Energie-Bonus fuers Lehren
+
+# --- SCHICHT 4: Generationen-Wissenstransfer ---
+DEATH_MATERIAL_TRANSFER_FIDELITY = 0.45
+DEATH_MATERIAL_MIN_QTY           = 0.3
+DEATH_MATERIAL_TRANSFER_RATIO    = 0.4
 
 
 def _migrate_agent(agent):
@@ -125,12 +136,40 @@ class Simulation:
             for disease, herbs in parent.remedy_knowledge.items():
                 if random.random() < INHERIT_FIDELITY:
                     child.remedy_knowledge[disease] = list(herbs)
+
+        # --- SCHICHT 4 (Eltern -> Kind): Material-Discoveries weitervererben ---
+        parent_inv = getattr(parent, 'material_inventory', {})
+        parent_discoveries = {
+            m: q for m, q in parent_inv.items()
+            if m.startswith('mat_') and q >= DEATH_MATERIAL_MIN_QTY
+        }
+        if parent_discoveries:
+            child_inv = getattr(child, 'material_inventory', {})
+            for mat_id, qty in parent_discoveries.items():
+                if random.random() < INHERIT_FIDELITY:
+                    child_inv[mat_id] = child_inv.get(mat_id, 0.0) + qty * DEATH_MATERIAL_TRANSFER_RATIO
+            child.material_inventory = child_inv
+
         return child
 
     def _broadcast_death_knowledge(self, agent):
-        causal_mem = getattr(agent, 'causal_memory', None)
-        if causal_mem is None and not agent.remedy_knowledge:
+        """
+        Stirbt ein Agent, gibt er sein Wissen an nahestehende Stammesmitglieder
+        und Verwandte weiter.
+
+        SCHICHT 4 - Papier-Prinzip: Material-Discoveries werden jetzt ebenfalls
+        uebertragen, sodass Wissen ueber Generationen akkumuliert statt verloren geht.
+        """
+        causal_mem  = getattr(agent, 'causal_memory', None)
+        inv         = getattr(agent, 'material_inventory', {})
+        discoveries = {
+            m: q for m, q in inv.items()
+            if m.startswith('mat_') and q >= DEATH_MATERIAL_MIN_QTY
+        }
+
+        if causal_mem is None and not agent.remedy_knowledge and not discoveries:
             return
+
         ax, ay = agent.pos
         recipients = [
             a for a in self.agents
@@ -149,6 +188,13 @@ class Simulation:
             for disease, herbs in agent.remedy_knowledge.items():
                 if disease not in recipient.remedy_knowledge and random.random() < DEATH_BROADCAST_FIDELITY:
                     recipient.remedy_knowledge[disease] = list(herbs)
+
+            # --- NEU: Material-Discoveries weitergeben (Papier-Prinzip) ---
+            r_inv = getattr(recipient, 'material_inventory', {})
+            for mat_id, qty in discoveries.items():
+                if random.random() < DEATH_MATERIAL_TRANSFER_FIDELITY:
+                    r_inv[mat_id] = r_inv.get(mat_id, 0.0) + qty * DEATH_MATERIAL_TRANSFER_RATIO
+            recipient.material_inventory = r_inv
 
     def emergency_respawn(self):
         for _ in range(RESPAWN_COUNT):
@@ -231,6 +277,43 @@ class Simulation:
                 agent.brain.rollout.storage[-1]['reward'] += bonus * HAMILTON_REWARD_SCALE
                 agent.last_reward += bonus * HAMILTON_REWARD_SCALE
 
+    def _apply_social_knowledge_sharing(self):
+        """
+        SCHICHT 3: Soziales Wissens-Bootstrapping.
+        Agenten die entdeckte Materialien besitzen, teilen ihr Wissen mit
+        nahen Stammesmitgliedern. Lehren wird mit Energie belohnt, damit
+        Spezialisierung sich evolutionary lohnt.
+
+        Dadurch entsteht spontan: Einer entdeckt Feuer, gibt es weiter,
+        andere bauen darauf auf und erfinden Kochen, Keramik etc.
+        """
+        if self.tick % SOCIAL_SHARING_INTERVAL != 0:
+            return
+
+        for agent in self.agents:
+            if not agent.alive:
+                continue
+            inv = getattr(agent, 'material_inventory', {})
+            discoveries = [m for m in inv if m.startswith('mat_') and inv[m] > 0.5]
+            if not discoveries:
+                continue
+
+            ax, ay = agent.pos
+            nearby = [
+                a for a in self.agents
+                if a is not agent and a.alive
+                and abs(a.pos[0]-ax) <= SOCIAL_SHARING_RADIUS
+                and abs(a.pos[1]-ay) <= SOCIAL_SHARING_RADIUS
+            ]
+            if not nearby:
+                continue
+
+            mat_to_share = random.choice(discoveries)
+            recipient    = random.choice(nearby)
+            if share_discovery(agent, recipient, mat_to_share):
+                # Lehrer erhaelt Energie-Bonus -> Spezialisierung lohnt sich
+                agent.energy = min(agent.energy + SOCIAL_SHARING_ENERGY_REWARD, MAX_ENERGY)
+
     def _save_checkpoint(self):
         try:
             data = {'tick': self.tick, 'agents': self.agents, 'tribes': self.tribes,
@@ -262,7 +345,6 @@ class Simulation:
         self.world.day_state = dn
         season_state = self.seasons.update(self.tick)
         weather_state= self.weather.update(self.world, season_state, self.tick)
-        # Aktuelle Jahreszeit am World-Objekt speichern damit agent.forage() darauf zugreifen kann
         if isinstance(season_state, dict):
             self.world.current_season = season_state.get('season', None)
         else:
@@ -287,6 +369,10 @@ class Simulation:
         self.tick_immunity_and_recovery()
         self.spread_diseases()
         self._apply_hamilton_rewards()
+
+        # --- SCHICHT 3: Soziales Bootstrapping ---
+        self._apply_social_knowledge_sharing()
+
         self.remove_dead()
         self.tribes.cleanup(self.agents)
         self.technology.update(self.agents, self.tribes)
