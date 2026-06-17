@@ -5,6 +5,7 @@ from artificial_society.agents.brain import Brain, INPUT_SIZE
 from artificial_society.agents.memory import EpisodicMemory
 from artificial_society.agents.genetics import random_genes, inherit_genes
 from artificial_society.agents.communication import CommunicationSystem
+from artificial_society.agents.endocrine import EndocrineSystem
 from artificial_society.environment.resources import apply_consumption, maybe_build_structure
 from artificial_society.environment.herbs import available_herbs, collect_herb, regrow_herbs
 from artificial_society.systems.remedy import (
@@ -34,10 +35,10 @@ CORPSE_ENERGY = 36.0
 SHARP_STONE_FORAGE_BONUS = 0.30
 SHARP_STONE_COLLECT_BONUS = 0.20
 
-# Sleeping thresholds
-SLEEP_PRESSURE_THRESHOLD = 0.55   # agent tries to sleep above this
-SLEEP_ENERGY_REGEN = 0.40         # energy/tick while sleeping
-SLEEP_HEALTH_REGEN = 0.12         # health/tick while sleeping
+# Sleep driven entirely by endocrine (melatonin via modifiers['sleep_drive'])
+SLEEP_DRIVE_THRESHOLD = 0.45
+SLEEP_ENERGY_REGEN    = 0.40
+SLEEP_HEALTH_REGEN    = 0.12
 
 
 def _ensure_new_fields(agent):
@@ -46,8 +47,8 @@ def _ensure_new_fields(agent):
         agent.causal_memory = CausalMemory(capacity=32)
     if not hasattr(agent, 'material_inventory') or agent.material_inventory is None:
         agent.material_inventory = {}
-    if not hasattr(agent, 'sleep_debt') or agent.sleep_debt is None:
-        agent.sleep_debt = 0.0
+    if not hasattr(agent, 'endocrine') or agent.endocrine is None:
+        agent.endocrine = EndocrineSystem()
     if not hasattr(agent, 'is_sleeping'):
         agent.is_sleeping = False
     if not hasattr(agent, 'brain') or agent.brain is None:
@@ -72,6 +73,7 @@ class Agent:
     memory: EpisodicMemory = field(default_factory=lambda: EpisodicMemory(10))
     brain: Brain = field(default_factory=Brain)
     communication: CommunicationSystem = field(default_factory=CommunicationSystem)
+    endocrine: EndocrineSystem = field(default_factory=EndocrineSystem)
     message_vector: list = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
     trust: dict = field(default_factory=dict)
     tribe_id: int | None = None
@@ -100,8 +102,6 @@ class Agent:
     herbs_carried: dict = field(default_factory=dict)
     causal_memory: CausalMemory = field(default_factory=lambda: CausalMemory(capacity=32))
     material_inventory: dict = field(default_factory=dict)
-    # Sleep system
-    sleep_debt: float = 0.0
     is_sleeping: bool = False
 
     @classmethod
@@ -153,6 +153,23 @@ class Agent:
         return self.alive and self.age >= MIN_REPRODUCTION_AGE and self.energy >= REPRODUCTION_ENERGY and self.reproduction_cooldown <= 0 and not self.pregnant
 
     def local_features(self, world, agents):
+        """
+        The brain receives:
+          - Internal body state (energy, health, hydration)
+          - Immediate sensory percepts (cell properties)
+          - Social context
+          - 8 HORMONE LEVELS from the endocrine system
+
+        The brain does NOT receive:
+          - Raw 'light' value
+          - 'is_night' flag
+          - 'sleep_pressure' scalar
+          - 'disease_level' directly
+          - Any other world-semantic label
+
+        All those effects reach the brain ONLY through their hormonal
+        consequences. The agent must learn the correlations.
+        """
         _ensure_new_fields(self)
         x, y = self.pos
         cell = world.get_cell(x, y)
@@ -166,70 +183,60 @@ class Agent:
         causal_feats = self.causal_memory.feature_vector()
         inv_size = min(1.0, sum(self.material_inventory.values()) / 5.0)
 
-        # --- Day/Night features (3 new inputs) ---
-        dn = world.day_state
-        light = dn.get('light', 1.0)
-        sleep_pressure = dn.get('sleep_pressure', 0.0)
-        is_night = 1.0 if dn.get('phase') == 'night' else 0.0
-
-        # --- Tech features: how many unique causal sequences this agent knows ---
-        # Normalized: 0..1 over an expected max of 16 sequences
-        tech_knowledge = min(1.0, len(self.causal_memory.sequences) / 16.0)
-        # Does this agent know any remedy?
-        has_remedy = 1.0 if self.remedy_knowledge else 0.0
-        # Sleep debt (0..1)
-        sleep_debt_feat = min(1.0, self.sleep_debt / 80.0)
+        # 8 hormone levels — this is what drives all internal motivation
+        hormones = self.endocrine.as_features()
 
         return [
-            self.energy / MAX_ENERGY,
-            self.health / 100.0,
-            self.hydration / 100.0,
-            min(1.0, self.age / AGE_LIMIT),
-            cell['food'] / 180.0,
-            cell['water'] / 100.0,
-            (cell['temperature'] + 20) / 72.0,
-            cell['danger'] / 100.0,
-            cell['disease'] / 100.0,
-            cell['soil_fertility'] / 100.0,
-            cell['pollution'] / 100.0,
-            cell['carrying_capacity'] / 100.0,
-            cell['moisture'] / 100.0,
-            cell['ash'] / 100.0,
-            cell['disturbance'] / 100.0,
-            min(1.0, len(near) / 10.0),
-            min(1.0, friends / 6.0),
-            self.genes['curiosity'],
-            self.genes['aggression'],
-            self.genes['cooperation'],
-            self.genes['sociality'],
-            1.0 if self.tool else 0.0,
-            avg_trust * 0.5 + 0.5,
-            min(1.0, self.resources['wood'] / 4.0),
-            min(1.0, self.resources['stone'] / 4.0),
-            min(1.0, self.resources['fiber'] / 4.0),
-            max(-1.0, min(1.0, self.last_reward / 10.0)),
-            max(0.0, min(1.0, self.sick / 100.0)),
-            herb_presence,
-            warmth,
-            mat_count,
-            inv_size,
-            # Day/Night
-            light,
-            sleep_pressure,
-            is_night,
-            # Tech / knowledge state
-            tech_knowledge,
-            has_remedy,
-            sleep_debt_feat,
-            *causal_feats,
-            *retrieval,
+            # --- Body state ---
+            self.energy / MAX_ENERGY,          # 0
+            self.health / 100.0,               # 1
+            self.hydration / 100.0,            # 2
+            min(1.0, self.age / AGE_LIMIT),    # 3
+            # --- Immediate cell percepts ---
+            cell['food'] / 180.0,              # 4
+            cell['water'] / 100.0,             # 5
+            (cell['temperature'] + 20) / 72.0, # 6
+            cell['danger'] / 100.0,            # 7
+            cell['disease'] / 100.0,           # 8
+            cell['soil_fertility'] / 100.0,    # 9
+            cell['pollution'] / 100.0,         # 10
+            cell['carrying_capacity'] / 100.0, # 11
+            cell['moisture'] / 100.0,          # 12
+            cell['ash'] / 100.0,               # 13
+            cell['disturbance'] / 100.0,       # 14
+            # --- Social ---
+            min(1.0, len(near) / 10.0),        # 15
+            min(1.0, friends / 6.0),           # 16
+            # --- Genes (fixed traits) ---
+            self.genes['curiosity'],           # 17
+            self.genes['aggression'],          # 18
+            self.genes['cooperation'],         # 19
+            self.genes['sociality'],           # 20
+            # --- Equipment ---
+            1.0 if self.tool else 0.0,         # 21
+            avg_trust * 0.5 + 0.5,             # 22
+            min(1.0, self.resources['wood'] / 4.0),   # 23
+            min(1.0, self.resources['stone'] / 4.0),  # 24
+            min(1.0, self.resources['fiber'] / 4.0),  # 25
+            max(-1.0, min(1.0, self.last_reward / 10.0)),  # 26
+            # --- Sensory extras ---
+            herb_presence,                     # 27
+            warmth,                            # 28
+            mat_count,                         # 29
+            inv_size,                          # 30
+            # --- Causal memory ---
+            *causal_feats,                     # 31,32,33
+            # --- Episodic memory retrieval ---
+            *retrieval,                        # 34..45
+            # --- 8 Hormones (all internal motivation lives here) ---
+            *hormones,                         # 46..53
         ]
 
     def visible_cells(self, world):
         x, y = self.pos
-        # Night vision penalty: sense radius halved at full night
-        light = world.day_state.get('light', 1.0)
-        vision_mult = 0.5 + 0.5 * light
+        # Vision modulated by melatonin (night blindness emerges from endocrine)
+        melatonin = self.endocrine.h[2]  # index 2 = MELATONIN
+        vision_mult = max(0.4, 1.0 - 0.6 * melatonin)
         radius = max(1, int(round((self.genes['vision'] + 0.35 * self.genes['sense_radius']) * vision_mult)))
         return world.neighbors(x, y, radius)
 
@@ -246,10 +253,8 @@ class Agent:
         return child
 
     def primitive_move(self, world, action):
-        # Sleeping agents don't move
         if self.is_sleeping:
             return
-        # Night: slower movement (higher energy cost, lower explore probability)
         dx = 1 if action['move_x'] > 0.33 else -1 if action['move_x'] < -0.33 else 0
         dy = 1 if action['move_y'] > 0.33 else -1 if action['move_y'] < -0.33 else 0
         if dx == 0 and dy == 0 and action['explore'] > 0.3 and random.random() < 0.35:
@@ -263,48 +268,34 @@ class Agent:
 
     def apply_sleep(self, world):
         """
-        Sleep system:
-        - Sleep debt builds during the night phase proportional to sleep_pressure.
-        - Above SLEEP_PRESSURE_THRESHOLD, agent may fall asleep.
-        - Sleeping agents regenerate energy and health, but cannot act.
-        - Dawn clears sleep debt and wakes the agent.
+        Sleep is now entirely driven by melatonin (endocrine).
+        No direct light/time check here — the endocrine system
+        converts darkness to melatonin which drives sleep_drive.
         """
         _ensure_new_fields(self)
-        dn = world.day_state
-        phase = dn.get('phase', 'day')
-        sleep_pressure = dn.get('sleep_pressure', 0.0)
-
-        if phase == 'day':
-            # Wake up and clear debt
-            self.is_sleeping = False
-            self.sleep_debt = max(0.0, self.sleep_debt - 2.0)
-            return
-
-        # Build sleep debt at night
-        self.sleep_debt = min(100.0, self.sleep_debt + sleep_pressure * 0.8)
-
-        # Decision to sleep: high sleep pressure + not in danger
+        mods = self.endocrine.modifiers()
+        sleep_drive = mods['sleep_drive']
         cell = world.get_cell(*self.pos)
         danger_here = cell.get('danger', 0.0) + cell.get('disturbance', 0.0)
         safe_enough = danger_here < 25.0
 
-        if not self.is_sleeping and self.sleep_debt > SLEEP_PRESSURE_THRESHOLD * 80 and safe_enough:
-            # Prefer to sleep if also near warmth (fire) or in shelter
+        if not self.is_sleeping and sleep_drive > SLEEP_DRIVE_THRESHOLD and safe_enough:
             warmth = cell.get('warmth', 0.0)
             shelter = cell.get('structures', {}).get('shelter', False)
-            sleep_chance = 0.25 + 0.35 * (warmth > 0.3) + 0.25 * bool(shelter)
+            sleep_chance = 0.20 + 0.30 * (warmth > 0.3) + 0.25 * bool(shelter)
             if random.random() < sleep_chance:
                 self.is_sleeping = True
                 self.last_action_mode = 'sleep'
 
         if self.is_sleeping:
-            # Regen while asleep
             self.energy = min(MAX_ENERGY, self.energy + SLEEP_ENERGY_REGEN)
             self.health = min(100.0, self.health + SLEEP_HEALTH_REGEN)
-            self.sleep_debt = max(0.0, self.sleep_debt - 3.0)
+            # Sleeping clears melatonin faster (natural night processing)
+            self.endocrine.h[2] = max(0.0, self.endocrine.h[2] - 0.05)
             self.last_action_mode = 'sleep'
-            # Wake if danger arrives
-            if danger_here > 40.0 or self.sleep_debt <= 0.0:
+            # Wake conditions: danger, or melatonin cleared, or adrenaline spike
+            adrenaline_wake = self.endocrine.h[1] > 0.55
+            if danger_here > 40.0 or self.endocrine.h[2] < 0.12 or adrenaline_wake:
                 self.is_sleeping = False
 
     def forage(self, world, intensity):
@@ -314,9 +305,8 @@ class Agent:
         cell = world.get_cell(*self.pos)
         if intensity < -0.25:
             return 0.0
-        # Night foraging penalty: reduced by light level
-        light = world.day_state.get('light', 1.0)
-        night_penalty = 0.5 + 0.5 * light   # 0.5 at full dark, 1.0 at full day
+        mods = self.endocrine.modifiers()
+        forage_eff = mods['forage_eff']   # high melatonin = less efficient
         plant_need = max(0.2, 1.0 - self.energy / MAX_ENERGY)
         meat_bias = max(0.0, self.genes['diet_preference'])
         plant_bias = max(0.0, -self.genes['diet_preference'])
@@ -324,7 +314,7 @@ class Agent:
         meat_take = min(cell['meat_food'], 1.0 + 5.5 * intensity * (0.35 + plant_need + 0.5 * meat_bias))
         water_need = max(0.3, 1.0 - self.hydration / 100.0)
         water_take = min(cell['water'], 1.0 + 8.0 * intensity * water_need)
-        efficiency = 0.75 + 0.35 * self.genes['efficiency']
+        efficiency = (0.75 + 0.35 * self.genes['efficiency']) * forage_eff
         tool_mult = (1.0 + SHARP_STONE_FORAGE_BONUS) if self.tool == 'sharp_stone' else 1.0
         cook_bonus = 0.0
         for mat in ('cooked_meat', 'cooked_root'):
@@ -333,18 +323,26 @@ class Agent:
                 self.material_inventory[mat] -= val
                 self.energy = min(MAX_ENERGY, self.energy + val * 22.0)
                 cook_bonus += 0.25
-        plant_gain = plant_take * (PLANT_ENERGY / 8.0) * (1.0 + 0.55 * plant_bias) * efficiency * tool_mult * night_penalty
-        meat_gain = meat_take * (MEAT_ENERGY / 6.0) * (1.0 + 0.55 * meat_bias) * efficiency * tool_mult * night_penalty
+                self.endocrine.apply_substance(mat, val)
+        plant_gain = plant_take * (PLANT_ENERGY / 8.0) * (1.0 + 0.55 * plant_bias) * efficiency * tool_mult
+        meat_gain = meat_take * (MEAT_ENERGY / 6.0) * (1.0 + 0.55 * meat_bias) * efficiency * tool_mult
         apply_consumption(cell, plant=plant_take, meat=meat_take, water=water_take)
         self.energy = min(MAX_ENERGY, self.energy + plant_gain + meat_gain)
         self.hydration = min(100.0, self.hydration + water_take * 8.5)
         self.health = min(100.0, self.health + water_take * 0.16)
         if plant_take > 0.5:
             self.plant_eaten += 1
+            self.endocrine.apply_substance('plant_food', plant_take * 0.3)
         if meat_take > 0.3:
             self.meat_eaten += 1
+            self.endocrine.apply_substance('raw_meat', meat_take * 0.3)
+        if water_take > 0.3:
+            self.endocrine.apply_substance('water', water_take * 0.2)
         if plant_take + meat_take + water_take > 0.8:
             self.last_action_mode = 'gather'
+        total_gain = plant_gain + meat_gain
+        if total_gain > 0.5:
+            self.endocrine.apply_successful_forage(total_gain)
         self.memory.remember_resource(self.pos, cell['food'], cell['water'], cell['tick'])
         consumed_tags: list[str] = []
         if plant_take > 0.3:
@@ -353,7 +351,7 @@ class Agent:
             consumed_tags.append('meat')
         if water_take > 0.3:
             consumed_tags.append('water')
-        forage_reward = 0.025 * (plant_gain + meat_gain) + 0.18 * water_take + cook_bonus
+        forage_reward = 0.025 * total_gain + 0.18 * water_take + cook_bonus
         forage_reward += self._try_use_herbs(cell, consumed_tags)
         return forage_reward
 
@@ -363,8 +361,10 @@ class Agent:
             return 0.0
         reward = 0.0
         curiosity = self.genes.get('curiosity', 0.5)
-        sick_drive = min(1.0, self.sick / 40.0)
-        sample_prob = 0.15 + 0.30 * curiosity + 0.40 * sick_drive
+        # Curiosity to sample herbs driven by dopamine + illness (no direct sick label)
+        dopamine = self.endocrine.h[4]   # DOPAMINE
+        inflammation = self.endocrine.h[6]  # INFLAMMATION
+        sample_prob = 0.10 + 0.25 * curiosity + 0.20 * dopamine + 0.30 * inflammation
         for tag in herbs_here:
             if random.random() < sample_prob:
                 taken = collect_herb(cell, tag, amount=1.0)
@@ -372,6 +372,8 @@ class Agent:
                     self.herbs_carried[tag] = self.herbs_carried.get(tag, 0.0) + taken
                     consumed_tags.append(tag)
                     self.last_action_mode = 'forage_herb'
+                    # Apply substance effect — agent doesn't know what this does
+                    self.endocrine.apply_substance(tag, taken)
         if self.disease_id and consumed_tags:
             prev_disease = self.disease_id
             cure_bonus = evaluate_remedy(self, consumed_tags)
@@ -429,12 +431,17 @@ class Agent:
         if self.is_sleeping:
             return 0.0
         nearby = [a for a in agents if a is not self and a.alive and abs(a.pos[0] - self.pos[0]) <= 1 and abs(a.pos[1] - self.pos[1]) <= 1]
+        # Oxytocin signal from social proximity
+        same_tribe_nearby = sum(1 for a in nearby if a.tribe_id == self.tribe_id and self.tribe_id is not None)
+        self.endocrine.apply_social_signal(len(nearby), same_tribe_nearby > 0)
         social_reward = 0.0
+        mods = self.endocrine.modifiers()
         for other in nearby:
             helpful = other.message_vector[0] > -0.15
             prior = self.trust.get(other.id, 0.0)
+            # Social bias from oxytocin/serotonin increases delta
             delta = 0.015 if helpful else -0.008
-            delta += 0.018 * self.genes['sociality']
+            delta += 0.018 * self.genes['sociality'] + 0.010 * mods['social_bias']
             if action['communicate'] > 0.1:
                 before_food = features_before[4]
                 before_danger = features_before[7]
@@ -490,13 +497,21 @@ class Agent:
             father.reproduction_cooldown = REPRODUCTION_COOLDOWN
             mother.children += 1
             father.children += 1
+            # Oxytocin from reproduction bond
+            mother.endocrine.h[5] = min(1.0, mother.endocrine.h[5] + 0.25)
+            father.endocrine.h[5] = min(1.0, father.endocrine.h[5] + 0.15)
             self.last_action_mode = 'mate'
             other.last_action_mode = 'mate'
             return True
         return False
 
     def maybe_attack(self, agents, intensity):
-        if self.is_sleeping or intensity < 0.55:
+        if self.is_sleeping:
+            return 0.0
+        mods = self.endocrine.modifiers()
+        # Aggression bias from cortisol/adrenaline lowers the threshold
+        effective_threshold = 0.55 - 0.15 * mods['aggression_bias']
+        if intensity < effective_threshold:
             return 0.0
         nearby = [a for a in agents if a is not self and a.alive and abs(a.pos[0] - self.pos[0]) <= 1 and abs(a.pos[1] - self.pos[1]) <= 1]
         if not nearby:
@@ -505,6 +520,7 @@ class Agent:
         damage = 1.0 + 3.5 * self.genes['aggression']
         target.health -= damage
         target.trust[self.id] = max(-1.0, min(1.0, target.trust.get(self.id, 0.0) - 0.18))
+        target.endocrine.apply_attack_received()
         self.energy -= 0.5
         self.last_action_mode = 'attack'
         return 0.12 if target.health < 30 else -0.04
@@ -516,27 +532,39 @@ class Agent:
             self.sick = min(100.0, self.sick + 2.0 + 0.02 * cell['disease'])
             if self.disease_id is None and self.sick > 15.0:
                 self.disease_id = random.choice(list(REMEDY_REGISTRY.keys()))
+        # Inflammation directly reduces sick progression (endocrine feedback)
+        inflammation = self.endocrine.h[6]
         recovery = 0.15 * (self.health / 100.0) + 0.05 * (self.hydration / 100.0)
+        # High inflammation slows recovery (body fighting disease = resource drain)
+        recovery *= max(0.3, 1.0 - 0.5 * inflammation)
         self.sick = max(0.0, self.sick - recovery)
         if self.sick <= 2.0:
             self.disease_id = None
         if self.sick > 0:
             self.health -= 0.010 * self.sick
             self.energy -= 0.006 * self.sick
-        warmth = world.get_cell(*self.pos).get('warmth', 0.0)
+        warmth = cell.get('warmth', 0.0)
         if warmth > 0.2:
             self.sick = max(0.0, self.sick - 0.15 * warmth)
 
     def apply_environmental_effects(self, world):
+        _ensure_new_fields(self)
         cell = world.get_cell(*self.pos)
         biome_cost = world.biome_move_cost(*self.pos)
+        mods = self.endocrine.modifiers()
+
         move_cost = (0.22 + (1.0 / max(0.6, self.genes['speed'])) * 0.10) * biome_cost
         move_cost *= (1.75 - min(1.5, self.genes['efficiency']))
+        move_cost *= mods['move_cost_mult']
         self.energy -= move_cost
+
         self.hydration -= 0.30 + 0.008 * cell['temperature'] + 0.010 * biome_cost + 0.012 * cell['disturbance']
         self.energy -= 0.003 * cell['danger'] + 0.003 * cell['disturbance']
         self.health -= max(0, abs(cell['temperature'] - 20) - 14) * 0.05
         self.health -= 0.005 * cell['pollution'] + 0.006 * cell['ash']
+        # Endocrine health drain (inflammation, cortisol)
+        self.health -= mods['health_drain']
+
         warmth = cell.get('warmth', 0.0)
         if warmth > 0.3:
             cold_exposure = max(0, abs(cell['temperature'] - 20) - 14)
@@ -555,16 +583,10 @@ class Agent:
         if self.age > AGE_LIMIT:
             self.energy = 0
             self.health -= 2.0
-        # Sleep debt penalty: cognitive degradation
-        if self.sleep_debt > 40.0:
-            perf_penalty = (self.sleep_debt - 40.0) / 120.0
-            self.health -= 0.02 * perf_penalty
-            self.energy -= 0.04 * perf_penalty
-        # Night danger: predator pressure increases at night
-        danger_mult = world.day_state.get('danger_mult', 1.0)
-        if danger_mult > 1.0:
-            extra_danger = cell.get('danger', 0.0) * (danger_mult - 1.0) * 0.004
-            self.health -= extra_danger
+        # Night predator pressure through adrenaline (not direct label)
+        adrenaline = self.endocrine.h[1]
+        if adrenaline > 0.5:
+            self.energy -= 0.02 * (adrenaline - 0.5)  # fight-or-flight cost
         if self.health <= 0:
             self.alive = False
 
@@ -576,7 +598,10 @@ class Agent:
             self.reproduction_cooldown -= 1
         child_genes = self.progress_pregnancy()
 
-        # Sleep must happen before perception/action
+        # --- Endocrine tick (BEFORE any action or perception) ---
+        # This converts world state -> hormone levels -> behaviour inputs
+        self.endocrine.update(self, world)
+
         self.apply_sleep(world)
 
         if not self.is_sleeping:
@@ -593,7 +618,6 @@ class Agent:
         prev_health = self.health
 
         if self.is_sleeping:
-            # Minimal brain pass — no action taken, just store idle transition
             brain_step = self.brain.act(features, self.hidden_state)
             self.apply_disease(world)
             self.apply_environmental_effects(world)
@@ -643,7 +667,10 @@ class Agent:
                 'moisture': cell.get('moisture', 50) / 100.0,
                 'temperature': cell.get('temperature', 20),
             }
-            reward += agent_try_invention(self, cell, env)
+            inv_reward = agent_try_invention(self, cell, env)
+            if inv_reward > 0:
+                self.endocrine.apply_discovery(min(1.0, inv_reward))
+            reward += inv_reward
             self.last_action_mode = 'experiment'
         built = self.maybe_build(world, action['explore'])
         if built is not None:
@@ -668,9 +695,9 @@ class Agent:
             reward -= 0.01
         if self.sick > 60:
             self.last_action_mode = 'sick'
-        # Sleep debt degrades reward signal (cognitive impairment)
-        if self.sleep_debt > 40.0:
-            reward *= max(0.5, 1.0 - (self.sleep_debt - 40.0) / 120.0)
+        # Cognition modifier scales learning quality (dopamine = better learning)
+        mods = self.endocrine.modifiers()
+        reward *= mods['cognition']
 
         next_features = self.local_features(world, agents)
         intrinsic = self.brain.intrinsic_reward(brain_step['hidden_in'], brain_step['action_tensor'], next_features)
