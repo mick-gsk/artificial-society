@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 device = torch.device('cpu')
 
-# Feature layout (54 total):
+# Feature layout (57 total):
 #   0..3   body state (energy, health, hydration, age)
 #   4..14  cell percepts (food, water, temp, danger, disease, soil, pollution,
 #          carrying_capacity, moisture, ash, disturbance)
@@ -14,16 +14,17 @@ device = torch.device('cpu')
 #   17..20 genes (curiosity, aggression, cooperation, sociality)
 #   21..30 equipment + episodic extras (tool, trust, resources x3, last_reward,
 #          herb_presence, warmth, mat_count, inv_size)
-#   31..33 causal memory features (3)
-#   34..45 episodic memory retrieval (12)
-#   46..53 endocrine hormones: cortisol, adrenaline, melatonin, serotonin,
+#   31..33 structure features (camp_level, well_level, farm_level)  <-- NEU
+#   34..36 causal memory features (3)
+#   37..48 episodic memory retrieval (12)
+#   49..56 endocrine hormones: cortisol, adrenaline, melatonin, serotonin,
 #          dopamine, oxytocin, inflammation, metabolism
 #
 # IMPORTANT: The brain never receives raw world labels like 'light',
 # 'is_night', 'sleep_pressure', or 'disease_level'.  All such information
 # reaches the brain ONLY through its hormonal consequences.  The agent
 # must learn the correlations on its own.
-INPUT_SIZE = 54
+INPUT_SIZE = 57
 HIDDEN_SIZE = 96
 ACTION_SIZE = 6
 GAMMA = 0.97
@@ -126,9 +127,6 @@ class Brain(nn.Module):
 
     # ------------------------------------------------------------------
     # Imitationslernen (Spiegelneuronen-Hypothese / Bandura)
-    # Wenn ein Nachbar deutlich erfolgreicher ist und vertrauenswuerdig,
-    # werden die eigenen Gewichte leicht in seine Richtung gezogen.
-    # strength sehr klein (0.05): Imitation ist ein sanfter Nudge, kein Klon.
     # ------------------------------------------------------------------
     def imitate_from(self, model_brain: 'Brain',
                      strength: float = IMITATION_STRENGTH,
