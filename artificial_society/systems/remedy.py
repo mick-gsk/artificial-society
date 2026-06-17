@@ -383,8 +383,16 @@ def share_remedy_knowledge(sender, receiver) -> bool:
     receiver_knowledge: dict = getattr(receiver, 'remedy_knowledge', {})
     if disease_id not in receiver_knowledge:
         receiver_knowledge[disease_id] = set()
+    # Coerce to set — old checkpoints may have deserialized this as a list
+    if not isinstance(receiver_knowledge[disease_id], set):
+        receiver_knowledge[disease_id] = set(receiver_knowledge[disease_id])
+    # ingredient_clue may itself be a list/set; normalise before update
+    if isinstance(ingredient_clue, (list, set)):
+        clue_set = set(ingredient_clue)
+    else:
+        clue_set = {ingredient_clue}
     before_len = len(receiver_knowledge[disease_id])
-    receiver_knowledge[disease_id].update(ingredient_clue)
+    receiver_knowledge[disease_id].update(clue_set)
     receiver.remedy_knowledge = receiver_knowledge
     return len(receiver_knowledge[disease_id]) > before_len
 
@@ -394,4 +402,7 @@ def record_cure_discovery(agent, disease_id: str, ingredients_used: list[str]):
         agent.remedy_knowledge = {}
     if disease_id not in agent.remedy_knowledge:
         agent.remedy_knowledge[disease_id] = set()
+    # Coerce to set — old checkpoints may have deserialized this as a list
+    if not isinstance(agent.remedy_knowledge[disease_id], set):
+        agent.remedy_knowledge[disease_id] = set(agent.remedy_knowledge[disease_id])
     agent.remedy_knowledge[disease_id].update(ingredients_used)
