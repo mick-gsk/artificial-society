@@ -13,6 +13,8 @@ class World:
         self.cells = [[initial_cell_state(self.biomes[y][x]) for x in range(width)] for y in range(height)]
         self.land_positions = [(x, y) for y in range(height) for x in range(width) if self.biomes[y][x] != 'water']
         self.active_events = []
+        # Day/night state, updated each tick by simulation.step()
+        self.day_state: dict = {'phase': 'day', 'light': 1.0, 'danger_mult': 1.0, 'sleep_pressure': 0.0, 't': 0.0}
 
     def in_bounds(self, x, y):
         return 0 <= x < self.width and 0 <= y < self.height
@@ -163,7 +165,6 @@ class World:
                 biome = self.biomes[y][x]
                 cell = self.cells[y][x]
                 regrow_cell(cell, biome, season_state, weather_state, tick, self.event_field(x, y))
-                # FIX 2: regrow herbs on every land cell every tick
                 if biome != 'water':
                     regrow_herbs(cell, biome)
         self.diffuse_fields()

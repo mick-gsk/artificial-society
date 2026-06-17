@@ -9,6 +9,7 @@ from artificial_society.agents.agent import Agent, CORPSE_ENERGY
 from artificial_society.environment.resources import add_carcass
 from artificial_society.environment.seasons import SeasonCycle
 from artificial_society.environment.weather import WeatherSystem
+from artificial_society.environment.daynight import day_phase
 from artificial_society.systems.tribes import TribeSystem
 from artificial_society.systems.economy import EconomySystem
 from artificial_society.systems.technology import TechnologySystem
@@ -23,7 +24,15 @@ RESPAWN_COUNT = 6
 CHECKPOINT_INTERVAL = 500
 CHECKPOINT_PATH = 'checkpoint.pkl'
 
-IMMUNITY_WINDOW_DEFAULT = 200   # fallback if disease has no immunity_after
+IMMUNITY_WINDOW_DEFAULT = 200
+
+# How many causal-memory sequences a child inherits from each parent
+INHERIT_SEQUENCES = 10
+# Fidelity of knowledge transmission parent->child
+INHERIT_FIDELITY = 0.70
+# Fidelity of knowledge shared to tribe members on death
+DEATH_BROADCAST_FIDELITY = 0.45
+DEATH_BROADCAST_RADIUS = 4
 
 
 class Simulation:
@@ -71,9 +80,50 @@ class Simulation:
         parent_mem = getattr(parent, 'causal_memory', None)
         if parent_mem:
             child.causal_memory = CausalMemory(capacity=32)
-            for seq in list(parent_mem.sequences.keys())[:8]:
-                child.causal_memory.receive_transmitted(seq, fidelity=0.65)
+            # Inherit top sequences from parent with fidelity
+            seqs = list(parent_mem.sequences.keys())[:INHERIT_SEQUENCES]
+            for seq in seqs:
+                child.causal_memory.receive_transmitted(seq, fidelity=INHERIT_FIDELITY)
+        # Inherit remedy knowledge from parent
+        if parent.remedy_knowledge:
+            for disease, herbs in parent.remedy_knowledge.items():
+                if random.random() < INHERIT_FIDELITY:
+                    child.remedy_knowledge[disease] = list(herbs)
         return child
+
+    def _broadcast_death_knowledge(self, agent):
+        """
+        When an agent dies, nearby tribe-mates and family receive a portion
+        of their causal memory and remedy knowledge — simulating oral tradition
+        and deathbed knowledge transfer.
+        """
+        causal_mem = getattr(agent, 'causal_memory', None)
+        if causal_mem is None and not agent.remedy_knowledge:
+            return
+        ax, ay = agent.pos
+        recipients = [
+            a for a in self.agents
+            if a is not agent
+            and a.alive
+            and abs(a.pos[0] - ax) <= DEATH_BROADCAST_RADIUS
+            and abs(a.pos[1] - ay) <= DEATH_BROADCAST_RADIUS
+            and (a.tribe_id == agent.tribe_id or a.parent_id == agent.id or agent.parent_id == a.id)
+        ]
+        if not recipients:
+            return
+        from artificial_society.systems.culture import CausalMemory
+        seqs = list(causal_mem.sequences.keys()) if causal_mem else []
+        for recipient in recipients:
+            # Transfer causal sequences
+            if not hasattr(recipient, 'causal_memory') or recipient.causal_memory is None:
+                recipient.causal_memory = CausalMemory(capacity=32)
+            for seq in seqs:
+                if random.random() < DEATH_BROADCAST_FIDELITY:
+                    recipient.causal_memory.receive_transmitted(seq, fidelity=DEATH_BROADCAST_FIDELITY)
+            # Transfer remedy knowledge
+            for disease, herbs in agent.remedy_knowledge.items():
+                if disease not in recipient.remedy_knowledge and random.random() < DEATH_BROADCAST_FIDELITY:
+                    recipient.remedy_knowledge[disease] = list(herbs)
 
     def emergency_respawn(self):
         for _ in range(RESPAWN_COUNT):
@@ -88,6 +138,8 @@ class Simulation:
             if agent.alive:
                 survivors.append(agent)
                 continue
+            # Broadcast knowledge before removing
+            self._broadcast_death_knowledge(agent)
             add_carcass(self.world.get_cell(*agent.pos), CORPSE_ENERGY)
         self.agents = survivors
 
@@ -102,7 +154,6 @@ class Simulation:
         agent._disease_immunity[disease_id] = self.tick + window
 
     def tick_immunity_and_recovery(self):
-        """Detect full recoveries each tick and grant per-disease immunity."""
         for agent in self.agents:
             if not agent.alive:
                 continue
@@ -113,13 +164,6 @@ class Simulation:
             agent._prev_disease_id = curr
 
     def spread_diseases(self):
-        """
-        Realistic spread:
-        - Airborne diseases (TB) spread at radius 2.
-        - Biome amplification applied per-disease.
-        - Immune agents cannot be re-infected.
-        - Non-contagious diseases (scurvy) are never spread here.
-        """
         infectious = [
             a for a in self.agents
             if a.alive and getattr(a, 'disease_id', None) is not None
@@ -128,8 +172,7 @@ class Simulation:
             disease_id = carrier.disease_id
             rec = REMEDY_REGISTRY.get(disease_id, {})
             if rec.get('spread_rate', 0) == 0:
-                continue   # non-contagious (scurvy)
-            # Airborne = bigger radius
+                continue
             radius = 2 if rec.get('vector') == 'airborne' else 1
             cx, cy = carrier.pos
             biome = self.world.get_biome(cx, cy)
@@ -175,6 +218,11 @@ class Simulation:
 
     def step(self):
         self.tick += 1
+
+        # --- Day/Night ---
+        dn = day_phase(self.tick)
+        self.world.day_state = dn
+
         season_state = self.seasons.update(self.tick)
         weather_state = self.weather.update(self.world, season_state, self.tick)
         if self.tick < EVENT_WARMUP_TICKS:
