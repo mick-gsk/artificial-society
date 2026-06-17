@@ -22,6 +22,13 @@ REWARD_CLAMP = 6.0
 ROLLOUT_HORIZON = 20
 PPO_EPOCHS = 6
 
+# --- Phase 1: Model-Based Planning ---
+PLAN_CANDIDATES = 12   # how many actions to imagine per planning step
+PLAN_HORIZON = 3       # lookahead steps per candidate
+NOVELTY_WEIGHT = 0.15  # bonus for surprising predicted observations
+VALUE_WEIGHT = 0.50    # weight for critic estimate of next state
+REWARD_WEIGHT = 0.35   # weight for world-model predicted reward
+
 
 class RolloutBuffer:
     def __init__(self):
@@ -91,15 +98,96 @@ class Brain(nn.Module):
         entropy = dist.entropy().sum(dim=-1)
         return log_prob, entropy, value, next_hidden
 
-    def act(self, features, hidden_state):
+    def imagine_rollout(self, hidden_tensor, action_tensor, horizon=PLAN_HORIZON):
+        """
+        Roll out the world model for `horizon` steps starting from
+        (hidden_tensor, action_tensor). Returns the terminal hidden state
+        and the cumulative discounted predicted reward + novelty signal.
+        """
+        h = hidden_tensor   # (1, hidden_size)
+        a = action_tensor   # (1, action_size)
+        total_score = torch.zeros(a.shape[0], device=device)
+        discount = 1.0
+        for _ in range(horizon):
+            pred_next_obs, pred_reward = self.predict_world(h, a)
+            # Novelty: how much does the prediction deviate from zero (proxy for surprise)
+            novelty = pred_next_obs.abs().mean(dim=-1)
+            # Value of predicted next state via critic
+            enc = self.encoder(pred_next_obs)
+            h = self.gru(enc, h)
+            next_value = self.value_head(h).squeeze(-1)
+            # Composite score for this step
+            step_score = (REWARD_WEIGHT * pred_reward
+                          + VALUE_WEIGHT * next_value
+                          + NOVELTY_WEIGHT * novelty)
+            total_score = total_score + discount * step_score
+            discount *= GAMMA
+            # Re-sample next action from updated hidden (agent stays coherent)
+            mean_next = torch.tanh(self.policy_mean(h))
+            log_std = self.policy_logstd.clamp(-2.0, 0.7).unsqueeze(0).expand_as(mean_next)
+            std_next = torch.exp(log_std)
+            a = torch.tanh(torch.distributions.Normal(mean_next, std_next).rsample())
+        return h, total_score
+
+    def plan_action(self, obs_tensor, hidden_tensor, n_candidates=PLAN_CANDIDATES):
+        """
+        Phase 1: Model-Based Action Selection.
+        Sample n_candidates actions from the policy, score each via
+        imagine_rollout(), return the action with the highest expected value.
+
+        This turns the agent from a pure sampler into a simple planner:
+        it mentally simulates short futures and picks the most promising one.
+        """
+        with torch.no_grad():
+            mean, std, _, _ = self.forward(obs_tensor, hidden_tensor)
+            dist = torch.distributions.Normal(mean, std)
+
+            # Sample n_candidates actions: (n_candidates, 1, action_size)
+            raw_samples = dist.rsample((n_candidates,))
+            action_samples = torch.tanh(raw_samples)  # (n_candidates, 1, action_size)
+
+            scores = []
+            for i in range(n_candidates):
+                a = action_samples[i]  # (1, action_size)
+                _, score = self.imagine_rollout(hidden_tensor, a, horizon=PLAN_HORIZON)
+                scores.append(score.item())
+
+            best_idx = int(torch.tensor(scores).argmax().item())
+            best_action = action_samples[best_idx]  # (1, action_size)
+
+            # Recompute log_prob for the best action
+            log_std = self.policy_logstd.clamp(-2.0, 0.7).unsqueeze(0).expand_as(mean)
+            clipped = torch.clamp(best_action, -0.999, 0.999)
+            raw_best = 0.5 * torch.log((1 + clipped) / (1 - clipped + 1e-8))
+            log_prob = (dist.log_prob(raw_best) - torch.log(1 - clipped.pow(2) + 1e-6)).sum(dim=-1)
+
+            return best_action, log_prob, torch.tensor(scores)
+
+    def act(self, features, hidden_state, use_planning=True):
+        """
+        If use_planning=True (default): run plan_action() to select the best
+        candidate action via world-model lookahead.
+        If use_planning=False: fall back to pure policy sampling (faster, used
+        in early training or when world-model is unreliable).
+        """
         obs = torch.tensor(features, dtype=torch.float32, device=device).unsqueeze(0)
         hidden = hidden_state.unsqueeze(0)
         mean, std, value, next_hidden = self.forward(obs, hidden)
-        dist = torch.distributions.Normal(mean, std)
-        raw_action = dist.rsample()
-        action = torch.tanh(raw_action)
-        log_prob = (dist.log_prob(raw_action) - torch.log(1 - action.pow(2) + 1e-6)).sum(dim=-1)
-        entropy = dist.entropy().sum(dim=-1)
+
+        if use_planning:
+            action, log_prob, candidate_scores = self.plan_action(obs, hidden)
+            # Recompute next_hidden with best action
+            _, _, _, next_hidden = self.forward(obs, hidden)
+        else:
+            dist = torch.distributions.Normal(mean, std)
+            raw_action = dist.rsample()
+            action = torch.tanh(raw_action)
+            clipped = torch.clamp(action, -0.999, 0.999)
+            raw_a = 0.5 * torch.log((1 + clipped) / (1 - clipped + 1e-8))
+            log_prob = (dist.log_prob(raw_a) - torch.log(1 - clipped.pow(2) + 1e-6)).sum(dim=-1)
+
+        entropy = torch.distributions.Normal(mean, std).entropy().sum(dim=-1)
+
         return {
             'obs_tensor': obs.detach(),
             'hidden_in': hidden.detach(),
@@ -119,17 +207,6 @@ class Brain(nn.Module):
             rew_err = pred_reward.abs().mean()
             value = (obs_err + 0.2 * rew_err).clamp(0.0, 2.0)
             return float(value.cpu())
-
-    def imagine_rollout(self, hidden_tensor, action_tensor, horizon=3):
-        h = hidden_tensor
-        a = action_tensor
-        total_uncertainty = 0.0
-        for _ in range(horizon):
-            pred_next_obs, pred_reward = self.predict_world(h, a)
-            total_uncertainty = total_uncertainty + pred_next_obs.abs().mean() * 0.0 + pred_reward.abs().mean() * 0.0
-            enc = self.encoder(pred_next_obs)
-            h = self.gru(enc, h)
-        return h, total_uncertainty
 
     def store_transition(self, obs_tensor, hidden_in, action_tensor, log_prob, value, reward, done, next_obs):
         self.rollout.add({
@@ -174,8 +251,8 @@ class Brain(nn.Module):
             new_log_probs, entropy, new_values, next_hidden = self.evaluate_actions(obs, hid, actions)
             ratios = torch.exp(new_log_probs - old_log_probs)
             unclipped = ratios * advantages
-            clipped = torch.clamp(ratios, 1.0 - PPO_CLIP, 1.0 + PPO_CLIP) * advantages
-            actor_loss = -torch.min(unclipped, clipped).mean()
+            clipped_r = torch.clamp(ratios, 1.0 - PPO_CLIP, 1.0 + PPO_CLIP) * advantages
+            actor_loss = -torch.min(unclipped, clipped_r).mean()
             critic_loss = F.mse_loss(new_values.view(-1), returns)
             pred_next_obs, pred_reward = self.predict_world(next_hidden, actions)
             world_loss = F.mse_loss(pred_next_obs, next_obs) + F.mse_loss(pred_reward.view(-1), rewards)
