@@ -30,7 +30,7 @@ GESTATION_TIME = 190
 AGE_LIMIT = 5000
 PLANT_ENERGY = 28.0
 MEAT_ENERGY = 40.0
-CORPOSE_ENERGY = 36.0
+CORPSE_ENERGY = 36.0
 
 SHARP_STONE_FORAGE_BONUS = 0.30
 SHARP_STONE_COLLECT_BONUS = 0.20
@@ -325,7 +325,7 @@ class Agent:
                 val = min(self.material_inventory[mat], 1.0)
                 self.material_inventory[mat] -= val
                 self.energy = min(MAX_ENERGY, self.energy + val * 22.0)
-                cook_bonus_health += val * 0.5   # small direct health boost
+                cook_bonus_health += val * 0.5
                 self.endocrine.apply_substance(mat, val)
         plant_gain = plant_take * (PLANT_ENERGY / 8.0) * (1.0 + 0.55 * plant_bias) * efficiency * tool_mult
         meat_gain = meat_take * (MEAT_ENERGY / 6.0) * (1.0 + 0.55 * meat_bias) * efficiency * tool_mult
@@ -354,7 +354,6 @@ class Agent:
             consumed_tags.append('meat')
         if water_take > 0.3:
             consumed_tags.append('water')
-        # Only herb-healing returns reward: it is a direct pain reduction (homeostasis)
         return self._try_use_herbs(cell, consumed_tags)
 
     def _try_use_herbs(self, cell: dict, consumed_tags: list[str]) -> float:
@@ -363,8 +362,8 @@ class Agent:
             return 0.0
         reward = 0.0
         curiosity = self.genes.get('curiosity', 0.5)
-        dopamine = self.endocrine.h[4]       # DOPAMINE
-        inflammation = self.endocrine.h[6]   # INFLAMMATION
+        dopamine = self.endocrine.h[4]
+        inflammation = self.endocrine.h[6]
         sample_prob = 0.10 + 0.25 * curiosity + 0.20 * dopamine + 0.30 * inflammation
         for tag in herbs_here:
             if random.random() < sample_prob:
@@ -379,7 +378,6 @@ class Agent:
             cure_bonus = evaluate_remedy(self, consumed_tags)
             if cure_bonus > 0:
                 record_cure_discovery(self, prev_disease, consumed_tags)
-                # Cure reward = homeostasis: directly reduces sick/health-drain
                 reward += cure_bonus * 2.5
         return reward
 
@@ -387,7 +385,7 @@ class Agent:
         """
         No minimum-intensity guard.
         No reward returned — material gains only pay off downstream
-        (building shelter → warmth → health, cooking → energy, etc.)
+        (building shelter -> warmth -> health, cooking -> energy, etc.)
         """
         _ensure_new_fields(self)
         if self.is_sleeping:
@@ -413,7 +411,7 @@ class Agent:
     def maybe_build(self, world, intensity):
         """
         No minimum-intensity guard, no reward — the agent must learn
-        that shelter improves warmth → health, not because we told it so.
+        that shelter improves warmth -> health, not because we told it so.
         """
         if self.is_sleeping:
             return None
@@ -620,15 +618,12 @@ class Agent:
             brain_step = self.brain.act(features, self.hidden_state)
             self.apply_disease(world)
             self.apply_environmental_effects(world)
-
-            # Pure homeostasis reward during sleep
             reward = _homeostasis_reward(
                 self.energy, prev_energy,
                 self.hydration, prev_hydration,
                 self.health, prev_health,
                 self.alive,
             )
-
             self.brain.store_transition(
                 obs_tensor=brain_step['obs_tensor'],
                 hidden_in=brain_step['hidden_in'],
@@ -662,7 +657,6 @@ class Agent:
 
         self.primitive_move(world, action)
 
-        # --- Actions (none return reward directly anymore) ---
         herb_heal_reward = self.forage(world, max(0.0, (action['eat'] + 1.0) * 0.5))
         self.collect_materials(world, max(0.0, (action['explore'] + 1.0) * 0.5))
 
@@ -697,17 +691,14 @@ class Agent:
             self.health, prev_health,
             self.alive,
         )
-        # Herb-healing: homeostasis (pain relief) — keep
         reward += herb_heal_reward
 
-        # Intrinsic curiosity (world-model surprise) — emergent, keep
         next_features = self.local_features(world, agents)
         intrinsic = self.brain.intrinsic_reward(
             brain_step['hidden_in'], brain_step['action_tensor'], next_features
         )
         reward += 0.10 * intrinsic
 
-        # Cognition modifier (dopamine improves learning quality)
         mods = self.endocrine.modifiers()
         reward *= mods['cognition']
 
@@ -745,15 +736,7 @@ def _homeostasis_reward(
 ) -> float:
     """
     Reward signal derived exclusively from changes in vital homeostasis.
-
-    Weights reflect physiological urgency:
-      health    → highest weight (damage is hard to reverse)
-      energy    → medium weight (directly limits action)
-      hydration → medium weight (fast-acting deprivation)
-      alive     → strong survival signal
-
     No bonuses for any specific action (build, mate, attack, collect).
-    Emergent behaviour must justify itself through these three signals alone.
     """
     d_energy    = (energy    - prev_energy)    / MAX_ENERGY  * 3.0
     d_hydration = (hydration - prev_hydration) / 100.0       * 2.5
