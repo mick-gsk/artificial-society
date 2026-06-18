@@ -6,8 +6,8 @@ Tick scale (1 season = 900 ticks, AGE_LIMIT = 5000):
   ELDER  : 3200– 5000   (~80+ years)   — wisdom bonus, physical decline
 """
 
-CHILD_MAX  = 500
-ADULT_MAX  = 3200
+CHILD_MAX  = 120
+ADULT_MAX  = 3500
 # anything above ADULT_MAX is ELDER
 
 STAGE_CHILD  = 'child'

@@ -570,7 +570,7 @@ def apply_emergence_integration() -> None:
     agent_mod.INVENTION_BASE_PROB = 0.08
     agent_mod.INVENTION_CURIOSITY_MULT = 0.05
     agent_mod.NEED_INVENTION_INTERVAL = 12
-    agent_mod.MIN_REPRODUCTION_AGE = CHILD_MAX
+    agent_mod.MIN_REPRODUCTION_AGE = int(CHILD_MAX * 0.5)
     agent_mod.ELDER_AGE = ADULT_MAX
     agent_mod.STAGE_CHILD = CHILD_MAX
     agent_mod.STAGE_ELDER = ADULT_MAX

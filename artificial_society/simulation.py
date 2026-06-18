@@ -352,6 +352,28 @@ class Simulation:
             if result and result.get('discovery'):
                 share_discovery(agent, self.agents, result['discovery'])
 
+        if self.tick % 100 == 0:
+
+            alive = [a for a in self.agents if a.alive]
+
+            repro_ready = sum(
+                1 for a in alive
+                if hasattr(a, "can_reproduce") and a.can_reproduce()
+            )
+
+            pregnant = sum(
+                1 for a in alive
+                if getattr(a, "pregnant", False)
+            )
+
+            print(
+                f"[REPRO]",
+                f"tick={self.tick}",
+                f"alive={len(alive)}",
+                f"ready={repro_ready}",
+                f"pregnant={pregnant}",
+            )
+
         self.agents.extend(new_children)
 
         # Welt-Systeme

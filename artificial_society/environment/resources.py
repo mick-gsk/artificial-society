@@ -14,9 +14,9 @@ CARCASS_DECAY = 0.14
 # die Initialmengen. Die Welt wird jetzt brutal: Einzelgaenger
 # sterben in Duerre/Winter, Gruppen ueberleben.
 # ------------------------------------------------------------------
-FOOD_SCARCITY_FACTOR = 0.42   # Pflanzenwachstum auf 42% reduziert
+FOOD_SCARCITY_FACTOR = 0.50   # Pflanzenwachstum auf 42% reduziert
 MEAT_SCARCITY_FACTOR = 0.55   # Fleischnachwuchs auf 55% reduziert
-INITIAL_FOOD_FACTOR  = 0.50   # Startwert auf 50% reduziert
+INITIAL_FOOD_FACTOR  = 0.65   # Startwert auf 50% reduziert
 
 
 def clamp(v, lo, hi):

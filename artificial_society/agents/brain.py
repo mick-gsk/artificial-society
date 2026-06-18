@@ -51,8 +51,8 @@ ENTROPY_COEF = 0.004
 LEARNING_RATE = 3e-4
 GRAD_CLIP = 1.0
 REWARD_CLAMP = 6.0
-ROLLOUT_HORIZON = 64
-PPO_EPOCHS = 6
+ROLLOUT_HORIZON = 128
+PPO_EPOCHS = 20
 
 # --- Model-Based Planning ---
 PLAN_CANDIDATES = 12
@@ -67,12 +67,12 @@ WEIGHT_INHERIT_STRENGTH = 0.55
 WEIGHT_MUTATION_SCALE   = 0.018
 
 # --- Imitationslernen (Spiegelneuronen-Analogie) ---
-IMITATION_STRENGTH   = 0.05
-IMITATION_MUTATION   = 0.005
+IMITATION_STRENGTH   = 0.10
+IMITATION_MUTATION   = 0.01
 
 # --- Episodic novelty (NGU-style) ---
 EPISODIC_MEMORY_CAPACITY = 500
-EPISODIC_K = 10
+EPISODIC_K = 15
 
 # --- Emergenz v3: Research-Drive Schwellenwert ---
 # Wenn brain_step['research_drive'] > RESEARCH_DRIVE_THRESHOLD,

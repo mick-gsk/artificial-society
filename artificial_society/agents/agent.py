@@ -28,17 +28,17 @@ from artificial_society.systems.social_learning import social_learning_step
 MAX_ENERGY = 240.0
 INITIAL_ENERGY = 120.0
 CHILD_START_ENERGY = 100.0
-REPRODUCTION_ENERGY = 100.0
-REPRODUCTION_COST = 28.0
-REPRODUCTION_COOLDOWN = 120
+REPRODUCTION_ENERGY = 60.0
+REPRODUCTION_COST = 20.0
+REPRODUCTION_COOLDOWN = 100
 MIN_REPRODUCTION_AGE = 45
-GESTATION_TIME = 80
-AGE_LIMIT = 8000
+GESTATION_TIME = 40
+AGE_LIMIT = 5000
 ELDER_AGE = 2500
 AGE_HEALTH_DECAY_START = 1800
 AGE_HEALTH_DECAY_HARD  = 7000
-PLANT_ENERGY = 28.0
-MEAT_ENERGY = 40.0
+PLANT_ENERGY = 30.0
+MEAT_ENERGY = 45.0
 CORPSE_ENERGY = 36.0
 
 SHARP_STONE_FORAGE_BONUS   = 0.30
@@ -46,7 +46,7 @@ SHARP_STONE_COLLECT_BONUS  = 0.20
 
 SLEEP_DRIVE_THRESHOLD = 0.45
 SLEEP_ENERGY_REGEN    = 0.40
-SLEEP_HEALTH_REGEN    = 0.12
+SLEEP_HEALTH_REGEN    = 0.25
 
 STAGE_CHILD = MIN_REPRODUCTION_AGE
 STAGE_ELDER = ELDER_AGE
@@ -61,7 +61,7 @@ COOP_SHARE_REWARD            = 0.25
 COOP_RECV_REWARD             = 0.30
 COOP_PROXIMITY_RADIUS        = 2
 
-INVENTION_BASE_PROB      = 0.55
+INVENTION_BASE_PROB      = 0.12
 INVENTION_CURIOSITY_MULT = 0.35
 NEED_INVENTION_INTERVAL  = 8
 
@@ -70,6 +70,8 @@ MACRO_ACTION_REWARD_BONUS = 0.4
 
 
 def _ensure_new_fields(agent):
+    if not hasattr(agent, "_brain_device"):
+        agent._brain_device = next(agent.brain.parameters()).device
     if not hasattr(agent, 'causal_memory') or agent.causal_memory is None:
         agent.causal_memory = CausalMemory(capacity=32)
     if not hasattr(agent, 'material_inventory') or agent.material_inventory is None:
@@ -146,6 +148,11 @@ class Agent:
     herbs_carried: dict = field(default_factory=dict)
     causal_memory: CausalMemory = field(default_factory=lambda: CausalMemory(capacity=32))
     material_inventory: dict = field(default_factory=dict)
+    world_memory: dict = field(default_factory=dict)
+    current_goal: str = "SURVIVE"
+    goal_target: tuple | None = None
+    last_goal_change: int = 0
+    goal_commitment: int = 0
     is_sleeping: bool = False
     _last_mate_id: int | None = None
     _need_inv_cooldown: int = 0
@@ -193,6 +200,10 @@ class Agent:
             agent.tom.inherit_from(parent.tom, strength=0.4)
             agent.knowledge.inherit_from(parent.knowledge, strength=0.7)
             agent.emotional_memory.inherit_from(parent.emotional_memory, strength_factor=0.30)
+            known_places = list(parent.world_memory.items())
+            random.shuffle(known_places)
+            for pos, info in known_places[:50]:
+                agent.world_memory[pos] = dict(info)
         return agent
 
     def life_stage(self):
@@ -290,6 +301,12 @@ class Agent:
                 self.pregnant = False
                 self.gestation = 0
                 self.stored_child_genes = None
+
+        print(
+            "[BIRTH]",
+            self.id,
+            "generation=", self.generation,
+        )
         return child
 
     def primitive_move(self, world, action):
@@ -451,6 +468,14 @@ class Agent:
         return reward
 
     def _try_reproduce(self, agents):
+        if self.id == 1 and self.age % 100 == 0:
+            print(
+                "[TRY]",
+                self.id,
+                "age=", self.age,
+                "energy=", round(self.energy, 1),
+                "cooldown=", self.reproduction_cooldown,
+            )
         if not self.can_reproduce() or self.sex != 'f':
             return None
         x, y = self.pos
@@ -458,7 +483,7 @@ class Agent:
             a for a in agents
             if a is not self and a.alive and a.sex == 'm'
             and a.can_reproduce()
-            and abs(a.pos[0]-x) <= 2 and abs(a.pos[1]-y) <= 2
+            and abs(a.pos[0]-x) <= 5 and abs(a.pos[1]-y) <= 5
             and self.trust.get(a.id, 0.0) >= -0.2
         ]
         if not males:
@@ -474,7 +499,18 @@ class Agent:
         self.reproduction_cooldown = REPRODUCTION_COOLDOWN
         mate.reproduction_cooldown = REPRODUCTION_COOLDOWN
         self.pregnant = True
-        self.gestation = GESTATION_TIME
+        print(
+            "[PREGNANCY_START]",
+            "mother=", self.id,
+            "father=", mate.id,
+            "tick=", self.age,
+        )
+        eff = self.genes.get("gestation_efficiency", 1.0)
+
+        self.gestation = max(
+            20,
+            int(GESTATION_TIME / eff)
+        )
         self.stored_child_genes = child_genes
         self._last_mate_id = mate.id
         mate._last_mate_id  = self.id
@@ -483,22 +519,39 @@ class Agent:
         return None
 
     def _collect_resources(self, world):
+
         x, y = self.pos
         cell = world.get_cell(x, y)
-        tool_bonus = SHARP_STONE_COLLECT_BONUS if self.tool == 'sharp_stone' else 0.0
-        for res in ('wood', 'stone', 'fiber'):
-            available = cell.get(res, 0)
-            if available > 0:
-                amount = min(available, 1 + tool_bonus)
-                cell[res] = max(0, available - int(amount))
-                self.resources[res] = self.resources.get(res, 0) + int(amount)
+
+        materials = cell.get("materials", {})
+
+        wood_amount = materials.get("dry_wood", 0)
+
+        if wood_amount > 0:
+            take = min(1.0, wood_amount)
+            materials["dry_wood"] -= take
+            self.resources["wood"] += int(take)
+
+        stone_amount = materials.get("stone", 0)
+
+        if stone_amount > 0:
+            take = min(1.0, stone_amount)
+            materials["stone"] -= take
+            self.resources["stone"] += int(take)
+
+        fiber_amount = materials.get("fiber", 0)
+
+        if fiber_amount > 0:
+            take = min(1.0, fiber_amount)
+            materials["fiber"] -= take
+            self.resources["fiber"] += int(take)
 
     def _build(self, world):
         x, y = self.pos
         cell = world.get_cell(x, y)
         result = maybe_build_structure(cell, self.resources)
         if result:
-            self.energy -= BUILD_ENERGY_COST
+            self.energy -= BUILD_ENERGY_COST.get(result, 10)
 
     def _maybe_craft_tool(self):
         if self.tool is None:
@@ -582,6 +635,200 @@ class Agent:
 
         return macro_bonus
 
+    def update_memory(self, world):
+
+        MEMORY_DECAY = 500
+        MAX_MEMORY_CELLS = 200
+
+        x, y = self.pos
+
+        for agent in world.agents:
+
+            if agent is self:
+                continue
+
+            if not agent.alive:
+                continue
+
+            if abs(agent.pos[0] - x) <= 8 and abs(agent.pos[1] - y) <= 8:
+
+                self.world_memory[("agent", agent.id)] = {
+                    "type": "agent",
+                    "value": 1,
+                    "tick": self.age,
+                    "pos": agent.pos,
+                }
+
+        for dx in range(-4, 5):
+            for dy in range(-4, 5):
+
+                nx = x + dx
+                ny = y + dy
+
+                if not world.in_bounds(nx, ny):
+                    continue
+
+                cell = world.get_cell(nx, ny)
+
+                if cell.get("food", 0) > 15:
+                    self.world_memory[(nx, ny)] = {
+                        "type": "food",
+                        "value": cell["food"],
+                        "tick": self.age,
+                    }
+
+                if cell.get("water", 0) > 15:
+                    self.world_memory[(nx, ny)] = {
+                        "type": "water",
+                        "value": cell["water"],
+                        "tick": self.age,
+                    }
+
+                if cell.get("danger", 0) > 30:
+                    self.world_memory[(nx, ny)] = {
+                        "type": "danger",
+                        "value": cell["danger"],
+                        "tick": self.age,
+                    }
+
+                if cell.get("disease", 0) > 20:
+                    self.world_memory[(nx, ny)] = {
+                        "type": "disease",
+                        "value": cell["disease"],
+                        "tick": self.age,
+                    }
+
+                if cell.get("warmth", 0) > 0.2:
+                    self.world_memory[(nx, ny)] = {
+                        "type": "warmth",
+                        "value": cell["warmth"],
+                        "tick": self.age,
+                    }
+
+        self.world_memory = {
+            pos: info
+            for pos, info in self.world_memory.items()
+            if self.age - info["tick"] < MEMORY_DECAY
+        }
+
+        if len(self.world_memory) > MAX_MEMORY_CELLS:
+
+            newest = sorted(
+                self.world_memory.items(),
+                key=lambda x: x[1]["tick"]
+            )[-MAX_MEMORY_CELLS:]
+
+            self.world_memory = dict(newest)
+
+
+    def choose_goal(self):
+
+        if self.goal_commitment > 0:
+                self.goal_commitment -= 1
+                return self.current_goal
+
+        if self.energy < 60:
+                self.current_goal = "EAT"
+                self.goal_commitment = 30
+
+        elif self.hydration < 40:
+                self.current_goal = "DRINK"
+                self.goal_commitment = 30
+
+        elif (
+                self.energy > REPRODUCTION_ENERGY
+                and self.health > 70
+                and self.age > MIN_REPRODUCTION_AGE
+            ):
+                self.current_goal = "REPRODUCE"
+                self.goal_commitment = 40
+
+        else:
+                self.current_goal = "EXPLORE"
+                self.goal_commitment = 20
+
+        return self.current_goal
+    
+
+    def select_goal_target(self):
+
+        candidates = []
+
+        for pos, info in self.world_memory.items():
+
+            score = info["value"]
+
+            if self.current_goal == "EAT":
+                if info["type"] == "food":
+                    candidates.append((score, pos))
+
+            elif self.current_goal == "DRINK":
+                if info["type"] == "water":
+                    candidates.append((score, pos))
+
+            elif self.current_goal == "REPRODUCE":
+
+                if info["type"] == "agent":
+                    candidates.append((1, info["pos"]))
+
+            elif self.current_goal == "EXPLORE":
+
+                if info["type"] in (
+                    "food",
+                    "water",
+                    "warmth",
+                ):
+                    candidates.append((score * 0.5, pos))
+
+        if candidates:
+            candidates.sort(reverse=True)
+            self.goal_target = candidates[0][1]
+        else:
+            self.goal_target = None
+
+
+    def goal_move(self, world):
+
+        if self.goal_target is None:
+            return None
+
+        tx, ty = self.goal_target
+
+        if not world.in_bounds(tx, ty):
+            self.goal_target = None
+            return None
+
+        target_cell = world.get_cell(tx, ty)
+
+        if self.current_goal == "EAT":
+            if target_cell.get("food", 0) <= 0:
+                self.goal_target = None
+                return None
+
+        if self.current_goal == "DRINK":
+            if target_cell.get("water", 0) <= 0:
+                self.goal_target = None
+                return None
+
+        x, y = self.pos
+
+        dx = 0
+        dy = 0
+
+        if tx > x:
+            dx = 1
+        elif tx < x:
+            dx = -1
+
+        if ty > y:
+            dy = 1
+        elif ty < y:
+            dy = -1
+
+        return dx, dy
+    
+
+
     def update(
         self,
         world,
@@ -642,6 +889,13 @@ class Agent:
             and not self.is_sleeping
         )
 
+        self.update_memory(world)
+
+        self.current_goal = self.choose_goal()
+
+        self.select_goal_target()
+
+
         brain_step = self.brain.act(
             features,
             self.hidden_state,
@@ -661,6 +915,12 @@ class Agent:
             # Emergenz v3: research_drive direkt aus dem Brain-Output
             'research_drive': brain_step.get('research_drive', 0.0),
         }
+
+        goal_move = self.goal_move(world)
+
+        if goal_move is not None:
+            action["move_x"] = goal_move[0]
+            action["move_y"] = goal_move[1]
 
         reward = 0.0
 
@@ -721,7 +981,7 @@ class Agent:
             else:
                 # Hintergrund-Exploration: geringere Basiswahrscheinlichkeit
                 # (von 0.55 auf 0.25 reduziert, da Brain jetzt Hauptpfad ist)
-                bg_inv_prob = 0.25 + INVENTION_CURIOSITY_MULT * curiosity
+                bg_inv_prob = 0.03 + INVENTION_CURIOSITY_MULT * curiosity
                 if random.random() < bg_inv_prob:
                     invented = agent_try_invention(self, world.get_cell(*self.pos), world.get_cell(*self.pos))
                     if invented:
@@ -749,7 +1009,8 @@ class Agent:
         self._try_reproduce(agents)
         child_genes = self.progress_pregnancy()
 
-        social_learning_step(self, agents, tick)
+        if tick % 5 == 0:
+            social_learning_step(self, agents, tick)
 
         next_features_raw = self.local_features(world, agents)
         intrinsic = self.brain.intrinsic_reward(
@@ -761,7 +1022,7 @@ class Agent:
 
         import torch
         next_obs_t = torch.tensor(next_features_raw, dtype=torch.float32,
-                                  device=self.brain.initial_hidden().device)
+                                  device=self._brain_device)
         self.brain.episodic_memory.novelty(next_obs_t)
 
         cognition_mult = mods.get('cognition', 1.0)
