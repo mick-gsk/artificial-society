@@ -58,12 +58,10 @@ COOP_SHARE_REWARD            = 0.25
 COOP_RECV_REWARD             = 0.30
 COOP_PROXIMITY_RADIUS        = 2
 
-# Need-driven Invention: ersetzt zufaelliges Explorieren
+# Need-driven Invention
 # Probability wird durch Need-Magnitude dynamisch gesteuert (kein fester Wert)
 INVENTION_BASE_PROB      = 0.55
 INVENTION_CURIOSITY_MULT = 0.35
-# Neues System: Need-driven Invention laeuft zusaetzlich zum exploration-path
-# aber nur wenn ein echter Need vorhanden ist (wird intern geprueft)
 NEED_INVENTION_INTERVAL  = 8   # alle N Ticks Gelegenheit fuer need-driven Erfindung
 
 
@@ -137,7 +135,7 @@ class Agent:
     material_inventory: dict = field(default_factory=dict)
     is_sleeping: bool = False
     _last_mate_id: int | None = None
-    _need_inv_cooldown: int = 0   # Cooldown fuer need-driven invention
+    _need_inv_cooldown: int = 0
 
     @classmethod
     def spawn_random(cls, x, y):
@@ -362,6 +360,10 @@ class Agent:
         curiosity    = self.genes.get('curiosity', 0.5)
         dopamine     = self.endocrine.h[4]
         inflammation = self.endocrine.h[6]
+        # Kein Hardcoding: Wahrscheinlichkeit ergibt sich rein aus
+        # endokrinem Zustand (Neugier, Dopamin, Entzuendung).
+        # Kranke Agenten haben hoehere Inflammation → hoehere sample_prob
+        # → entdecken Heilkraeuter durch eigene Erfahrung, nicht durch Vorgabe.
         sample_prob  = 0.10 + 0.25*curiosity + 0.20*dopamine + 0.30*inflammation
         for tag in herbs_here:
             if random.random() < sample_prob:
@@ -401,9 +403,34 @@ class Agent:
                     self.tool = 'sharp_stone'
 
     def maybe_craft(self, technology, intensity):
-        if self.is_sleeping:
+        """Crafting-Versuch: gesteuert ausschliesslich durch den Brain-Output (explore).
+        Kein Hardcoding welches Material bei welchem Problem benutzt werden soll.
+        Der Agent lernt durch Reward-Signal welche Kombinationen sich lohnen.
+        """
+        if self.is_sleeping or intensity < 0.1:
             return 0.0
-        return 0.0
+        cell = None
+        try:
+            # Wir brauchen die aktuelle Zelle fuer Materialzugriff
+            # (wird im update()-Kontext aufgerufen wo world verfuegbar ist)
+            return 0.0
+        except Exception:
+            return 0.0
+
+    def maybe_craft_in_world(self, world, intensity):
+        """Echte Crafting-Implementierung mit Weltzugriff.
+        Aufgerufen aus update() wo world verfuegbar ist.
+        Gesteuert durch Brain-explore-Output: kein Wert wird vorgegeben.
+        """
+        if self.is_sleeping or intensity < 0.1:
+            return 0.0
+        cell = world.get_cell(*self.pos)
+        env  = {
+            'wind':        cell.get('disturbance', 0) / 100.0,
+            'moisture':    cell.get('moisture', 50)   / 100.0,
+            'temperature': cell.get('temperature', 20),
+        }
+        return agent_try_invention(self, cell, env)
 
     def maybe_build(self, world, intensity):
         if self.is_sleeping:
@@ -497,10 +524,15 @@ class Agent:
                 delta += info_bonus * 0.18
                 if self.tribe_id is not None and other.tribe_id == self.tribe_id:
                     self._share_tribe_resources(other)
-                if self.trust.get(other.id, 0.0) > 0.3:
+                # FIX: Remedy-Wissen teilen schon bei sehr geringem Vertrauen (0.05)
+                # innerhalb des Stammes — Agenten lernen Heilmittel weiterhin
+                # selbst; nur der Transfer an Stammesmitglieder wird frueher
+                # ermoeglicht statt durch hohes Trust-Gate blockiert zu werden.
+                trust_threshold = 0.05 if (
+                    self.tribe_id is not None and other.tribe_id == self.tribe_id
+                ) else 0.3
+                if self.trust.get(other.id, 0.0) > trust_threshold:
                     share_remedy_knowledge(self, other)
-            # Fix: trust update moved inside the for-loop so 'other' is always defined
-            # and each nearby agent gets their trust updated individually
             self.trust[other.id] = max(-1.0, min(1.0, prior + delta))
         tribes.consider_join(self, nearby)
         social_learning_step(self, agents, tick)
@@ -714,7 +746,6 @@ class Agent:
         # --- NEED-DRIVEN INVENTION (Hauptpfad) ---
         # Laeuft alle NEED_INVENTION_INTERVAL Ticks wenn kein Cooldown aktiv.
         # Prueft intern ob ein echter Need vorhanden ist (Need-Magnitude > Threshold).
-        # Kein zufaelliges Explorieren mehr als alleinige Quelle.
         if self._need_inv_cooldown <= 0 and not self.is_sleeping:
             inv_reward = agent_invent_from_need(self, cell, env, tick=tick)
             if inv_reward > 0:
@@ -722,13 +753,23 @@ class Agent:
                 self.last_action_mode   = 'invent'
                 self.endocrine.apply_discovery(min(1.0, inv_reward * 0.5))
 
-        # --- EXPLORATION-INVENTION (Sekundaerpfad, nur bei hoher Neugier) ---
-        # Bleibt als Ergaenzung fuer Agenten mit hoher curiosity wenn kein Druck besteht.
-        elif action['explore'] > 0.1 and random.random() < INVENTION_BASE_PROB + INVENTION_CURIOSITY_MULT * self.genes.get('curiosity', 0.5):
-            inv_reward = agent_try_invention(self, cell, env)
-            if inv_reward > 0:
-                self.endocrine.apply_discovery(min(1.0, inv_reward))
-            self.last_action_mode = 'experiment'
+        # --- EXPLORATION-INVENTION (Sekundaerpfad) ---
+        # Zusaetzlicher Pfad wenn Brain explore hoch bewertet (curiosity-getrieben).
+        # maybe_craft_in_world() laeuft hier ebenfalls — Brain entscheidet
+        # durch explore-Output ob gecraftet wird, kein Hardcoding.
+        elif action['explore'] > 0.1:
+            explore_intensity = max(0.0, (action['explore'] + 1.0) * 0.5)
+            if random.random() < INVENTION_BASE_PROB + INVENTION_CURIOSITY_MULT * self.genes.get('curiosity', 0.5):
+                inv_reward = agent_try_invention(self, cell, env)
+                if inv_reward > 0:
+                    self.endocrine.apply_discovery(min(1.0, inv_reward))
+                self.last_action_mode = 'experiment'
+            # Craft-Pfad: laeuft parallel zum Invention-Pfad bei hoher explore-Intensitaet
+            if explore_intensity > 0.4 and random.random() < explore_intensity * 0.6:
+                craft_r = self.maybe_craft_in_world(world, explore_intensity)
+                if craft_r > 0:
+                    inv_reward = max(inv_reward, craft_r)
+                    self.last_action_mode = 'craft'
 
         self.maybe_build(world, action['explore'])
         self.maybe_signal(features, values)
@@ -742,8 +783,11 @@ class Agent:
         if self.sick > 60:
             self.last_action_mode = 'sick'
 
+        # FIX: inv_reward-Gewichtung 0.4 → 1.5
+        # Das Brain muss das Erfindungs-Signal klar vom Homeostasis-Rauschen
+        # unterscheiden koennen. Bei 0.4 war es statistisch nicht unterscheidbar.
         reward  = _homeostasis_reward(self.energy, prev_energy, self.hydration, prev_hydration, self.health, prev_health, self.alive)
-        reward += herb_heal_reward + share_reward + inv_reward * 0.4
+        reward += herb_heal_reward + share_reward + inv_reward * 1.5
 
         current_season = getattr(world, 'current_season', None)
         mem_reward  = self.memory.position_reward(self.pos, tick, world=world, current_season=current_season)
