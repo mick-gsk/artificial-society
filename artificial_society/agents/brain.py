@@ -68,6 +68,11 @@ EPISODIC_MEMORY_CAPACITY = 500
 EPISODIC_K = 10
 
 
+def _ensure_2d(t: torch.Tensor) -> torch.Tensor:
+    """Stellt sicher, dass t mindestens 2D ist (batch-dim vorne)."""
+    return t.unsqueeze(0) if t.dim() == 1 else t
+
+
 class RolloutBuffer:
     def __init__(self):
         self.storage = []
@@ -173,6 +178,9 @@ class Brain(nn.Module):
         return mean, std, value, next_hidden
 
     def predict_world(self, hidden_tensor, action_tensor):
+        # Beide Tensoren auf 2D normalisieren, damit torch.cat immer funktioniert
+        hidden_tensor = _ensure_2d(hidden_tensor)
+        action_tensor = _ensure_2d(action_tensor)
         with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=USE_FP16):
             z = self.world_fc(torch.cat([hidden_tensor, action_tensor], dim=-1))
             next_obs = torch.tanh(self.next_obs_head(z))
@@ -206,8 +214,8 @@ class Brain(nn.Module):
         """
         GOAL_WEIGHT = 0.40
 
-        h = hidden_tensor
-        a = action_tensor
+        h = _ensure_2d(hidden_tensor)
+        a = _ensure_2d(action_tensor)
         total_score = torch.zeros(a.shape[0], device=device)
         discount = 1.0
 
@@ -278,7 +286,7 @@ class Brain(nn.Module):
             action_samples = torch.tanh(raw_samples)  # (n_candidates, action_size)
 
             # hidden_tensor: (1, hidden_size) -> expand zu (n_candidates, hidden_size)
-            h_expanded = hidden_tensor.expand(n_candidates, -1)  # kein Speicher-Copy
+            h_expanded = _ensure_2d(hidden_tensor).expand(n_candidates, -1)
 
             # Alle n_candidates Kandidaten in einem einzigen Batch-Call
             _, scores = self.imagine_rollout(
@@ -339,9 +347,15 @@ class Brain(nn.Module):
         """
         Combines prediction-error curiosity (world model) with
         NGU-style episodic novelty (state-space distance).
+
+        hidden_in und action_tensor koennen 1D oder 2D sein --
+        _ensure_2d in predict_world normalisiert beide Faelle.
         """
         with torch.no_grad():
-            pred_next_obs, pred_reward = self.predict_world(hidden_in, action_tensor)
+            pred_next_obs, pred_reward = self.predict_world(
+                _ensure_2d(hidden_in.to(device)),
+                _ensure_2d(action_tensor.to(device)),
+            )
             target = torch.tensor(next_obs, dtype=torch.float32, device=device).unsqueeze(0)
 
             obs_err  = F.mse_loss(pred_next_obs, target)
