@@ -1,7 +1,6 @@
-"""Auto-load runtime patches when Python starts in this repository."""
+"""Auto-load the bootstrap before the simulation module imports."""
 
 try:
-    import artificial_society.runtime_patches  # noqa: F401
+    from artificial_society.bootstrap import patch_simulation_class  # noqa: F401
 except Exception:
-    # Keep startup resilient; the simulation can still run without the patch.
     pass

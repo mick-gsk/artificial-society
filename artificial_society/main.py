@@ -1,5 +1,17 @@
 import pygame
+
+try:
+    import artificial_society.bootstrap as bootstrap
+except Exception:
+    bootstrap = None
+
 from artificial_society.simulation import Simulation
+
+if bootstrap is not None:
+    try:
+        bootstrap.patch_simulation_class(Simulation)
+    except Exception:
+        pass
 
 
 def main():
