@@ -14,19 +14,14 @@ device = torch.device('cpu')
 #   17..20 genes (curiosity, aggression, cooperation, sociality)
 #   21..30 equipment + episodic extras (tool, trust, resources x3, last_reward,
 #          herb_presence, warmth, mat_count, inv_size)
-#   31..33 structure features (camp_level, well_level, farm_level)  <-- NEU
+#   31..33 structure features (camp_level, well_level, farm_level)
 #   34..36 causal memory features (3)
 #   37..48 episodic memory retrieval (12)
 #   49..56 endocrine hormones: cortisol, adrenaline, melatonin, serotonin,
 #          dopamine, oxytocin, inflammation, metabolism
-#
-# IMPORTANT: The brain never receives raw world labels like 'light',
-# 'is_night', 'sleep_pressure', or 'disease_level'.  All such information
-# reaches the brain ONLY through its hormonal consequences.  The agent
-# must learn the correlations on its own.
 INPUT_SIZE = 57
 HIDDEN_SIZE = 96
-ACTION_SIZE = 6
+ACTION_SIZE = 7
 GAMMA = 0.97
 GAE_LAMBDA = 0.95
 PPO_CLIP = 0.2
@@ -34,28 +29,22 @@ ACTOR_COEF = 1.0
 CRITIC_COEF = 0.5
 WORLD_COEF = 0.35
 ENTROPY_COEF = 0.004
-LEARNING_RATE = 3e-4          # Basis-Lernrate; wird durch plasticity-Gen skaliert
+LEARNING_RATE = 3e-4
 GRAD_CLIP = 1.0
 REWARD_CLAMP = 6.0
 ROLLOUT_HORIZON = 64
 PPO_EPOCHS = 6
 
-# --- Model-Based Planning ---
 PLAN_CANDIDATES = 12
 PLAN_HORIZON = 3
 NOVELTY_WEIGHT = 0.15
 VALUE_WEIGHT = 0.50
 REWARD_WEIGHT = 0.35
 
-# --- Neuronale Praedisposition durch Vererbung ---
 WEIGHT_INHERIT_STRENGTH = 0.55
-WEIGHT_MUTATION_SCALE   = 0.018
-
-# --- Imitationslernen (Spiegelneuronen-Analogie) ---
-# Wie stark ein beobachteter Erfolgsagent die eigenen Gewichte beeinflusst.
-# Sehr klein halten: Imitation ist ein Nudge, kein Klon.
-IMITATION_STRENGTH   = 0.05
-IMITATION_MUTATION   = 0.005
+WEIGHT_MUTATION_SCALE = 0.018
+IMITATION_STRENGTH = 0.05
+IMITATION_MUTATION = 0.005
 
 
 class RolloutBuffer:
@@ -75,11 +64,6 @@ class RolloutBuffer:
 class Brain(nn.Module):
     def __init__(self, input_size=INPUT_SIZE, hidden_size=HIDDEN_SIZE,
                  action_size=ACTION_SIZE, plasticity: float = 1.0):
-        """
-        plasticity-Gen (0.3..1.8) skaliert die Lernrate.
-        Biologisches Vorbild: Neuronale Plastizitaet variiert zwischen Individuen;
-        hochplastische Individuen lernen schneller aber sind weniger stabil.
-        """
         super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -102,15 +86,10 @@ class Brain(nn.Module):
         )
         self.next_obs_head = nn.Linear(128, input_size)
         self.reward_head = nn.Linear(128, 1)
-        # Individuelle Lernrate basierend auf plasticity-Gen
-        # Klammerung auf [0.5x .. 2.5x] verhindert Extremwerte
         effective_lr = LEARNING_RATE * max(0.5, min(2.5, plasticity))
         self.optimizer = optim.Adam(self.parameters(), lr=effective_lr)
         self.rollout = RolloutBuffer()
 
-    # ------------------------------------------------------------------
-    # Gewichtsvererbung (Epigenetik-Analogie)
-    # ------------------------------------------------------------------
     def inherit_weights_from(self, parent_brain: 'Brain',
                               strength: float = WEIGHT_INHERIT_STRENGTH,
                               mutation_scale: float = WEIGHT_MUTATION_SCALE):
@@ -125,9 +104,6 @@ class Brain(nn.Module):
                     strength * parent_param + (1.0 - strength) * child_param + mutation
                 )
 
-    # ------------------------------------------------------------------
-    # Imitationslernen (Spiegelneuronen-Hypothese / Bandura)
-    # ------------------------------------------------------------------
     def imitate_from(self, model_brain: 'Brain',
                      strength: float = IMITATION_STRENGTH,
                      mutation_scale: float = IMITATION_MUTATION):
@@ -204,7 +180,6 @@ class Brain(nn.Module):
                 scores.append(score.item())
             best_idx = int(torch.tensor(scores).argmax().item())
             best_action = action_samples[best_idx]
-            log_std = self.policy_logstd.clamp(-2.0, 0.7).unsqueeze(0).expand_as(mean)
             clipped = torch.clamp(best_action, -0.999, 0.999)
             raw_best = 0.5 * torch.log((1 + clipped) / (1 - clipped + 1e-8))
             log_prob = (dist.log_prob(raw_best) - torch.log(1 - clipped.pow(2) + 1e-6)).sum(dim=-1)
