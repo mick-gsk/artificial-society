@@ -237,3 +237,26 @@ class RecipeDiscovery:
 
 SEQUENCE_LIBRARY  = SequenceLibrary()
 RECIPE_DISCOVERY  = RecipeDiscovery()
+
+
+def agent_tick_with_goals(
+    agent,
+    cell: dict,
+    world_context: dict,
+    tick: int,
+) -> tuple[str | None, float]:
+    if not hasattr(agent, 'goal_stack') or agent.goal_stack is None:
+        agent.goal_stack = GoalStack()
+
+    action_from_stack, shaping = agent.goal_stack.tick(agent, cell)
+
+    import random
+    if agent.goal_stack.is_empty() and random.random() < 0.30:
+        suggestions = GOAL_PLANNER.suggest_goals(agent, cell, world_context)
+        for goal in suggestions[:2]:
+            agent.goal_stack.push(goal)
+
+        if not agent.goal_stack.is_empty():
+            action_from_stack, shaping = agent.goal_stack.tick(agent, cell)
+
+    return action_from_stack, shaping
