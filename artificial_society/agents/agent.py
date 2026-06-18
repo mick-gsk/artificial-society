@@ -299,13 +299,12 @@ class Agent:
         cell  = world.get_cell(x, y)
         gain  = 0.0
         tool_bonus = SHARP_STONE_FORAGE_BONUS if self.tool == 'sharp_stone' else 0.0
-        home_bonus = get_home_forage_bonus(world, self)
+        home_bonus = get_home_forage_bonus(self, world)   # FIX: (agent, world)
         eff   = mods.get('forage_eff', 1.0) * (1.0 + tool_bonus + home_bonus)
-        # food
         food_available = cell.get('food', 0.0)
         if food_available > 0:
-            diet = self.genes.get('diet_preference', 0.0)  # -1=plant, +1=meat
-            if diet < 0:  # plant preference
+            diet = self.genes.get('diet_preference', 0.0)
+            if diet < 0:
                 take = min(food_available, PLANT_ENERGY * eff)
                 cell['food'] = max(0.0, food_available - take)
                 self.energy  = min(MAX_ENERGY, self.energy + take)
@@ -313,7 +312,7 @@ class Agent:
                 gain += take
                 self.endocrine.apply_substance('plant_food', take / PLANT_ENERGY)
                 self.endocrine.apply_successful_forage(take)
-            else:  # meat / omnivore
+            else:
                 carcass = cell.get('carcass', 0.0)
                 if carcass > 0:
                     take = min(carcass, MEAT_ENERGY * eff)
@@ -331,7 +330,6 @@ class Agent:
                     gain += take
                     self.endocrine.apply_substance('plant_food', take / PLANT_ENERGY)
                     self.endocrine.apply_successful_forage(take)
-        # water
         water_available = cell.get('water', 0.0)
         if water_available > 0 and self.hydration < 100.0:
             take = min(water_available, 8.0 * eff)
@@ -398,7 +396,7 @@ class Agent:
             loot = target.energy * 0.3
             self.energy = min(MAX_ENERGY, self.energy + loot)
             return loot
-        self.endocrine.apply_attack_received()  # counter-stress
+        self.endocrine.apply_attack_received()
         return 0.5
 
     def _cooperate(self, agents, mods):
@@ -415,11 +413,9 @@ class Agent:
         reward = 0.0
         same_tribe = [a for a in nearby if a.tribe_id == self.tribe_id and self.tribe_id is not None]
         self.endocrine.apply_social_signal(len(nearby), bool(same_tribe))
-        # foraging bonus from group
         forage_bonus = min(COOP_FORAGE_MAX_BONUS, len(nearby) * COOP_FORAGE_BONUS_PER_MEMBER)
         self.energy = min(MAX_ENERGY, self.energy + forage_bonus)
         reward += forage_bonus * 0.1
-        # energy sharing
         if self.energy >= COOP_SHARE_THRESHOLD_DONOR:
             for partner in nearby:
                 if partner.energy < COOP_SHARE_THRESHOLD_RECV:
@@ -429,7 +425,6 @@ class Agent:
                     partner.trust[self.id]  = min(1.0, partner.trust.get(self.id, 0.0) + 0.08)
                     reward += COOP_SHARE_REWARD
                     break
-        # receive sharing
         for partner in nearby:
             if (partner.energy >= COOP_SHARE_THRESHOLD_DONOR
                     and self.energy < COOP_SHARE_THRESHOLD_RECV):
@@ -438,10 +433,7 @@ class Agent:
                 reward += COOP_RECV_REWARD
                 self.trust[partner.id] = min(1.0, self.trust.get(partner.id, 0.0) + 0.08)
                 break
-        # trust update with ToM
         for partner in nearby:
-            if self.trust.get(partner.id, 0.0) > 0.1:
-                self.tom.observe_action(partner.id, 'cooperate', outcome=1.0)
             delta = 0.01 * (1.0 + social_bias)
             self.trust[partner.id] = min(1.0, self.trust.get(partner.id, 0.0) + delta)
         return reward
@@ -476,7 +468,7 @@ class Agent:
         mate._last_mate_id  = self.id
         self.children += 1
         mate.children  += 1
-        return None  # child born via progress_pregnancy
+        return None
 
     def _collect_resources(self, world):
         x, y = self.pos
@@ -492,9 +484,10 @@ class Agent:
     def _build(self, world):
         x, y = self.pos
         cell = world.get_cell(x, y)
-        result = maybe_build_structure(self, cell)
+        result = maybe_build_structure(cell, self.resources)   # FIX: (cell, resources)
         if result:
-            self.energy -= BUILD_ENERGY_COST
+            cost = BUILD_ENERGY_COST.get(result, 8.0)
+            self.energy = max(0.0, self.energy - cost)
 
     def _maybe_craft_tool(self):
         if self.tool is None:
@@ -537,7 +530,6 @@ class Agent:
             self.energy   = min(MAX_ENERGY, self.energy   + SLEEP_ENERGY_REGEN)
             self.health   = min(100.0,      self.health   + SLEEP_HEALTH_REGEN)
             self.hydration = max(0.0,       self.hydration - 0.1)
-            # wake when sleep drive dissipates
             if sleep_drive < 0.20:
                 self.is_sleeping = False
 
@@ -552,36 +544,27 @@ class Agent:
         economy=None,
         technology=None,
     ):
-        """
-        Main per-tick update. Returns child_genes dict if reproduction occurs,
-        otherwise None.
-        """
         if not self.alive:
             return None
 
         _ensure_new_fields(self)
 
-        # --- endocrine update (must come first) ---
         self.endocrine.update(self, world)
         mods = self.endocrine.modifiers()
 
-        # --- age & disease ---
         self._age_tick()
         self._disease_tick(world)
         if not self.alive:
             return None
 
-        # --- sleep ---
         self._sleep_tick(mods)
 
-        # --- passive drains ---
         move_cost = 0.5 * mods.get('move_cost_mult', 1.0)
         self.energy    = max(0.0, self.energy    - move_cost)
         self.hydration = max(0.0, self.hydration - 0.3)
         health_drain   = mods.get('health_drain', 0.0)
         self.health    = max(0.0, self.health    - health_drain)
 
-        # starvation / dehydration
         if self.energy <= 0:
             self.health = max(0.0, self.health - 1.5)
         if self.hydration <= 0:
@@ -590,20 +573,21 @@ class Agent:
             self.alive = False
             return None
 
-        # --- brain: observe & act ---
+        # --- emotional memory: endocrine feedback ---
+        em_mods = self.emotional_memory.endocrine_modulations()
+        self.endocrine.h[0] = min(1.0, max(0.0, self.endocrine.h[0] + em_mods['cortisol']))
+        self.endocrine.h[3] = min(1.0, max(0.0, self.endocrine.h[3] + em_mods['serotonin']))
+        self.endocrine.h[4] = min(1.0, max(0.0, self.endocrine.h[4] + em_mods['dopamine']))
+        self.endocrine.h[1] = min(1.0, max(0.0, self.endocrine.h[1] + em_mods['adrenaline']))
+
         features = self.local_features(world, agents)
         if self.hidden_state is None:
             self.hidden_state = self.brain.initial_hidden()
 
-        brain_step = self.brain.act(
-            features,
-            self.hidden_state,
-            use_planning=True,
-        )
+        brain_step = self.brain.act(features, self.hidden_state)
         self.hidden_state = brain_step['next_hidden']
         action_list = brain_step['action_list']
 
-        # map 6 continuous outputs to named action dict
         action = {
             'move_x':     action_list[0],
             'move_y':     action_list[1],
@@ -613,9 +597,7 @@ class Agent:
             'build':      action_list[5],
         }
 
-        # --- execute actions ---
         reward = 0.0
-
         self.primitive_move(world, action)
         apply_structure_effects(self, world.get_cell(*self.pos))
 
@@ -627,14 +609,28 @@ class Agent:
                 if gained > 0:
                     mode = 'forage'
                     self._collect_herbs(world)
+                    # emotional memory: encode foraging outcome
+                    valence = min(1.0, gained / MAX_ENERGY)
+                    arousal = 0.2 + 0.3 * valence
+                    ctx = self.endocrine.h[:4]
+                    self.emotional_memory.encode_experience('food', valence, arousal, ctx, tick)
 
             if action['cooperate'] > 0.2:
-                reward += self._cooperate(agents, mods)
+                coop_r = self._cooperate(agents, mods)
+                reward += coop_r
                 mode = 'cooperate'
+                if coop_r > 0:
+                    ctx = self.endocrine.h[:4]
+                    self.emotional_memory.encode_experience('agent_share', 0.6, 0.4, ctx, tick)
 
             if action['attack'] > 0.5:
-                reward += self._attack(agents, mods)
+                atk_r = self._attack(agents, mods)
+                reward += atk_r
                 mode = 'attack'
+                # encode attack experience
+                ctx = self.endocrine.h[:4]
+                valence = 0.3 if atk_r > 0 else -0.4
+                self.emotional_memory.encode_experience('agent_attack', valence, 0.7, ctx, tick)
 
             if action['build'] > 0.4:
                 self._collect_resources(world)
@@ -647,29 +643,37 @@ class Agent:
 
         self.last_action_mode = mode
 
-        # --- territory reward ---
-        territory_r = territory_reward_for_agent(world, self)
+        # --- encode disease trauma ---
+        if self.sick > 40.0:
+            ctx = self.endocrine.h[:4]
+            self.emotional_memory.encode_experience(
+                f'disease_{self.disease_id or "unknown"}',
+                -0.7, min(1.0, self.sick / 100.0), ctx, tick
+            )
+
+        # --- territory reward ---  FIX: (agent, world)
+        territory_r = territory_reward_for_agent(self, world)
         reward += territory_r
 
-        # --- reproduction ---
         self._try_reproduce(agents)
         child_genes = self.progress_pregnancy()
 
-        # --- social learning (Schicht 2) ---
-        social_learning_step(self, agents)
+        # --- social learning ---
+        social_learning_step(self, agents, tick)
 
-        # --- need-driven invention (Schicht 1) ---
+        # --- need-driven invention ---
         if self._need_inv_cooldown <= 0:
             need_vec = compute_need_vector(self)
             inv_result = agent_invent_from_need(self, world.get_cell(*self.pos), need_vec)
             if inv_result:
                 reward += 0.5
                 self.endocrine.apply_discovery(1.0)
+                ctx = self.endocrine.h[:4]
+                self.emotional_memory.encode_experience('invent', 0.8, 0.6, ctx, tick)
             self._need_inv_cooldown = NEED_INVENTION_INTERVAL
         else:
             self._need_inv_cooldown -= 1
 
-        # --- standard invention & cooking ---
         inv_prob = INVENTION_BASE_PROB + INVENTION_CURIOSITY_MULT * self.genes.get('curiosity', 0.5)
         if random.random() < inv_prob:
             invented = agent_try_invention(self, world.get_cell(*self.pos))
@@ -682,35 +686,33 @@ class Agent:
                 reward += 0.3
                 self.endocrine.apply_substance('cooked_meat', 1.0)
 
-        # --- economy participation ---
         if economy is not None:
             economy.agent_trade(self, agents)
 
-        # --- causal memory update ---
         next_features = self.local_features(world, agents)
         delta_energy = (self.energy - features[0] * MAX_ENERGY) / MAX_ENERGY
         if abs(delta_energy) > 0.02:
             seq_key = (mode, round(delta_energy, 1))
             self.causal_memory.record(seq_key, delta_energy)
 
-        # --- intrinsic reward & brain training ---
-        next_features_raw = self.local_features(world, agents)
         intrinsic = self.brain.intrinsic_reward(
             brain_step['hidden_in'],
             brain_step['action_tensor'],
-            next_features_raw,
+            next_features,
         )
         reward += 0.3 * intrinsic
 
-        # update episodic memory with current observation
         import torch
-        next_obs_t = torch.tensor(next_features_raw, dtype=torch.float32,
+        next_obs_t = torch.tensor(next_features, dtype=torch.float32,
                                   device=self.brain.initial_hidden().device)
         self.brain.episodic_memory.add(next_obs_t)
 
-        # store transition and maybe train
         cognition_mult = mods.get('cognition', 1.0)
         effective_reward = reward * cognition_mult
+
+        # --- emotional memory reward signal ---
+        effective_reward += self.emotional_memory.reward_signal()
+
         self.brain.store_transition(
             brain_step['obs_tensor'],
             brain_step['hidden_in'],
@@ -719,7 +721,7 @@ class Agent:
             brain_step['value'],
             effective_reward,
             not self.alive,
-            next_features_raw,
+            next_features,
         )
         loss = self.brain.maybe_train()
         if loss is not None:
@@ -728,13 +730,12 @@ class Agent:
         self.last_reward = effective_reward
         self.reproduction_cooldown = max(0, self.reproduction_cooldown - 1)
 
-        # ToM & emotional memory update
-        self.tom.update_beliefs(agents)
-        self.emotional_memory.record_event(
-            pos=self.pos,
-            emotion_tag=mode,
-            valence=min(1.0, max(-1.0, reward * 0.1)),
-            tick=tick,
-        )
+        # --- ToM observe + emotional memory decay ---
+        for a in agents:
+            if a is not self and a.alive:
+                x, y = self.pos
+                if abs(a.pos[0]-x) <= 2 and abs(a.pos[1]-y) <= 2:
+                    self.tom.observe_agent(a, tick)
+        self.emotional_memory.tick_decay(tick)
 
         return child_genes
