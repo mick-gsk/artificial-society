@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 
+from .knowledge import EpisodicMemory
 
 device = torch.device('cpu')
 
@@ -14,7 +15,7 @@ device = torch.device('cpu')
 #   17..20 genes (curiosity, aggression, cooperation, sociality)
 #   21..30 equipment + episodic extras (tool, trust, resources x3, last_reward,
 #          herb_presence, warmth, mat_count, inv_size)
-#   31..33 structure features (camp_level, well_level, farm_level)  <-- NEU
+#   31..33 structure features (camp_level, well_level, farm_level)
 #   34..36 causal memory features (3)
 #   37..48 episodic memory retrieval (12)
 #   49..56 endocrine hormones: cortisol, adrenaline, melatonin, serotonin,
@@ -34,7 +35,7 @@ ACTOR_COEF = 1.0
 CRITIC_COEF = 0.5
 WORLD_COEF = 0.35
 ENTROPY_COEF = 0.004
-LEARNING_RATE = 3e-4          # Basis-Lernrate; wird durch plasticity-Gen skaliert
+LEARNING_RATE = 3e-4
 GRAD_CLIP = 1.0
 REWARD_CLAMP = 6.0
 ROLLOUT_HORIZON = 64
@@ -42,7 +43,8 @@ PPO_EPOCHS = 6
 
 # --- Model-Based Planning ---
 PLAN_CANDIDATES = 12
-PLAN_HORIZON = 3
+PLAN_HORIZON = 3          # Survival mode (default)
+PLAN_HORIZON_RESEARCH = 30  # Research / invention mode
 NOVELTY_WEIGHT = 0.15
 VALUE_WEIGHT = 0.50
 REWARD_WEIGHT = 0.35
@@ -52,10 +54,12 @@ WEIGHT_INHERIT_STRENGTH = 0.55
 WEIGHT_MUTATION_SCALE   = 0.018
 
 # --- Imitationslernen (Spiegelneuronen-Analogie) ---
-# Wie stark ein beobachteter Erfolgsagent die eigenen Gewichte beeinflusst.
-# Sehr klein halten: Imitation ist ein Nudge, kein Klon.
 IMITATION_STRENGTH   = 0.05
 IMITATION_MUTATION   = 0.005
+
+# --- Episodic novelty (NGU-style) ---
+EPISODIC_MEMORY_CAPACITY = 500
+EPISODIC_K = 10
 
 
 class RolloutBuffer:
@@ -77,8 +81,7 @@ class Brain(nn.Module):
                  action_size=ACTION_SIZE, plasticity: float = 1.0):
         """
         plasticity-Gen (0.3..1.8) skaliert die Lernrate.
-        Biologisches Vorbild: Neuronale Plastizitaet variiert zwischen Individuen;
-        hochplastische Individuen lernen schneller aber sind weniger stabil.
+        Biologisches Vorbild: Neuronale Plastizitaet variiert zwischen Individuen.
         """
         super().__init__()
         self.input_size = input_size
@@ -102,14 +105,18 @@ class Brain(nn.Module):
         )
         self.next_obs_head = nn.Linear(128, input_size)
         self.reward_head = nn.Linear(128, 1)
-        # Individuelle Lernrate basierend auf plasticity-Gen
-        # Klammerung auf [0.5x .. 2.5x] verhindert Extremwerte
         effective_lr = LEARNING_RATE * max(0.5, min(2.5, plasticity))
         self.optimizer = optim.Adam(self.parameters(), lr=effective_lr)
         self.rollout = RolloutBuffer()
 
+        # --- NGU-style episodic novelty memory ---
+        self.episodic_memory = EpisodicMemory(
+            capacity=EPISODIC_MEMORY_CAPACITY,
+            k=EPISODIC_K,
+        )
+
     # ------------------------------------------------------------------
-    # Gewichtsvererbung (Epigenetik-Analogie)
+    # Gewichtsvererbung
     # ------------------------------------------------------------------
     def inherit_weights_from(self, parent_brain: 'Brain',
                               strength: float = WEIGHT_INHERIT_STRENGTH,
@@ -126,7 +133,7 @@ class Brain(nn.Module):
                 )
 
     # ------------------------------------------------------------------
-    # Imitationslernen (Spiegelneuronen-Hypothese / Bandura)
+    # Imitationslernen
     # ------------------------------------------------------------------
     def imitate_from(self, model_brain: 'Brain',
                      strength: float = IMITATION_STRENGTH,
@@ -169,29 +176,96 @@ class Brain(nn.Module):
         entropy = dist.entropy().sum(dim=-1)
         return log_prob, entropy, value, next_hidden
 
-    def imagine_rollout(self, hidden_tensor, action_tensor, horizon=PLAN_HORIZON):
+    def imagine_rollout(
+        self,
+        hidden_tensor,
+        action_tensor,
+        horizon: int = PLAN_HORIZON,
+        goal_vector: torch.Tensor | None = None,
+    ):
+        """
+        Multi-step imagined rollout.
+
+        goal_vector : optional 1-D tensor of shape (INPUT_SIZE,).
+            When provided, each step adds a goal-proximity bonus:
+                goal_bonus = -||pred_next_obs - goal_vector|| * GOAL_WEIGHT
+            This lets the planner search for action sequences that lead
+            towards a desired material/state (e.g. high edibility after
+            a long cooking chain) without any hard-coded recipes.
+        """
+        GOAL_WEIGHT = 0.40
+
         h = hidden_tensor
         a = action_tensor
         total_score = torch.zeros(a.shape[0], device=device)
         discount = 1.0
+
         for _ in range(horizon):
             pred_next_obs, pred_reward = self.predict_world(h, a)
-            novelty = pred_next_obs.abs().mean(dim=-1)
+
+            # --- FIXED novelty: k-NN episodic distance, not magnitude ---
+            # We compute per-candidate novelty using the current episodic buffer.
+            # During planning this is approximate (we use the live buffer state)
+            # but it still directs the planner away from familiar states.
+            if len(self.episodic_memory.buffer) >= self.episodic_memory.k:
+                stack = torch.stack(list(self.episodic_memory.buffer))  # (N, D)
+                # pred_next_obs shape: (n_candidates, D) or (D,)
+                obs_expanded = pred_next_obs.unsqueeze(1)  # (C, 1, D)
+                stack_expanded = stack.unsqueeze(0)        # (1, N, D)
+                dists = torch.norm(obs_expanded - stack_expanded, dim=-1)  # (C, N)
+                k = min(self.episodic_memory.k, dists.shape[1])
+                knn = dists.topk(k, largest=False, dim=1).values.mean(dim=1)  # (C,)
+                novelty = knn / (knn + self.episodic_memory.epsilon)          # (C,)
+            else:
+                novelty = torch.ones(a.shape[0], device=device)
+
             enc = self.encoder(pred_next_obs)
             h = self.gru(enc, h)
             next_value = self.value_head(h).squeeze(-1)
-            step_score = (REWARD_WEIGHT * pred_reward
-                          + VALUE_WEIGHT * next_value
-                          + NOVELTY_WEIGHT * novelty)
+
+            step_score = (
+                REWARD_WEIGHT * pred_reward
+                + VALUE_WEIGHT * next_value
+                + NOVELTY_WEIGHT * novelty
+            )
+
+            # Optional goal-proximity bonus
+            if goal_vector is not None:
+                goal_dist = torch.norm(
+                    pred_next_obs - goal_vector.unsqueeze(0).expand_as(pred_next_obs),
+                    dim=-1,
+                )
+                step_score = step_score - GOAL_WEIGHT * goal_dist
+
             total_score = total_score + discount * step_score
             discount *= GAMMA
+
             mean_next = torch.tanh(self.policy_mean(h))
             log_std = self.policy_logstd.clamp(-2.0, 0.7).unsqueeze(0).expand_as(mean_next)
             std_next = torch.exp(log_std)
             a = torch.tanh(torch.distributions.Normal(mean_next, std_next).rsample())
+
         return h, total_score
 
-    def plan_action(self, obs_tensor, hidden_tensor, n_candidates=PLAN_CANDIDATES):
+    def plan_action(
+        self,
+        obs_tensor,
+        hidden_tensor,
+        n_candidates: int = PLAN_CANDIDATES,
+        goal_vector: torch.Tensor | None = None,
+        research_mode: bool = False,
+    ):
+        """
+        Choose the best action candidate via imagined rollout.
+
+        research_mode : bool
+            When True (agent is experimenting / following a hypothesis),
+            the planner uses PLAN_HORIZON_RESEARCH instead of PLAN_HORIZON.
+            Cortisol level in the caller should suppress research_mode when
+            the agent is under survival pressure.
+        """
+        horizon = PLAN_HORIZON_RESEARCH if research_mode else PLAN_HORIZON
+
         with torch.no_grad():
             mean, std, _, _ = self.forward(obs_tensor, hidden_tensor)
             dist = torch.distributions.Normal(mean, std)
@@ -200,7 +274,11 @@ class Brain(nn.Module):
             scores = []
             for i in range(n_candidates):
                 a = action_samples[i]
-                _, score = self.imagine_rollout(hidden_tensor, a, horizon=PLAN_HORIZON)
+                _, score = self.imagine_rollout(
+                    hidden_tensor, a,
+                    horizon=horizon,
+                    goal_vector=goal_vector,
+                )
                 scores.append(score.item())
             best_idx = int(torch.tensor(scores).argmax().item())
             best_action = action_samples[best_idx]
@@ -210,13 +288,24 @@ class Brain(nn.Module):
             log_prob = (dist.log_prob(raw_best) - torch.log(1 - clipped.pow(2) + 1e-6)).sum(dim=-1)
             return best_action, log_prob, torch.tensor(scores)
 
-    def act(self, features, hidden_state, use_planning=True):
+    def act(
+        self,
+        features,
+        hidden_state,
+        use_planning: bool = True,
+        goal_vector: torch.Tensor | None = None,
+        research_mode: bool = False,
+    ):
         obs = torch.tensor(features, dtype=torch.float32, device=device).unsqueeze(0)
         hidden = hidden_state.unsqueeze(0)
         mean, std, value, next_hidden = self.forward(obs, hidden)
 
         if use_planning:
-            action, log_prob, candidate_scores = self.plan_action(obs, hidden)
+            action, log_prob, candidate_scores = self.plan_action(
+                obs, hidden,
+                goal_vector=goal_vector,
+                research_mode=research_mode,
+            )
             _, _, _, next_hidden = self.forward(obs, hidden)
         else:
             dist = torch.distributions.Normal(mean, std)
@@ -229,34 +318,52 @@ class Brain(nn.Module):
         entropy = torch.distributions.Normal(mean, std).entropy().sum(dim=-1)
 
         return {
-            'obs_tensor': obs.detach(),
-            'hidden_in': hidden.detach(),
-            'value': value.detach(),
-            'next_hidden': next_hidden.squeeze(0).detach(),
+            'obs_tensor':    obs.detach(),
+            'hidden_in':     hidden.detach(),
+            'value':         value.detach(),
+            'next_hidden':   next_hidden.squeeze(0).detach(),
             'action_tensor': action.detach(),
-            'action_list': action.squeeze(0).detach().tolist(),
-            'log_prob': log_prob.detach(),
-            'entropy': entropy.detach(),
+            'action_list':   action.squeeze(0).detach().tolist(),
+            'log_prob':      log_prob.detach(),
+            'entropy':       entropy.detach(),
         }
 
     def intrinsic_reward(self, hidden_in, action_tensor, next_obs):
+        """
+        Combines prediction-error curiosity (world model) with
+        NGU-style episodic novelty (state-space distance).
+
+        Prediction error alone would reward large activations.
+        The episodic term specifically rewards states the agent
+        hasn't visited recently, regardless of magnitude.
+        """
         with torch.no_grad():
             pred_next_obs, pred_reward = self.predict_world(hidden_in, action_tensor)
             target = torch.tensor(next_obs, dtype=torch.float32, device=device).unsqueeze(0)
+
+            # Prediction-error component (world model curiosity)
             obs_err = F.mse_loss(pred_next_obs, target)
             rew_err = pred_reward.abs().mean()
-            value = (obs_err + 0.2 * rew_err).clamp(0.0, 2.0)
-            return float(value.cpu())
+            prediction_curiosity = (obs_err + 0.2 * rew_err).clamp(0.0, 2.0)
+
+            # Episodic novelty component (NGU-style)
+            episodic_novelty = self.episodic_memory.novelty(target.squeeze(0))
+
+            # Combined: prediction curiosity modulated by episodic novelty
+            # High episodic novelty amplifies prediction error reward.
+            # Low episodic novelty (already seen this state many times) dampens it.
+            combined = float(prediction_curiosity) * (0.5 + 0.5 * episodic_novelty)
+            return float(combined)
 
     def store_transition(self, obs_tensor, hidden_in, action_tensor, log_prob, value, reward, done, next_obs):
         self.rollout.add({
-            'obs': obs_tensor.detach().squeeze(0),
-            'hidden': hidden_in.detach().squeeze(0),
-            'action': action_tensor.detach().squeeze(0),
+            'obs':      obs_tensor.detach().squeeze(0),
+            'hidden':   hidden_in.detach().squeeze(0),
+            'action':   action_tensor.detach().squeeze(0),
             'log_prob': log_prob.detach().squeeze(0),
-            'value': value.detach().squeeze(0),
-            'reward': max(-REWARD_CLAMP, min(REWARD_CLAMP, reward)),
-            'done': done,
+            'value':    value.detach().squeeze(0),
+            'reward':   max(-REWARD_CLAMP, min(REWARD_CLAMP, reward)),
+            'done':     done,
             'next_obs': torch.tensor(next_obs, dtype=torch.float32, device=device),
         })
 
@@ -264,14 +371,14 @@ class Brain(nn.Module):
         if len(self.rollout) < ROLLOUT_HORIZON:
             return None
         batch = self.rollout.storage
-        obs = torch.stack([item['obs'] for item in batch])
-        hid = torch.stack([item['hidden'] for item in batch])
-        actions = torch.stack([item['action'] for item in batch])
+        obs          = torch.stack([item['obs']      for item in batch])
+        hid          = torch.stack([item['hidden']   for item in batch])
+        actions      = torch.stack([item['action']   for item in batch])
         old_log_probs = torch.stack([item['log_prob'] for item in batch]).view(-1)
-        values = torch.stack([item['value'] for item in batch]).view(-1)
-        rewards = torch.tensor([item['reward'] for item in batch], dtype=torch.float32, device=device)
-        dones = torch.tensor([1.0 if item['done'] else 0.0 for item in batch], dtype=torch.float32, device=device)
-        next_obs = torch.stack([item['next_obs'] for item in batch])
+        values       = torch.stack([item['value']    for item in batch]).view(-1)
+        rewards      = torch.tensor([item['reward']  for item in batch], dtype=torch.float32, device=device)
+        dones        = torch.tensor([1.0 if item['done'] else 0.0 for item in batch], dtype=torch.float32, device=device)
+        next_obs     = torch.stack([item['next_obs'] for item in batch])
 
         with torch.no_grad():
             _, _, next_values, _ = self.forward(next_obs, hid)
@@ -289,15 +396,18 @@ class Brain(nn.Module):
         last_loss = None
         for _ in range(PPO_EPOCHS):
             new_log_probs, entropy, new_values, next_hidden = self.evaluate_actions(obs, hid, actions)
-            ratios = torch.exp(new_log_probs - old_log_probs)
-            unclipped = ratios * advantages
-            clipped_r = torch.clamp(ratios, 1.0 - PPO_CLIP, 1.0 + PPO_CLIP) * advantages
-            actor_loss = -torch.min(unclipped, clipped_r).mean()
-            critic_loss = F.mse_loss(new_values.view(-1), returns)
+            ratios         = torch.exp(new_log_probs - old_log_probs)
+            unclipped      = ratios * advantages
+            clipped_r      = torch.clamp(ratios, 1.0 - PPO_CLIP, 1.0 + PPO_CLIP) * advantages
+            actor_loss     = -torch.min(unclipped, clipped_r).mean()
+            critic_loss    = F.mse_loss(new_values.view(-1), returns)
             pred_next_obs, pred_reward = self.predict_world(next_hidden, actions)
-            world_loss = F.mse_loss(pred_next_obs, next_obs) + F.mse_loss(pred_reward.view(-1), rewards)
-            entropy_bonus = entropy.mean()
-            loss = ACTOR_COEF * actor_loss + CRITIC_COEF * critic_loss + WORLD_COEF * world_loss - ENTROPY_COEF * entropy_bonus
+            world_loss     = F.mse_loss(pred_next_obs, next_obs) + F.mse_loss(pred_reward.view(-1), rewards)
+            entropy_bonus  = entropy.mean()
+            loss = (ACTOR_COEF * actor_loss
+                    + CRITIC_COEF * critic_loss
+                    + WORLD_COEF * world_loss
+                    - ENTROPY_COEF * entropy_bonus)
             self.optimizer.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(self.parameters(), GRAD_CLIP)
