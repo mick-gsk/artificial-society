@@ -7,11 +7,20 @@ KnowledgeGraph  – Persistent causal fact store.  Agents record which
                    (action, mat_a, mat_b) combinations succeeded or
                    failed, accumulate confidence, and share knowledge
                    via inheritance and imitation.
+
+Emergenz-Erweiterungen (v3):
+  - CompositeAction: Erfolgreiche Aktionssequenzen werden als neue Makro-
+    Aktionen gespeichert. Agenten können damit neue Handlungsklassen
+    entdecken, die nicht explizit programmiert wurden.
+  - Prerequisites in CausalFact: Multi-Step-Technologiebäume. Eine Erfindung
+    kann Voraussetzungen haben – Agenten ohne Feuer-Wissen "denken" nicht
+    an Töpfern.
 """
 from __future__ import annotations
 
 import math
 from collections import deque
+from dataclasses import dataclass, field
 from typing import Deque
 
 import torch
@@ -59,12 +68,46 @@ class EpisodicMemory:
 
 
 # ---------------------------------------------------------------------------
+# CompositeAction – dynamisch entdeckte Makro-Aktionen (NEU)
+# ---------------------------------------------------------------------------
+@dataclass
+class CompositeAction:
+    """
+    Eine neu entdeckte Handlung = gespeicherte Sequenz primitiver Aktionen.
+
+    Biologisches Vorbild: Menschen kombinieren bekannte Handlungen zu neuen
+    Werkzeugnutzungen (Bogen = bind + rub + bundle in Sequenz). Diese
+    Makro-Aktionen entstehen nicht durch explizite Programmierung, sondern
+    durch wiederholte erfolgreiche Verkettung.
+    """
+    action_id: str                            # z.B. "macro_0007"
+    steps: list[str]                          # ['rub', 'blow', 'bundle']
+    context_materials: list[str] = field(default_factory=list)  # Materialkontext
+    confidence: float = 0.0
+    uses: int = 0
+    total_reward: float = 0.0
+
+    def update(self, reward: float) -> None:
+        self.uses += 1
+        self.total_reward += reward
+        self.confidence = min(1.0, self.confidence + 0.08 * max(0.0, reward))
+
+    @property
+    def avg_reward(self) -> float:
+        return self.total_reward / self.uses if self.uses > 0 else 0.0
+
+    def __repr__(self) -> str:
+        return (f"CompositeAction({self.action_id}, steps={self.steps}, "
+                f"conf={self.confidence:.2f}, uses={self.uses})")
+
+
+# ---------------------------------------------------------------------------
 # KnowledgeGraph – persistent causal fact store
 # ---------------------------------------------------------------------------
 class CausalFact:
     """One learned causal association: (action, mat_a, mat_b) -> outcome."""
 
-    __slots__ = ('key', 'outcome_ids', 'confidence', 'tries', 'successes')
+    __slots__ = ('key', 'outcome_ids', 'confidence', 'tries', 'successes', 'prerequisites')
 
     def __init__(self, key: tuple):
         self.key: tuple = key              # (action, mat_a, mat_b | None)
@@ -72,6 +115,9 @@ class CausalFact:
         self.confidence: float = 0.0       # in [-1, 1]
         self.tries: int = 0
         self.successes: int = 0
+        # NEU: Voraussetzungen (andere CausalFact-Keys die bekannt sein müssen)
+        # Biologisch: Agenten ohne Feuer-Wissen "denken" nicht an Töpfern.
+        self.prerequisites: list[tuple] = []
 
     def update(self, outcomes: list[str], success: bool) -> None:
         self.tries += 1
@@ -87,6 +133,14 @@ class CausalFact:
     @property
     def success_rate(self) -> float:
         return self.successes / self.tries if self.tries > 0 else 0.0
+
+    def prerequisites_met(self, known_facts: dict) -> bool:
+        """True wenn alle Voraussetzungen im eigenen KnowledgeGraph bekannt sind."""
+        for prereq_key in self.prerequisites:
+            fact = known_facts.get(prereq_key)
+            if fact is None or fact.confidence < 0.2:
+                return False
+        return True
 
     def __repr__(self) -> str:
         return (f"CausalFact({self.key}, conf={self.confidence:.2f}, "
@@ -106,6 +160,14 @@ class KnowledgeGraph:
     best = kg.best_untested_hypothesis(known_materials)
     # -> tuple like ('bind', 'fiber', 'sharp_stone') or None
 
+    Composite Actions (NEU)
+    -----------------------
+    kg.record_macro(['rub', 'blow', 'bundle'], reward=1.5, materials=['dry_wood', 'fiber'])
+    # Speichert eine neue Makro-Aktion falls sie noch unbekannt ist.
+
+    best_macro = kg.best_macro_action(min_confidence=0.3)
+    # -> CompositeAction or None
+
     Inheritance / Imitation
     -----------------------
     child_kg.inherit_from(parent_kg)  – copies high-confidence facts with noise
@@ -116,6 +178,8 @@ class KnowledgeGraph:
 
     def __init__(self):
         self.facts: dict[tuple, CausalFact] = {}
+        # NEU: Dynamisch entdeckte Makro-Aktionen
+        self.macro_actions: dict[tuple, CompositeAction] = {}
 
     # ------------------------------------------------------------------
     # Core API
@@ -140,10 +204,8 @@ class KnowledgeGraph:
     ) -> tuple | None:
         """
         Suggest the most promising (action, mat_a, mat_b) to try next.
-        Prefers combinations that are:
-          1. Completely unknown (never tried)
-          2. Low-confidence but promising (tried < 3 times)
-        Returns None if nothing interesting can be suggested.
+        Beruecksichtigt jetzt Prerequisites: Kombis deren Voraussetzungen
+        nicht bekannt sind, werden nicht vorgeschlagen.
         """
         candidates: list[tuple[float, tuple]] = []
 
@@ -155,16 +217,15 @@ class KnowledgeGraph:
                     key = (action, mat_a, mat_b)
                     fact = self.facts.get(key)
                     if fact is None:
-                        # Unknown – high priority
                         candidates.append((1.0, key))
                     elif fact.tries < 3 and fact.confidence < min_confidence_to_skip:
-                        # Under-explored
-                        candidates.append((0.5 - fact.confidence * 0.1, key))
+                        # Prüfe ob Voraussetzungen erfüllt sind (NEU)
+                        if fact.prerequisites_met(self.facts):
+                            candidates.append((0.5 - fact.confidence * 0.1, key))
 
         if not candidates:
             return None
 
-        # Sort descending by priority, pick best
         candidates.sort(key=lambda x: -x[0])
         return candidates[0][1]
 
@@ -173,6 +234,53 @@ class KnowledgeGraph:
         return [
             f for f in self.facts.values()
             if mat_id in (f.key[1], f.key[2])
+        ]
+
+    # ------------------------------------------------------------------
+    # CompositeAction API (NEU)
+    # ------------------------------------------------------------------
+    def record_macro(
+        self,
+        steps: list[str],
+        reward: float,
+        materials: list[str] | None = None,
+    ) -> CompositeAction:
+        """
+        Speichert eine erfolgreiche Aktionssequenz als Makro-Aktion.
+        Falls sie bereits bekannt ist, wird nur ihr Reward-Tracking aktualisiert.
+
+        Emergenz-Mechanismus: Makro-Aktionen entstehen bottom-up aus
+        beobachteten Erfolgen – nicht top-down durch Rezept-Vorgaben.
+        """
+        key = tuple(steps)
+        if key not in self.macro_actions:
+            action_id = f"macro_{len(self.macro_actions):04d}"
+            self.macro_actions[key] = CompositeAction(
+                action_id=action_id,
+                steps=list(steps),
+                context_materials=materials or [],
+            )
+        self.macro_actions[key].update(reward)
+        return self.macro_actions[key]
+
+    def best_macro_action(self, min_confidence: float = 0.25) -> CompositeAction | None:
+        """
+        Gibt die best bewertete Makro-Aktion zurueck, die zuverlaessig genug ist.
+        Wird vom Brain genutzt um neue zusammengesetzte Aktionen auszuführen.
+        """
+        candidates = [
+            m for m in self.macro_actions.values()
+            if m.confidence >= min_confidence
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda m: m.avg_reward * m.confidence)
+
+    def all_macro_actions(self, min_confidence: float = 0.0) -> list[CompositeAction]:
+        """Alle bekannten Makro-Aktionen, optional gefiltert nach Confidence."""
+        return [
+            m for m in self.macro_actions.values()
+            if m.confidence >= min_confidence
         ]
 
     # ------------------------------------------------------------------
@@ -187,6 +295,7 @@ class KnowledgeGraph:
         """
         Copy high-confidence facts from parent with slight noise.
         Biological analogue: innate knowledge / prepared learning.
+        Überträgt jetzt auch Makro-Aktionen (NEU).
         """
         for key, fact in parent.facts.items():
             if fact.confidence < confidence_threshold:
@@ -194,7 +303,6 @@ class KnowledgeGraph:
             if key not in self.facts:
                 self.facts[key] = CausalFact(key)
             child_fact = self.facts[key]
-            # Blend confidence toward parent's with small noise
             noise = (torch.randn(1).item() * 0.05)
             child_fact.confidence = (
                 strength * fact.confidence
@@ -202,10 +310,23 @@ class KnowledgeGraph:
                 + noise
             )
             child_fact.confidence = max(-1.0, min(1.0, child_fact.confidence))
-            # Copy outcome knowledge
             for oid in fact.outcome_ids:
                 if oid not in child_fact.outcome_ids:
                     child_fact.outcome_ids.append(oid)
+            # Prerequisites mitübertragen (NEU)
+            child_fact.prerequisites = list(fact.prerequisites)
+
+        # Makro-Aktionen vererben (NEU): Nur sehr sichere werden übertragen
+        for key, macro in parent.macro_actions.items():
+            if macro.confidence >= confidence_threshold + 0.1:
+                if key not in self.macro_actions:
+                    self.macro_actions[key] = CompositeAction(
+                        action_id=f"macro_{len(self.macro_actions):04d}",
+                        steps=list(macro.steps),
+                        context_materials=list(macro.context_materials),
+                        confidence=macro.confidence * strength * 0.8,
+                        uses=0,
+                    )
 
     def imitate_from(
         self,
@@ -215,6 +336,7 @@ class KnowledgeGraph:
         """
         Blend in another agent's knowledge during social observation.
         Weaker than inheritance – cultural learning is noisier.
+        Überträgt jetzt auch Makro-Aktionen (NEU).
         """
         for key, fact in other.facts.items():
             if fact.confidence < 0.2:
@@ -231,23 +353,46 @@ class KnowledgeGraph:
                 if oid not in my_fact.outcome_ids:
                     my_fact.outcome_ids.append(oid)
 
+        # Makro-Aktionen imitieren (NEU)
+        for key, macro in other.macro_actions.items():
+            if macro.confidence >= 0.3 and key not in self.macro_actions:
+                self.macro_actions[key] = CompositeAction(
+                    action_id=f"macro_{len(self.macro_actions):04d}",
+                    steps=list(macro.steps),
+                    context_materials=list(macro.context_materials),
+                    confidence=macro.confidence * strength,
+                    uses=0,
+                )
+
     # ------------------------------------------------------------------
     # Serialisation helpers
     # ------------------------------------------------------------------
     def summary(self) -> list[dict]:
-        return [
+        facts_summary = [
             {
                 'key': f.key,
                 'confidence': round(f.confidence, 3),
                 'tries': f.tries,
                 'success_rate': round(f.success_rate, 3),
                 'outcomes': f.outcome_ids,
+                'prerequisites': f.prerequisites,
             }
             for f in sorted(self.facts.values(), key=lambda x: -x.confidence)
         ]
+        macros_summary = [
+            {
+                'action_id': m.action_id,
+                'steps': m.steps,
+                'confidence': round(m.confidence, 3),
+                'uses': m.uses,
+                'avg_reward': round(m.avg_reward, 3),
+            }
+            for m in sorted(self.macro_actions.values(), key=lambda x: -x.confidence)
+        ]
+        return facts_summary + macros_summary
 
     def __len__(self) -> int:
         return len(self.facts)
 
     def __repr__(self) -> str:
-        return f"KnowledgeGraph({len(self.facts)} facts)"
+        return f"KnowledgeGraph({len(self.facts)} facts, {len(self.macro_actions)} macros)"
