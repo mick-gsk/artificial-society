@@ -20,6 +20,16 @@ EMERGENZ-ERWEITERUNGEN (v2):
   - Bedürfnisgetriebene Aktionswahl: Je nach aktuellem Zustand des Agenten
     (Hunger, Kälte, Krankheit, Neugier) werden passende Actions priorisiert.
     Erfindungen entstehen aus Not, nicht aus Zufall.
+
+FIX (v3):
+  - share_discovery: Trust-Gate von 0.25 auf 0.05 gesenkt; Stammesmitglieder
+    können immer teilen (tribe_id-Check). Verhindert, dass Wissenstransfer
+    in den ersten hunderten Ticks komplett blockiert wird.
+  - agent_try_invention: Echte Neu-Entdeckungen erhalten +3.0 Discovery-Bonus.
+    Re-Entdeckungen erhalten kleinen Reinforcement-Reward (+0.1) statt 0,
+    damit Exploration stabil verstärkt wird.
+  - emergent_reward-Gewichtung von 0.6 auf 1.0 erhöht (war zu schwach gegen
+    Homeostasis-Rauschen).
 """
 
 import random
@@ -53,6 +63,11 @@ LIGHT_REWARD   = 0.06
 COOK_REWARD    = 0.35
 SHARP_REWARD   = 0.45
 DANGER_PENALTY = -0.12
+
+# Bonus für echte Neu-Entdeckung (noch nie registriert)
+NEW_DISCOVERY_BONUS = 3.0
+# Kleiner Reward für Re-Entdeckung (stabilisiert Exploration-Verhalten)
+REDISCOVERY_REWARD  = 0.1
 
 # Maximale Anzahl entdeckter Materialien die als rekursive Inputs berücksichtigt werden
 MAX_RECURSIVE_INPUTS = 4
@@ -104,20 +119,36 @@ def agent_try_invention(agent, cell: dict, env: dict) -> float:
     if new_vec is not None and float(new_vec.sum()) > 0.1:
         agent_state     = _agent_homeostatic_state(agent, cell)
         emergent_reward = material_reward(new_vec, agent_state)
+
+        # Prüfe ob diese Entdeckung wirklich neu ist (vor der Registrierung)
+        known_before = mat_a in DISCOVERY_REGISTRY.known_ids() if hasattr(DISCOVERY_REGISTRY, 'known_ids') else False
+        # Prüfe ob die resultierende Kombination bereits bekannt ist
+        existing_ids = set(DISCOVERY_REGISTRY.known_ids()) if hasattr(DISCOVERY_REGISTRY, 'known_ids') else set()
+
         mat_id = DISCOVERY_REGISTRY.register(
             new_vec,
             discoverer_id=agent.id,
             tick=getattr(agent, 'age', 0),
             recipe=(action, mat_a, mat_b),
         )
-        inv = getattr(agent, 'material_inventory', {})
+        inv = getattr(agent, 'material_inventory', {})\
+        
+        # FIX: Echter Neu-Entdeckungs-Bonus vs. kleiner Re-Entdeckungs-Reward
+        is_new_discovery = mat_id not in existing_ids
+        if is_new_discovery:
+            emergent_reward += NEW_DISCOVERY_BONUS
+            print(f'[invention] NEW mat_id={mat_id} by agent={agent.id} recipe=({action},{mat_a},{mat_b})')
+        else:
+            emergent_reward = max(emergent_reward, REDISCOVERY_REWARD)
+
         inv[mat_id] = inv.get(mat_id, 0.0) + 0.5
         agent.material_inventory = inv
         _maybe_upgrade_tool(agent, mat_id, new_vec)
         if emergent_reward > 0.3 and hasattr(agent, 'endocrine'):
             agent.endocrine.apply_discovery(min(1.0, emergent_reward))
 
-    total_reward = legacy_reward + emergent_reward * 0.6
+    # FIX: emergent_reward-Gewichtung von 0.6 auf 1.0 erhöht
+    total_reward = legacy_reward + emergent_reward * 1.0
     if causal_mem is not None:
         causal_mem.record(action, mat_a, mat_b, legacy_outcomes, total_reward)
     return total_reward
@@ -161,15 +192,24 @@ def agent_try_cook(agent, cell: dict) -> float:
     if new_vec is not None and float(new_vec.sum()) > 0.1:
         agent_state = _agent_homeostatic_state(agent, cell)
         emergent_r  = material_reward(new_vec, agent_state)
+
+        existing_ids = set(DISCOVERY_REGISTRY.known_ids()) if hasattr(DISCOVERY_REGISTRY, 'known_ids') else set()
         mat_id = DISCOVERY_REGISTRY.register(
             new_vec,
             discoverer_id=agent.id,
             tick=getattr(agent, 'age', 0),
             recipe=('place_on_heat', food_mat, heat_mat),
         )
+        is_new = mat_id not in existing_ids
+        if is_new:
+            emergent_r += NEW_DISCOVERY_BONUS
+            print(f'[cook] NEW mat_id={mat_id} by agent={agent.id} recipe=(place_on_heat,{food_mat},{heat_mat})')
+        else:
+            emergent_r = max(emergent_r, REDISCOVERY_REWARD)
+
         inv[mat_id] = inv.get(mat_id, 0.0) + 0.6
 
-    total = legacy_r + emergent_r * 0.6
+    total = legacy_r + emergent_r * 1.0
     if causal_mem is not None:
         causal_mem.record('place_on_heat', food_mat, heat_mat, outcomes, total)
     return total
@@ -179,9 +219,18 @@ def share_discovery(teacher, student, mat_id: str) -> bool:
     """
     Social knowledge transfer: teacher shows student a discovered material.
     Student gains the mat_id in inventory if trust is sufficient.
+
+    FIX v3: Trust-Gate von 0.25 auf 0.05 gesenkt. Stammesmitglieder (gleiche
+    tribe_id) können immer teilen — verhindert, dass Wissenstransfer in der
+    kritischen Bootstrap-Phase (erste ~200 Ticks) komplett blockiert wird.
     """
+    same_tribe = (
+        getattr(teacher, 'tribe_id', None) is not None
+        and teacher.tribe_id == getattr(student, 'tribe_id', None)
+    )
     trust = teacher.trust.get(student.id, 0.0)
-    if trust < 0.25:
+    # Stammesmitglieder teilen immer; alle anderen brauchen minimales Vertrauen
+    if not same_tribe and trust < 0.05:
         return False
     if mat_id not in DISCOVERY_REGISTRY.known_ids():
         return False
