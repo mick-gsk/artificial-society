@@ -5,7 +5,7 @@ from artificial_society.agents.brain import Brain, INPUT_SIZE
 from artificial_society.agents.memory import EpisodicMemory
 from artificial_society.agents.genetics import random_genes, inherit_genes
 from artificial_society.agents.communication import CommunicationSystem
-from artificial_society.agents.endocrine import EndocrineSystem
+from artificial_society.agents.endocrine import EndocrineSystem, CORTISOL, ADRENALINE, SEROTONIN, DOPAMINE
 from artificial_society.agents.theory_of_mind import TheoryOfMind
 from artificial_society.agents.knowledge import KnowledgeGraph
 from artificial_society.agents.emotional_memory import EmotionalMemory
@@ -399,7 +399,7 @@ class Agent:
         self.endocrine.apply_attack_received()
         return 0.5
 
-    def _cooperate(self, agents, mods):
+    def _cooperate(self, agents, mods, tick):
         x, y = self.pos
         social_bias = mods.get('social_bias', 0.0)
         nearby = [
@@ -435,7 +435,7 @@ class Agent:
                 break
         for partner in nearby:
             if self.trust.get(partner.id, 0.0) > 0.1:
-                self.tom.observe_action(partner.id, 'cooperate', outcome=1.0)
+                self.tom.observe_agent(partner, tick, own_trust=self.trust.get(partner.id, 0.0))
             delta = 0.01 * (1.0 + social_bias)
             self.trust[partner.id] = min(1.0, self.trust.get(partner.id, 0.0) + delta)
         return reward
@@ -458,7 +458,7 @@ class Agent:
             + a.genes.get('plasticity', 1.0) / 1.8
             + self.trust.get(a.id, 0.0)
         ))
-        child_genes = inherit_genes(self.genes, mate.genes)
+        child_genes = inherit_genes(self, mate)
         self.energy  -= REPRODUCTION_COST
         mate.energy  -= REPRODUCTION_COST * 0.5
         self.reproduction_cooldown = REPRODUCTION_COOLDOWN
@@ -486,7 +486,7 @@ class Agent:
     def _build(self, world):
         x, y = self.pos
         cell = world.get_cell(x, y)
-        result = maybe_build_structure(self, cell)
+        result = maybe_build_structure(cell, self.resources)
         if result:
             self.energy -= BUILD_ENERGY_COST
 
@@ -610,7 +610,7 @@ class Agent:
                     self._collect_herbs(world)
 
             if action['cooperate'] > 0.2:
-                reward += self._cooperate(agents, mods)
+                reward += self._cooperate(agents, mods, tick)
                 mode = 'cooperate'
 
             if action['attack'] > 0.5:
@@ -634,11 +634,11 @@ class Agent:
         self._try_reproduce(agents)
         child_genes = self.progress_pregnancy()
 
-        social_learning_step(self, agents)
+        social_learning_step(self, agents, tick)
 
         if self._need_inv_cooldown <= 0:
-            need_vec = compute_need_vector(self)
-            inv_result = agent_invent_from_need(self, world.get_cell(*self.pos), need_vec)
+            need_vec = compute_need_vector(self, world.get_cell(*self.pos))
+            inv_result = agent_invent_from_need(self, world.get_cell(*self.pos), world.get_cell(*self.pos), tick)
             if inv_result:
                 reward += 0.5
                 self.endocrine.apply_discovery(1.0)
@@ -648,7 +648,7 @@ class Agent:
 
         inv_prob = INVENTION_BASE_PROB + INVENTION_CURIOSITY_MULT * self.genes.get('curiosity', 0.5)
         if random.random() < inv_prob:
-            invented = agent_try_invention(self, world.get_cell(*self.pos))
+            invented = agent_try_invention(self, world.get_cell(*self.pos), world.get_cell(*self.pos))
             if invented:
                 reward += 1.0
                 self.endocrine.apply_discovery(1.0)
@@ -659,13 +659,7 @@ class Agent:
                 self.endocrine.apply_substance('cooked_meat', 1.0)
 
         if economy is not None:
-            economy.agent_trade(self, agents)
-
-        next_features = self.local_features(world, agents)
-        delta_energy = (self.energy - features[0] * MAX_ENERGY) / MAX_ENERGY
-        if abs(delta_energy) > 0.02:
-            seq_key = (mode, round(delta_energy, 1))
-            self.causal_memory.record(seq_key, delta_energy)
+            economy.maybe_trade(self, agents)
 
         next_features_raw = self.local_features(world, agents)
         intrinsic = self.brain.intrinsic_reward(
@@ -678,7 +672,7 @@ class Agent:
         import torch
         next_obs_t = torch.tensor(next_features_raw, dtype=torch.float32,
                                   device=self.brain.initial_hidden().device)
-        self.brain.episodic_memory.add(next_obs_t)
+        self.brain.episodic_memory.novelty(next_obs_t)
 
         cognition_mult = mods.get('cognition', 1.0)
         effective_reward = reward * cognition_mult
@@ -699,11 +693,23 @@ class Agent:
         self.last_reward = effective_reward
         self.reproduction_cooldown = max(0, self.reproduction_cooldown - 1)
 
-        self.tom.update_beliefs(agents)
-        self.emotional_memory.record_event(
-            pos=self.pos,
-            emotion_tag=mode,
+        x, y = self.pos
+        nearby_for_tom = [
+            a for a in agents
+            if a is not self and a.alive
+            and abs(a.pos[0]-x) <= COOP_PROXIMITY_RADIUS
+            and abs(a.pos[1]-y) <= COOP_PROXIMITY_RADIUS
+        ]
+        for other in nearby_for_tom:
+            self.tom.observe_agent(other, tick)
+        h = self.endocrine.h
+        arousal = min(1.0, max(0.0, (h[CORTISOL] + h[ADRENALINE]) / 2))
+        context_hormones = [h[CORTISOL], h[SEROTONIN], h[DOPAMINE], h[ADRENALINE]]
+        self.emotional_memory.encode_experience(
+            stimulus=mode,
             valence=min(1.0, max(-1.0, reward * 0.1)),
+            arousal=arousal,
+            context_hormones=context_hormones,
             tick=tick,
         )
 
