@@ -3,6 +3,8 @@ import random
 import pickle
 import pygame
 
+import artificial_society.runtime_patches  # noqa: F401
+
 from artificial_society.world import World
 from artificial_society.renderer import Renderer
 from artificial_society.agents.agent import Agent, CORPSE_ENERGY, MAX_ENERGY
@@ -260,145 +262,9 @@ class Simulation:
         for agent in self.agents:
             if not agent.alive:
                 continue
-            bonus = 0.0
-            for other in self.agents:
-                if not other.alive:
-                    continue
-                if other.parent_id == agent.id or agent.parent_id == other.id:
-                    fitness_b = (other.energy/MAX_ENERGY)*0.5 + (other.health/100.0)*0.5
-                    bonus += HAMILTON_CHILD_R * fitness_b
-            if agent.tribe_id is not None:
-                for other in tribe_members.get(agent.tribe_id, []):
-                    if other is agent:
-                        continue
-                    fitness_b = (other.energy/MAX_ENERGY)*0.5 + (other.health/100.0)*0.5
-                    bonus += HAMILTON_TRIBE_R * fitness_b
-            if bonus > 0 and agent.brain.rollout.storage:
-                agent.brain.rollout.storage[-1]['reward'] += bonus * HAMILTON_REWARD_SCALE
-                agent.last_reward += bonus * HAMILTON_REWARD_SCALE
-
-    def _apply_social_knowledge_sharing(self):
-        """
-        SCHICHT 3: Soziales Wissens-Bootstrapping.
-        Agenten die entdeckte Materialien besitzen, teilen ihr Wissen mit
-        nahen Stammesmitgliedern. Lehren wird mit Energie belohnt, damit
-        Spezialisierung sich evolutionary lohnt.
-
-        Dadurch entsteht spontan: Einer entdeckt Feuer, gibt es weiter,
-        andere bauen darauf auf und erfinden Kochen, Keramik etc.
-        """
-        if self.tick % SOCIAL_SHARING_INTERVAL != 0:
-            return
-
-        for agent in self.agents:
-            if not agent.alive:
-                continue
-            inv = getattr(agent, 'material_inventory', {})
-            discoveries = [m for m in inv if m.startswith('mat_') and inv[m] > 0.5]
-            if not discoveries:
-                continue
-
-            ax, ay = agent.pos
-            nearby = [
-                a for a in self.agents
-                if a is not agent and a.alive
-                and abs(a.pos[0]-ax) <= SOCIAL_SHARING_RADIUS
-                and abs(a.pos[1]-ay) <= SOCIAL_SHARING_RADIUS
-            ]
-            if not nearby:
-                continue
-
-            mat_to_share = random.choice(discoveries)
-            recipient    = random.choice(nearby)
-            if share_discovery(agent, recipient, mat_to_share):
-                # Lehrer erhaelt Energie-Bonus -> Spezialisierung lohnt sich
-                agent.energy = min(agent.energy + SOCIAL_SHARING_ENERGY_REWARD, MAX_ENERGY)
-
-    def _save_checkpoint(self):
-        try:
-            data = {'tick': self.tick, 'agents': self.agents, 'tribes': self.tribes,
-                    'technology': self.technology, 'economy': self.economy}
-            with open(CHECKPOINT_PATH, 'wb') as f:
-                pickle.dump(data, f)
-        except Exception as e:
-            print(f'[checkpoint] save failed: {e}')
-
-    def _load_checkpoint(self):
-        try:
-            with open(CHECKPOINT_PATH, 'rb') as f:
-                data = pickle.load(f)
-            self.tick = data['tick']
-            self.agents = data['agents']
-            self.tribes = data['tribes']
-            self.technology = data['technology']
-            self.economy = data['economy']
-            for agent in self.agents:
-                _migrate_agent(agent)
-            print(f'[checkpoint] loaded tick={self.tick}, agents={len(self.agents)}')
-        except Exception as e:
-            print(f'[checkpoint] load failed: {e}, starting fresh')
-            self.spawn_initial_population(36)
-
-    def step(self):
-        self.tick += 1
-        dn           = day_phase(self.tick)
-        self.world.day_state = dn
-        season_state = self.seasons.update(self.tick)
-        weather_state= self.weather.update(self.world, season_state, self.tick)
-        if isinstance(season_state, dict):
-            self.world.current_season = season_state.get('season', None)
-        else:
-            self.world.current_season = getattr(season_state, 'name', None)
-        if self.tick < EVENT_WARMUP_TICKS:
-            self.world.active_events = [e for e in self.world.active_events
-                                         if e.get('kind') not in ('drought', 'fire', 'blight', 'storm')]
-        self.world.update_environment(season_state, weather_state, self.tick)
-        tick_materials(self.world)
-        update_territory_claims(self.world, self.agents)
-        self.tribes.update_membership(self.agents)
-        births = []
-        for agent in list(self.agents):
-            child_genes = agent.update(
-                world=self.world, agents=self.agents, tick=self.tick,
-                season_state=season_state, weather_state=weather_state,
-                tribes=self.tribes, economy=self.economy, technology=self.technology,
-            )
-            if agent.alive and child_genes is not None:
-                births.append(self.spawn_child_from_parent(agent, child_genes))
-        self.agents.extend(births)
-        self.tick_immunity_and_recovery()
-        self.spread_diseases()
-        self._apply_hamilton_rewards()
-
-        # --- SCHICHT 3: Soziales Bootstrapping ---
-        self._apply_social_knowledge_sharing()
-
-        self.remove_dead()
-        self.tribes.cleanup(self.agents)
-        self.technology.update(self.agents, self.tribes)
-        self.economy.update(self.agents, self.tribes)
-        self.stats.update(self.tick, self.agents, self.world, self.tribes, self.technology)
-        if len(self.agents) < MIN_POPULATION:
-            self.emergency_respawn()
-        if self.tick % CHECKPOINT_INTERVAL == 0:
-            self._save_checkpoint()
-
-    def draw(self):
-        self.renderer.draw(self.screen, self.world, self.agents, self.stats, self.tribes, self.technology)
-
-    def run(self):
-        while self.running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    self.running = False
-                elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_s:
-                        self._save_checkpoint()
-                        print('[checkpoint] manual save')
-                    elif event.key == pygame.K_DELETE:
-                        if os.path.exists(CHECKPOINT_PATH):
-                            os.remove(CHECKPOINT_PATH)
-                            print('[checkpoint] deleted')
-            self.step()
-            self.draw()
-            self.clock.tick(30)
+            tribe = tribe_members.get(agent.tribe_id, [])
+            self_reward = 0.0
+            if tribe:
+                self_reward = sum(1.0 for m in tribe if m is not agent) * HAMILTON_TRIBE_R
+            child_r = getattr(agent, 'children', 0) * HAMILTON_CHILD_R
+            agent.energy = min(MAX_ENERGY, agent.energy + (self_reward + child_r) * HAMILTON_REWARD_SCALE)
