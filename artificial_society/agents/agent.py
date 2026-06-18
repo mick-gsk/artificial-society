@@ -1,7 +1,7 @@
 import random
 from dataclasses import dataclass, field
 
-from artificial_society.agents.brain import Brain, INPUT_SIZE
+from artificial_society.agents.brain import Brain, INPUT_SIZE, RESEARCH_DRIVE_THRESHOLD
 from artificial_society.agents.memory import EpisodicMemory
 from artificial_society.agents.genetics import random_genes, inherit_genes
 from artificial_society.agents.communication import CommunicationSystem
@@ -65,6 +65,9 @@ INVENTION_BASE_PROB      = 0.55
 INVENTION_CURIOSITY_MULT = 0.35
 NEED_INVENTION_INTERVAL  = 8
 
+# Emergenz v3: Macro-Aktion Reward-Bonus wenn eine bekannte Sequenz ausgefuehrt wird
+MACRO_ACTION_REWARD_BONUS = 0.4
+
 
 def _ensure_new_fields(agent):
     if not hasattr(agent, 'causal_memory') or agent.causal_memory is None:
@@ -96,6 +99,9 @@ def _ensure_new_fields(agent):
         agent.knowledge = KnowledgeGraph()
     if not hasattr(agent, 'emotional_memory') or agent.emotional_memory is None:
         agent.emotional_memory = EmotionalMemory()
+    # Emergenz v3: recent_action_sequence fuer Makro-Aktion-Erkennung
+    if not hasattr(agent, '_recent_action_seq'):
+        agent._recent_action_seq = []
 
 
 @dataclass
@@ -146,6 +152,8 @@ class Agent:
     tom: TheoryOfMind = field(default_factory=lambda: TheoryOfMind(0))
     knowledge: KnowledgeGraph = field(default_factory=KnowledgeGraph)
     emotional_memory: EmotionalMemory = field(default_factory=EmotionalMemory)
+    # Emergenz v3: Kurzzeitgedaechtnis fuer ausgefuehrte Aktionssequenzen
+    _recent_action_seq: list = field(default_factory=list)
 
     @classmethod
     def spawn_random(cls, x, y):
@@ -161,6 +169,7 @@ class Agent:
         agent.tom = TheoryOfMind(agent.id)
         agent.knowledge = KnowledgeGraph()
         agent.emotional_memory = EmotionalMemory()
+        agent._recent_action_seq = []
         return agent
 
     @classmethod
@@ -179,6 +188,7 @@ class Agent:
         agent.tom = TheoryOfMind(agent.id)
         agent.knowledge = KnowledgeGraph()
         agent.emotional_memory = EmotionalMemory()
+        agent._recent_action_seq = []
         if parent is not None:
             agent.tom.inherit_from(parent.tom, strength=0.4)
             agent.knowledge.inherit_from(parent.knowledge, strength=0.7)
@@ -299,7 +309,7 @@ class Agent:
         cell  = world.get_cell(x, y)
         gain  = 0.0
         tool_bonus = SHARP_STONE_FORAGE_BONUS if self.tool == 'sharp_stone' else 0.0
-        home_bonus = get_home_forage_bonus(self, world)  # (agent, world)
+        home_bonus = get_home_forage_bonus(self, world)
         eff   = mods.get('forage_eff', 1.0) * (1.0 + tool_bonus + home_bonus)
         food_available = cell.get('food', 0.0)
         if food_available > 0:
@@ -534,6 +544,44 @@ class Agent:
             if sleep_drive < 0.20:
                 self.is_sleeping = False
 
+    def _record_macro_if_successful(self, mode: str, reward: float) -> float:
+        """
+        Emergenz v3: Verfolgt Aktionssequenzen und speichert erfolgreiche
+        als CompositeAction im KnowledgeGraph.
+
+        Funktionsweise:
+        - Jede ausgefuehrte nicht-idle Aktion wird in _recent_action_seq gemerkt.
+        - Wenn reward > 0.5, wird die letzte 2-3 Aktionen als Makro-Aktion registriert.
+        - Das Gehirn erhaelt einen Bonus-Reward wenn es eine bekannte Makro-Aktion
+          reproduziert (Reinforcement des erlernten Verhaltensmusters).
+
+        Biologisches Vorbild: Menschen automatisieren erfolgreiche Verhaltenssequenzen
+        (Motorische Schemata, Prozedurales Gedaechtnis).
+        """
+        if mode == 'idle':
+            return 0.0
+
+        seq = getattr(self, '_recent_action_seq', [])
+        seq.append(mode)
+        # Fenster: letzte 3 Aktionen
+        if len(seq) > 3:
+            seq.pop(0)
+        self._recent_action_seq = seq
+
+        macro_bonus = 0.0
+        if reward > 0.5 and len(seq) >= 2:
+            # Neue oder bekannte Makro-Aktion registrieren
+            macro = self.knowledge.record_macro(
+                steps=list(seq),
+                reward=reward,
+                materials=list(self.material_inventory.keys()),
+            )
+            # Bonus wenn diese Sequenz bereits bekannt und bestaetigt ist
+            if macro.uses > 3 and macro.confidence > 0.3:
+                macro_bonus = MACRO_ACTION_REWARD_BONUS * macro.confidence
+
+        return macro_bonus
+
     def update(
         self,
         world,
@@ -578,21 +626,40 @@ class Agent:
         if self.hidden_state is None:
             self.hidden_state = self.brain.initial_hidden()
 
+        # -------------------------------------------------------------------
+        # Emergenz v3: research_mode automatisch aktivieren
+        # Bedingung: niedriger Dopamin (Reward-Hunger) + hohes Curiosity-Gen
+        #            + genug Energie um sicher zu forschen
+        # Biologisch: Menschen forschen wenn sie nicht unmittelbar ums
+        # Ueberleben kaempfen muessen und intrinsisch motiviert sind.
+        # -------------------------------------------------------------------
+        dopamine  = self.endocrine.h[DOPAMINE]
+        curiosity = self.genes.get('curiosity', 0.5)
+        research_mode = (
+            dopamine < 0.3
+            and curiosity > 0.65
+            and self.energy > 80.0
+            and not self.is_sleeping
+        )
+
         brain_step = self.brain.act(
             features,
             self.hidden_state,
             use_planning=True,
+            research_mode=research_mode,
         )
         self.hidden_state = brain_step['next_hidden']
         action_list = brain_step['action_list']
 
         action = {
-            'move_x':     action_list[0],
-            'move_y':     action_list[1],
-            'forage':     action_list[2],
-            'cooperate':  action_list[3],
-            'attack':     action_list[4],
-            'build':      action_list[5],
+            'move_x':         action_list[0],
+            'move_y':         action_list[1],
+            'forage':         action_list[2],
+            'cooperate':      action_list[3],
+            'attack':         action_list[4],
+            'build':          action_list[5],
+            # Emergenz v3: research_drive direkt aus dem Brain-Output
+            'research_drive': brain_step.get('research_drive', 0.0),
         }
 
         reward = 0.0
@@ -626,40 +693,63 @@ class Agent:
             self._try_remedy()
             self._share_remedy(agents)
 
+            # -------------------------------------------------------------------
+            # Emergenz v3: research_drive steuert Erfindung
+            # Das Netz entscheidet jetzt wann es forscht -- kein Zufallswurf mehr.
+            # Fallback: Wenn research_drive niedrig, traditioneller Zufallspfad
+            # mit reduzierter Basis-Wahrscheinlichkeit als Hintergrundexploration.
+            # -------------------------------------------------------------------
+            brain_wants_research = action['research_drive'] > RESEARCH_DRIVE_THRESHOLD
+
+            if self._need_inv_cooldown <= 0:
+                need_vec = compute_need_vector(self, world.get_cell(*self.pos))
+                inv_result = agent_invent_from_need(self, world.get_cell(*self.pos), world.get_cell(*self.pos), tick)
+                if inv_result:
+                    reward += 0.5
+                    self.endocrine.apply_discovery(1.0)
+                self._need_inv_cooldown = NEED_INVENTION_INTERVAL
+            else:
+                self._need_inv_cooldown -= 1
+
+            if brain_wants_research:
+                # Brain-gesteuertes Forschen: voller Reward, research_mode-Planung aktiv
+                invented = agent_try_invention(self, world.get_cell(*self.pos), world.get_cell(*self.pos))
+                if invented:
+                    reward += 1.5  # Erhoehter Bonus da Brain aktiv entschieden hat
+                    self.endocrine.apply_discovery(1.0)
+                    mode = 'research'
+            else:
+                # Hintergrund-Exploration: geringere Basiswahrscheinlichkeit
+                # (von 0.55 auf 0.25 reduziert, da Brain jetzt Hauptpfad ist)
+                bg_inv_prob = 0.25 + INVENTION_CURIOSITY_MULT * curiosity
+                if random.random() < bg_inv_prob:
+                    invented = agent_try_invention(self, world.get_cell(*self.pos), world.get_cell(*self.pos))
+                    if invented:
+                        reward += 1.0
+                        self.endocrine.apply_discovery(1.0)
+
+            if random.random() < 0.3:
+                cooked = agent_try_cook(self, world.get_cell(*self.pos))
+                if cooked:
+                    reward += 0.3
+                    self.endocrine.apply_substance('cooked_meat', 1.0)
+
+        if economy is not None:
+            economy.maybe_trade(self, agents)
+
+        # Emergenz v3: Makro-Aktions-Sequenz aufzeichnen und Bonus erhalten
+        macro_bonus = self._record_macro_if_successful(mode, reward)
+        reward += macro_bonus
+
         self.last_action_mode = mode
 
-        territory_r = territory_reward_for_agent(self, world)  # (agent, world)
+        territory_r = territory_reward_for_agent(self, world)
         reward += territory_r
 
         self._try_reproduce(agents)
         child_genes = self.progress_pregnancy()
 
         social_learning_step(self, agents, tick)
-
-        if self._need_inv_cooldown <= 0:
-            need_vec = compute_need_vector(self, world.get_cell(*self.pos))
-            inv_result = agent_invent_from_need(self, world.get_cell(*self.pos), world.get_cell(*self.pos), tick)
-            if inv_result:
-                reward += 0.5
-                self.endocrine.apply_discovery(1.0)
-            self._need_inv_cooldown = NEED_INVENTION_INTERVAL
-        else:
-            self._need_inv_cooldown -= 1
-
-        inv_prob = INVENTION_BASE_PROB + INVENTION_CURIOSITY_MULT * self.genes.get('curiosity', 0.5)
-        if random.random() < inv_prob:
-            invented = agent_try_invention(self, world.get_cell(*self.pos), world.get_cell(*self.pos))
-            if invented:
-                reward += 1.0
-                self.endocrine.apply_discovery(1.0)
-        if random.random() < 0.3:
-            cooked = agent_try_cook(self, world.get_cell(*self.pos))
-            if cooked:
-                reward += 0.3
-                self.endocrine.apply_substance('cooked_meat', 1.0)
-
-        if economy is not None:
-            economy.maybe_trade(self, agents)
 
         next_features_raw = self.local_features(world, agents)
         intrinsic = self.brain.intrinsic_reward(
