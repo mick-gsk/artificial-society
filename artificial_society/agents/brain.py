@@ -33,7 +33,14 @@ USE_FP16 = device.type == 'cuda'  # FP16 autocast nur auf GPU aktivieren
 # must learn the correlations on its own.
 INPUT_SIZE = 57
 HIDDEN_SIZE = 96
-ACTION_SIZE = 6
+
+# Emergenz v3: ACTION_SIZE = 7
+# Neue 7. Dimension: research_drive (0..1)
+# Das Netz entscheidet selbst wann es forscht -- nicht mehr gewuerfelt.
+# Biologisches Vorbild: Neugierde als intrinsisch motiviertes Verhalten
+# das durch Belohnungserfahrung verstaerkt oder abgeschwaecht wird.
+ACTION_SIZE = 7
+
 GAMMA = 0.97
 GAE_LAMBDA = 0.95
 PPO_CLIP = 0.2
@@ -67,6 +74,11 @@ IMITATION_MUTATION   = 0.005
 EPISODIC_MEMORY_CAPACITY = 500
 EPISODIC_K = 10
 
+# --- Emergenz v3: Research-Drive Schwellenwert ---
+# Wenn brain_step['research_drive'] > RESEARCH_DRIVE_THRESHOLD,
+# initiiert Agent aktiv Forschung statt per Zufallswurf.
+RESEARCH_DRIVE_THRESHOLD = 0.4
+
 
 def _ensure_2d(t: torch.Tensor) -> torch.Tensor:
     """Stellt sicher, dass t mindestens 2D ist (batch-dim vorne)."""
@@ -93,6 +105,15 @@ class Brain(nn.Module):
         """
         plasticity-Gen (0.3..1.8) skaliert die Lernrate.
         Biologisches Vorbild: Neuronale Plastizitaet variiert zwischen Individuen.
+
+        action_size = 7 (Emergenz v3):
+          0: move_x
+          1: move_y
+          2: forage
+          3: cooperate
+          4: attack
+          5: build
+          6: research_drive  <-- NEU: Netz lernt selbst wann es forscht
         """
         super().__init__()
         self.input_size = input_size
@@ -274,7 +295,8 @@ class Brain(nn.Module):
         sequentielle Python-Schleife. Speedup ~8-12x bei PLAN_CANDIDATES=12.
 
         research_mode : bool
-            When True, planner uses PLAN_HORIZON_RESEARCH instead of PLAN_HORIZON.
+            When True, planner uses PLAN_HORIZON_RESEARCH (30) instead of
+            PLAN_HORIZON (3). Wird automatisch aktiviert wenn research_drive > Threshold.
         """
         horizon = PLAN_HORIZON_RESEARCH if research_mode else PLAN_HORIZON
 
@@ -332,15 +354,20 @@ class Brain(nn.Module):
 
         entropy = torch.distributions.Normal(mean, std).entropy().sum(dim=-1)
 
+        # Emergenz v3: research_drive aus Dimension 6 extrahieren
+        action_list = action.squeeze(0).detach().tolist()
+        research_drive = float(action_list[6]) if len(action_list) > 6 else 0.0
+
         return {
-            'obs_tensor':    obs.detach(),
-            'hidden_in':     hidden.detach(),
-            'value':         value.detach(),
-            'next_hidden':   next_hidden.squeeze(0).detach(),
-            'action_tensor': action.detach(),
-            'action_list':   action.squeeze(0).detach().tolist(),
-            'log_prob':      log_prob.detach(),
-            'entropy':       entropy.detach(),
+            'obs_tensor':     obs.detach(),
+            'hidden_in':      hidden.detach(),
+            'value':          value.detach(),
+            'next_hidden':    next_hidden.squeeze(0).detach(),
+            'action_tensor':  action.detach(),
+            'action_list':    action_list,
+            'log_prob':       log_prob.detach(),
+            'entropy':        entropy.detach(),
+            'research_drive': research_drive,  # NEU: direkt zugreifbar fuer agent.update()
         }
 
     def intrinsic_reward(self, hidden_in, action_tensor, next_obs):

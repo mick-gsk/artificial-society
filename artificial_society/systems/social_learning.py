@@ -11,6 +11,11 @@ Zusaetzlich zur kausalen Sequenz-Uebertragung werden bei hohem Vertrauen
 und deutlichem Erfolgsunterschied die Gehirn-Gewichte leicht angeglichen.
 Das bildet nach wie beobachtetes Verhalten unbewusst imitiert wird,
 ohne dass explizites Lehren stattfindet.
+
+Emergenz v3 (Lagerfeuer-Kollektivwissen):
+campfire_knowledge_sharing() ermoeglicht gruppenweiten Wissensaustausch
+an Feuerquellen. Alle Agenten in der Naehe eines Feuers tragen ihr Wissen
+in einen gemeinsamen Pool und lernen daraus -- kein bilateraler Transfer mehr.
 """
 
 import random
@@ -23,8 +28,13 @@ FIDELITY_BASE = 0.72
 FIDELITY_TRUST_BONUS = 0.18
 
 # Schwellenwert: Nachbar muss X-mal erfolgreicher sein damit Imitation ausgeloest wird
-IMITATION_SUCCESS_RATIO = 1.5  # Nachbar muss mind. 50% mehr Reward haben
-IMITATION_MIN_TRUST     = 0.4  # Mindest-Vertrauen fuer Gewichtsangleichung
+IMITATION_SUCCESS_RATIO = 1.5
+IMITATION_MIN_TRUST     = 0.4
+
+# Emergenz v3: Lagerfeuer-Kollektivwissen
+CAMPFIRE_RADIUS         = 3   # Wie nah muessen Agenten am Feuer sein?
+CAMPFIRE_MIN_AGENTS     = 2   # Mindestanzahl Agenten fuer Gruppenlernen
+CAMPFIRE_CONF_THRESHOLD = 0.3 # Mindest-Confidence fuer Weitergabe
 
 
 def social_learning_step(agent, agents: list, tick: int) -> float:
@@ -60,7 +70,7 @@ def social_learning_step(agent, agents: list, tick: int) -> float:
         curiosity = agent.genes.get('curiosity', 0.5)
         trust = agent.trust.get(other.id, 0.0)
 
-        # --- 1. Kausal-Sequenz beobachten (unveraendert) ---
+        # --- 1. Kausal-Sequenz beobachten ---
         observe_chance = OBSERVE_PROB + 0.15 * curiosity
         if other_reward > 0.5 and random.random() < observe_chance:
             seq = other_mem.sample_for_transmission()
@@ -69,7 +79,7 @@ def social_learning_step(agent, agents: list, tick: int) -> float:
                 causal_mem.receive_transmitted(seq, fidelity=fidelity)
                 reward += 0.05
 
-        # --- 2. Aktives Lehren bei hohem Vertrauen (unveraendert) ---
+        # --- 2. Aktives Lehren bei hohem Vertrauen ---
         if trust > 0.5 and random.random() < TEACH_PROB:
             seq = causal_mem.sample_for_transmission()
             other_causal = getattr(other, 'causal_memory', None)
@@ -78,15 +88,9 @@ def social_learning_step(agent, agents: list, tick: int) -> float:
                 reward += 0.06
 
         # --- 3. Neuronale Gewichtsangleichung (Spiegelneuronen-Analogie) ---
-        # Wird nur ausgeloest wenn:
-        #   a) Nachbar deutlich erfolgreicher ist (IMITATION_SUCCESS_RATIO)
-        #   b) Vertrauen hoch genug ist (IMITATION_MIN_TRUST)
-        #   c) Plastizitaets-Gen erlaubt Imitation (curiosity als Proxy)
-        # Biologisch: Menschen imitieren Verhalten das sie als erfolgreich beobachten,
-        # vor allem wenn sie der Person vertrauen (Bandura, 1977).
         if (
             other_reward > agent_reward * IMITATION_SUCCESS_RATIO
-            and other_reward > 0.3        # Nachbar muss absolut positiv sein
+            and other_reward > 0.3
             and trust >= IMITATION_MIN_TRUST
             and random.random() < 0.15 + 0.20 * curiosity
         ):
@@ -96,4 +100,97 @@ def social_learning_step(agent, agents: list, tick: int) -> float:
                 agent_brain.imitate_from(other_brain)
                 reward += 0.08
 
+        # --- 4. Emergenz v3: KnowledgeGraph + Makro-Aktionen imitieren ---
+        # Wenn ein Nachbar deutlich erfolgreicher ist und vertrauenswuerdig,
+        # werden sein KnowledgeGraph-Wissen und bekannte Makro-Aktionen imitiert.
+        agent_kg = getattr(agent, 'knowledge', None)
+        other_kg = getattr(other, 'knowledge', None)
+        if (
+            agent_kg is not None and other_kg is not None
+            and other_reward > agent_reward + 0.2
+            and trust >= 0.2
+            and random.random() < 0.10 + 0.15 * curiosity
+        ):
+            agent_kg.imitate_from(other_kg, strength=0.12)
+            reward += 0.04
+
     return reward
+
+
+def campfire_knowledge_sharing(agents: list, world, tick: int) -> int:
+    """
+    Emergenz v3: Lagerfeuer-Kollektivwissen.
+
+    Scannt alle Weltzellen auf Feuerquellen. Agenten in der Naehe eines Feuers
+    bilden eine temporaere Lerngruppe und teilen ihren KnowledgeGraph kollektiv.
+
+    Biologisches Vorbild: Das Lagerfeuer als erste Institution der Menschheit --
+    gemeinsames Wissen ueber Jagdwege, Pflanzen, Werkzeugbau wurde abends
+    am Feuer geteilt. Dadurch entstanden gemeinsame Kulturen und kumulative
+    Technologien, die kein Einzelner alleine haette entwickeln koennen.
+
+    Rückgabewert: Anzahl der Wissenstransfers die stattfanden.
+    """
+    transfers = 0
+    alive_agents = [a for a in agents if a.alive]
+    if not alive_agents:
+        return 0
+
+    # Sammle alle Zellen mit aktiven Feuerquellen
+    fire_positions = []
+    for y in range(world.height):
+        for x in range(world.width):
+            cell = world.cells[y][x]
+            materials = cell.get('materials', {})
+            if materials.get('fire', 0) > 0.3 or materials.get('ember', 0) > 0.5:
+                fire_positions.append((x, y))
+
+    for (fx, fy) in fire_positions:
+        # Agenten in der Naehe des Feuers
+        near_fire = [
+            a for a in alive_agents
+            if abs(a.pos[0] - fx) <= CAMPFIRE_RADIUS
+            and abs(a.pos[1] - fy) <= CAMPFIRE_RADIUS
+        ]
+        if len(near_fire) < CAMPFIRE_MIN_AGENTS:
+            continue
+
+        # Kollektiven Wissenspool aufbauen:
+        # Alle confident facts und macros der Gruppe zusammenfuehren
+        pooled_facts = {}     # key -> best CausalFact
+        pooled_macros = {}    # key -> best CompositeAction
+
+        for a in near_fire:
+            kg = getattr(a, 'knowledge', None)
+            if kg is None:
+                continue
+            for key, fact in kg.facts.items():
+                if fact.confidence >= CAMPFIRE_CONF_THRESHOLD:
+                    existing = pooled_facts.get(key)
+                    if existing is None or fact.confidence > existing.confidence:
+                        pooled_facts[key] = fact
+            for key, macro in kg.macro_actions.items():
+                if macro.confidence >= CAMPFIRE_CONF_THRESHOLD:
+                    existing = pooled_macros.get(key)
+                    if existing is None or macro.confidence > existing.confidence:
+                        pooled_macros[key] = macro
+
+        # Alle Agenten am Feuer lernen aus dem Pool
+        for a in near_fire:
+            kg = getattr(a, 'knowledge', None)
+            if kg is None:
+                continue
+            for key, fact in pooled_facts.items():
+                if key not in kg.facts or kg.facts[key].confidence < fact.confidence * 0.5:
+                    kg.record(key, fact.outcome_ids, True)
+                    transfers += 1
+            for key, macro in pooled_macros.items():
+                if key not in kg.macro_actions:
+                    kg.record_macro(
+                        steps=list(macro.steps),
+                        reward=macro.avg_reward * 0.7,  # Etwas abgeschwaecht -- Lernlaerm
+                        materials=list(macro.context_materials),
+                    )
+                    transfers += 1
+
+    return transfers
