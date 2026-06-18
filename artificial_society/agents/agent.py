@@ -6,6 +6,8 @@ from artificial_society.agents.memory import EpisodicMemory
 from artificial_society.agents.genetics import random_genes, inherit_genes
 from artificial_society.agents.communication import CommunicationSystem
 from artificial_society.agents.endocrine import EndocrineSystem
+from artificial_society.agents.theory_of_mind import TheoryOfMind
+from artificial_society.agents.knowledge import KnowledgeGraph
 from artificial_society.environment.resources import apply_consumption, maybe_build_structure
 from artificial_society.environment.herbs import available_herbs, collect_herb, regrow_herbs
 from artificial_society.environment.territory import territory_reward_for_agent, get_home_forage_bonus
@@ -58,11 +60,9 @@ COOP_SHARE_REWARD            = 0.25
 COOP_RECV_REWARD             = 0.30
 COOP_PROXIMITY_RADIUS        = 2
 
-# Need-driven Invention
-# Probability wird durch Need-Magnitude dynamisch gesteuert (kein fester Wert)
 INVENTION_BASE_PROB      = 0.55
 INVENTION_CURIOSITY_MULT = 0.35
-NEED_INVENTION_INTERVAL  = 8   # alle N Ticks Gelegenheit fuer need-driven Erfindung
+NEED_INVENTION_INTERVAL  = 8
 
 
 def _ensure_new_fields(agent):
@@ -89,6 +89,12 @@ def _ensure_new_fields(agent):
         agent._last_mate_id = None
     if not hasattr(agent, '_need_inv_cooldown'):
         agent._need_inv_cooldown = 0
+    # --- Theory of Mind ---
+    if not hasattr(agent, 'tom') or agent.tom is None:
+        agent.tom = TheoryOfMind(agent.id)
+    # --- KnowledgeGraph ---
+    if not hasattr(agent, 'knowledge') or agent.knowledge is None:
+        agent.knowledge = KnowledgeGraph()
 
 
 @dataclass
@@ -136,6 +142,9 @@ class Agent:
     is_sleeping: bool = False
     _last_mate_id: int | None = None
     _need_inv_cooldown: int = 0
+    # Theory of Mind + KnowledgeGraph
+    tom: TheoryOfMind = field(default_factory=lambda: TheoryOfMind(0))
+    knowledge: KnowledgeGraph = field(default_factory=KnowledgeGraph)
 
     @classmethod
     def spawn_random(cls, x, y):
@@ -148,10 +157,12 @@ class Agent:
             brain=brain, sex=random.choice(['m', 'f']),
         )
         agent.hidden_state = brain.initial_hidden()
+        agent.tom = TheoryOfMind(agent.id)
+        agent.knowledge = KnowledgeGraph()
         return agent
 
     @classmethod
-    def spawn_child(cls, x, y, genes, generation=1, parent_id=None, tribe_id=None):
+    def spawn_child(cls, x, y, genes, generation=1, parent_id=None, tribe_id=None, parent=None):
         cls.id_counter += 1
         brain  = Brain(plasticity=genes.get('plasticity', 1.0))
         agent  = cls(
@@ -163,6 +174,12 @@ class Agent:
         )
         agent.hidden_state = brain.initial_hidden()
         agent.reproduction_cooldown = REPRODUCTION_COOLDOWN
+        agent.tom = TheoryOfMind(agent.id)
+        agent.knowledge = KnowledgeGraph()
+        # Cultural transmission: inherit ToM and KnowledgeGraph from parent
+        if parent is not None:
+            agent.tom.inherit_from(parent.tom, strength=0.4)
+            agent.knowledge.inherit_from(parent.knowledge, strength=0.7)
         return agent
 
     def life_stage(self):
@@ -360,10 +377,6 @@ class Agent:
         curiosity    = self.genes.get('curiosity', 0.5)
         dopamine     = self.endocrine.h[4]
         inflammation = self.endocrine.h[6]
-        # Kein Hardcoding: Wahrscheinlichkeit ergibt sich rein aus
-        # endokrinem Zustand (Neugier, Dopamin, Entzuendung).
-        # Kranke Agenten haben hoehere Inflammation → hoehere sample_prob
-        # → entdecken Heilkraeuter durch eigene Erfahrung, nicht durch Vorgabe.
         sample_prob  = 0.10 + 0.25*curiosity + 0.20*dopamine + 0.30*inflammation
         for tag in herbs_here:
             if random.random() < sample_prob:
@@ -403,25 +416,11 @@ class Agent:
                     self.tool = 'sharp_stone'
 
     def maybe_craft(self, technology, intensity):
-        """Crafting-Versuch: gesteuert ausschliesslich durch den Brain-Output (explore).
-        Kein Hardcoding welches Material bei welchem Problem benutzt werden soll.
-        Der Agent lernt durch Reward-Signal welche Kombinationen sich lohnen.
-        """
         if self.is_sleeping or intensity < 0.1:
             return 0.0
-        cell = None
-        try:
-            # Wir brauchen die aktuelle Zelle fuer Materialzugriff
-            # (wird im update()-Kontext aufgerufen wo world verfuegbar ist)
-            return 0.0
-        except Exception:
-            return 0.0
+        return 0.0
 
     def maybe_craft_in_world(self, world, intensity):
-        """Echte Crafting-Implementierung mit Weltzugriff.
-        Aufgerufen aus update() wo world verfuegbar ist.
-        Gesteuert durch Brain-explore-Output: kein Wert wird vorgegeben.
-        """
         if self.is_sleeping or intensity < 0.1:
             return 0.0
         cell = world.get_cell(*self.pos)
@@ -510,7 +509,11 @@ class Agent:
         same_tribe_nearby = sum(1 for a in nearby if a.tribe_id == self.tribe_id and self.tribe_id is not None)
         self.endocrine.apply_social_signal(len(nearby), same_tribe_nearby > 0)
         mods = self.endocrine.modifiers()
+
         for other in nearby:
+            # --- Theory of Mind: observe other agent ---
+            self.tom.observe_agent(other, tick, own_trust=self.trust.get(other.id, 0.0))
+
             helpful = other.message_vector[0] > -0.15
             prior   = self.trust.get(other.id, 0.0)
             delta   = 0.015 if helpful else -0.008
@@ -524,15 +527,34 @@ class Agent:
                 delta += info_bonus * 0.18
                 if self.tribe_id is not None and other.tribe_id == self.tribe_id:
                     self._share_tribe_resources(other)
-                # FIX: Remedy-Wissen teilen schon bei sehr geringem Vertrauen (0.05)
-                # innerhalb des Stammes — Agenten lernen Heilmittel weiterhin
-                # selbst; nur der Transfer an Stammesmitglieder wird frueher
-                # ermoeglicht statt durch hohes Trust-Gate blockiert zu werden.
                 trust_threshold = 0.05 if (
                     self.tribe_id is not None and other.tribe_id == self.tribe_id
                 ) else 0.3
                 if self.trust.get(other.id, 0.0) > trust_threshold:
                     share_remedy_knowledge(self, other)
+
+                # --- ToM-gated KnowledgeGraph sharing ---
+                # Only teach what the other probably doesn't know yet.
+                # Deception: suppress signal if competing for resources.
+                cortisol = self.endocrine.h[0]
+                if cortisol < 0.55 and hasattr(self, 'knowledge') and hasattr(other, 'knowledge'):
+                    tribe_match = (self.tribe_id is not None and self.tribe_id == other.tribe_id)
+                    own_kg_keys = set(self.knowledge.facts.keys())
+                    self.tom.update_own_knowledge(own_kg_keys)
+                    gap = self.tom.infer_knowledge_gap(other.id, own_kg_keys)
+                    for key in list(gap)[:3]:  # share at most 3 facts per tick
+                        fact = self.knowledge.facts.get(key)
+                        if fact and fact.confidence > 0.3:
+                            key_str = str(key)
+                            if self.tom.should_teach(
+                                other.id, key_str,
+                                own_trust_of_other=self.trust.get(other.id, 0.0),
+                                tribe_match=tribe_match,
+                            ):
+                                other.knowledge.record(key, fact.outcome_ids, success=True)
+                                # Mark that other now knows this
+                                self.tom.models[other.id].inferred_knowledge.add(key_str)
+
             self.trust[other.id] = max(-1.0, min(1.0, prior + delta))
         tribes.consider_join(self, nearby)
         social_learning_step(self, agents, tick)
@@ -689,6 +711,10 @@ class Agent:
         prev_hydration = self.hydration
         prev_health    = self.health
 
+        # Research mode: low cortisol + high energy = safe to experiment
+        cortisol = self.endocrine.h[0]
+        research_mode = cortisol < 0.35 and self.energy > 0.6 * MAX_ENERGY
+
         if self.is_sleeping:
             brain_step = self.brain.act(features, self.hidden_state)
             self.apply_disease(world)
@@ -708,7 +734,10 @@ class Agent:
             self.last_reward = reward
             return child_genes
 
-        brain_step = self.brain.act(features, self.hidden_state)
+        brain_step = self.brain.act(
+            features, self.hidden_state,
+            research_mode=research_mode,
+        )
         values = brain_step['action_list']
         action = {
             'move_x':      values[0],
@@ -743,9 +772,6 @@ class Agent:
 
         inv_reward = 0.0
 
-        # --- NEED-DRIVEN INVENTION (Hauptpfad) ---
-        # Laeuft alle NEED_INVENTION_INTERVAL Ticks wenn kein Cooldown aktiv.
-        # Prueft intern ob ein echter Need vorhanden ist (Need-Magnitude > Threshold).
         if self._need_inv_cooldown <= 0 and not self.is_sleeping:
             inv_reward = agent_invent_from_need(self, cell, env, tick=tick)
             if inv_reward > 0:
@@ -753,10 +779,6 @@ class Agent:
                 self.last_action_mode   = 'invent'
                 self.endocrine.apply_discovery(min(1.0, inv_reward * 0.5))
 
-        # --- EXPLORATION-INVENTION (Sekundaerpfad) ---
-        # Zusaetzlicher Pfad wenn Brain explore hoch bewertet (curiosity-getrieben).
-        # maybe_craft_in_world() laeuft hier ebenfalls — Brain entscheidet
-        # durch explore-Output ob gecraftet wird, kein Hardcoding.
         elif action['explore'] > 0.1:
             explore_intensity = max(0.0, (action['explore'] + 1.0) * 0.5)
             if random.random() < INVENTION_BASE_PROB + INVENTION_CURIOSITY_MULT * self.genes.get('curiosity', 0.5):
@@ -764,7 +786,6 @@ class Agent:
                 if inv_reward > 0:
                     self.endocrine.apply_discovery(min(1.0, inv_reward))
                 self.last_action_mode = 'experiment'
-            # Craft-Pfad: laeuft parallel zum Invention-Pfad bei hoher explore-Intensitaet
             if explore_intensity > 0.4 and random.random() < explore_intensity * 0.6:
                 craft_r = self.maybe_craft_in_world(world, explore_intensity)
                 if craft_r > 0:
@@ -783,9 +804,6 @@ class Agent:
         if self.sick > 60:
             self.last_action_mode = 'sick'
 
-        # FIX: inv_reward-Gewichtung 0.4 → 1.5
-        # Das Brain muss das Erfindungs-Signal klar vom Homeostasis-Rauschen
-        # unterscheiden koennen. Bei 0.4 war es statistisch nicht unterscheidbar.
         reward  = _homeostasis_reward(self.energy, prev_energy, self.hydration, prev_hydration, self.health, prev_health, self.alive)
         reward += herb_heal_reward + share_reward + inv_reward * 1.5
 
