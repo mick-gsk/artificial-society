@@ -286,4 +286,455 @@ class Agent:
         if self.is_sleeping:
             return
         dx = 1 if action['move_x'] > 0.33 else -1 if action['move_x'] < -0.33 else 0
-        dy = 1 if action['mov
+        dy = 1 if action['move_y'] > 0.33 else -1 if action['move_y'] < -0.33 else 0
+        x, y = self.pos
+        nx = max(0, min(world.width  - 1, x + dx))
+        ny = max(0, min(world.height - 1, y + dy))
+        cell = world.get_cell(nx, ny)
+        if cell.get('passable', True):
+            self.pos = (nx, ny)
+
+    def _forage(self, world, mods):
+        x, y  = self.pos
+        cell  = world.get_cell(x, y)
+        gain  = 0.0
+        tool_bonus = SHARP_STONE_FORAGE_BONUS if self.tool == 'sharp_stone' else 0.0
+        home_bonus = get_home_forage_bonus(world, self)
+        eff   = mods.get('forage_eff', 1.0) * (1.0 + tool_bonus + home_bonus)
+        # food
+        food_available = cell.get('food', 0.0)
+        if food_available > 0:
+            diet = self.genes.get('diet_preference', 0.0)  # -1=plant, +1=meat
+            if diet < 0:  # plant preference
+                take = min(food_available, PLANT_ENERGY * eff)
+                cell['food'] = max(0.0, food_available - take)
+                self.energy  = min(MAX_ENERGY, self.energy + take)
+                self.plant_eaten += 1
+                gain += take
+                self.endocrine.apply_substance('plant_food', take / PLANT_ENERGY)
+                self.endocrine.apply_successful_forage(take)
+            else:  # meat / omnivore
+                carcass = cell.get('carcass', 0.0)
+                if carcass > 0:
+                    take = min(carcass, MEAT_ENERGY * eff)
+                    cell['carcass'] = max(0.0, carcass - take)
+                    self.energy = min(MAX_ENERGY, self.energy + take)
+                    self.meat_eaten += 1
+                    gain += take
+                    self.endocrine.apply_substance('raw_meat', take / MEAT_ENERGY)
+                    self.endocrine.apply_successful_forage(take)
+                else:
+                    take = min(food_available, PLANT_ENERGY * eff)
+                    cell['food'] = max(0.0, food_available - take)
+                    self.energy  = min(MAX_ENERGY, self.energy + take)
+                    self.plant_eaten += 1
+                    gain += take
+                    self.endocrine.apply_substance('plant_food', take / PLANT_ENERGY)
+                    self.endocrine.apply_successful_forage(take)
+        # water
+        water_available = cell.get('water', 0.0)
+        if water_available > 0 and self.hydration < 100.0:
+            take = min(water_available, 8.0 * eff)
+            cell['water']   = max(0.0, water_available - take)
+            self.hydration  = min(100.0, self.hydration + take)
+            gain += take * 0.3
+            self.endocrine.apply_substance('water', take / 8.0)
+        return gain
+
+    def _collect_herbs(self, world):
+        x, y = self.pos
+        cell = world.get_cell(x, y)
+        herbs = available_herbs(cell)
+        if not herbs:
+            return
+        herb = random.choice(herbs)
+        if collect_herb(cell, herb):
+            self.herbs_carried[herb] = self.herbs_carried.get(herb, 0) + 1
+            self.endocrine.apply_substance(f'herb_{herb}', 1.0)
+
+    def _try_remedy(self):
+        if self.disease_id is None or not self.herbs_carried:
+            return
+        result = evaluate_remedy(self, self.disease_id)
+        if result == 'cured':
+            record_cure_discovery(self, self.disease_id)
+            self.disease_id = None
+            self.sick = max(0.0, self.sick - 40.0)
+        elif result == 'partial':
+            self.sick = max(0.0, self.sick - 15.0)
+
+    def _share_remedy(self, agents):
+        if not self.remedy_knowledge:
+            return
+        x, y = self.pos
+        near = [
+            a for a in agents
+            if a is not self and a.alive
+            and abs(a.pos[0]-x) <= 2 and abs(a.pos[1]-y) <= 2
+        ]
+        if near:
+            share_remedy_knowledge(self, random.choice(near))
+
+    def _attack(self, agents, mods):
+        x, y = self.pos
+        agg_bias = mods.get('aggression_bias', 0.0)
+        threshold = max(0.05, self.genes['aggression'] + agg_bias - 0.3)
+        if random.random() > threshold:
+            return 0.0
+        targets = [
+            a for a in agents
+            if a is not self and a.alive
+            and abs(a.pos[0]-x) <= 1 and abs(a.pos[1]-y) <= 1
+            and self.trust.get(a.id, 0.0) < 0.0
+        ]
+        if not targets:
+            return 0.0
+        target = random.choice(targets)
+        dmg = max(1.0, 8.0 * self.genes['aggression'] + agg_bias * 5.0)
+        target.health -= dmg
+        target.endocrine.apply_attack_received()
+        if target.health <= 0:
+            target.alive = False
+            loot = target.energy * 0.3
+            self.energy = min(MAX_ENERGY, self.energy + loot)
+            return loot
+        self.endocrine.apply_attack_received()  # counter-stress
+        return 0.5
+
+    def _cooperate(self, agents, mods):
+        x, y = self.pos
+        social_bias = mods.get('social_bias', 0.0)
+        nearby = [
+            a for a in agents
+            if a is not self and a.alive
+            and abs(a.pos[0]-x) <= COOP_PROXIMITY_RADIUS
+            and abs(a.pos[1]-y) <= COOP_PROXIMITY_RADIUS
+        ]
+        if not nearby:
+            return 0.0
+        reward = 0.0
+        same_tribe = [a for a in nearby if a.tribe_id == self.tribe_id and self.tribe_id is not None]
+        self.endocrine.apply_social_signal(len(nearby), bool(same_tribe))
+        # foraging bonus from group
+        forage_bonus = min(COOP_FORAGE_MAX_BONUS, len(nearby) * COOP_FORAGE_BONUS_PER_MEMBER)
+        self.energy = min(MAX_ENERGY, self.energy + forage_bonus)
+        reward += forage_bonus * 0.1
+        # energy sharing
+        if self.energy >= COOP_SHARE_THRESHOLD_DONOR:
+            for partner in nearby:
+                if partner.energy < COOP_SHARE_THRESHOLD_RECV:
+                    self.energy   -= COOP_SHARE_AMOUNT
+                    partner.energy = min(MAX_ENERGY, partner.energy + COOP_SHARE_AMOUNT)
+                    self.trust[partner.id]  = min(1.0, self.trust.get(partner.id, 0.0) + 0.05)
+                    partner.trust[self.id]  = min(1.0, partner.trust.get(self.id, 0.0) + 0.08)
+                    reward += COOP_SHARE_REWARD
+                    break
+        # receive sharing
+        for partner in nearby:
+            if (partner.energy >= COOP_SHARE_THRESHOLD_DONOR
+                    and self.energy < COOP_SHARE_THRESHOLD_RECV):
+                partner.energy -= COOP_SHARE_AMOUNT
+                self.energy = min(MAX_ENERGY, self.energy + COOP_SHARE_AMOUNT)
+                reward += COOP_RECV_REWARD
+                self.trust[partner.id] = min(1.0, self.trust.get(partner.id, 0.0) + 0.08)
+                break
+        # trust update with ToM
+        for partner in nearby:
+            if self.trust.get(partner.id, 0.0) > 0.1:
+                self.tom.observe_action(partner.id, 'cooperate', outcome=1.0)
+            delta = 0.01 * (1.0 + social_bias)
+            self.trust[partner.id] = min(1.0, self.trust.get(partner.id, 0.0) + delta)
+        return reward
+
+    def _try_reproduce(self, agents):
+        if not self.can_reproduce() or self.sex != 'f':
+            return None
+        x, y = self.pos
+        males = [
+            a for a in agents
+            if a is not self and a.alive and a.sex == 'm'
+            and a.can_reproduce()
+            and abs(a.pos[0]-x) <= 2 and abs(a.pos[1]-y) <= 2
+            and self.trust.get(a.id, 0.0) >= -0.2
+        ]
+        if not males:
+            return None
+        mate = max(males, key=lambda a: (
+            a.genes.get('cooperation', 0.5)
+            + a.genes.get('plasticity', 1.0) / 1.8
+            + self.trust.get(a.id, 0.0)
+        ))
+        child_genes = inherit_genes(self.genes, mate.genes)
+        self.energy  -= REPRODUCTION_COST
+        mate.energy  -= REPRODUCTION_COST * 0.5
+        self.reproduction_cooldown = REPRODUCTION_COOLDOWN
+        mate.reproduction_cooldown = REPRODUCTION_COOLDOWN
+        self.pregnant = True
+        self.gestation = GESTATION_TIME
+        self.stored_child_genes = child_genes
+        self._last_mate_id = mate.id
+        mate._last_mate_id  = self.id
+        self.children += 1
+        mate.children  += 1
+        return None  # child born via progress_pregnancy
+
+    def _collect_resources(self, world):
+        x, y = self.pos
+        cell = world.get_cell(x, y)
+        tool_bonus = SHARP_STONE_COLLECT_BONUS if self.tool == 'sharp_stone' else 0.0
+        for res in ('wood', 'stone', 'fiber'):
+            available = cell.get(res, 0)
+            if available > 0:
+                amount = min(available, 1 + tool_bonus)
+                cell[res] = max(0, available - int(amount))
+                self.resources[res] = self.resources.get(res, 0) + int(amount)
+
+    def _build(self, world):
+        x, y = self.pos
+        cell = world.get_cell(x, y)
+        result = maybe_build_structure(self, cell)
+        if result:
+            self.energy -= BUILD_ENERGY_COST
+
+    def _maybe_craft_tool(self):
+        if self.tool is None:
+            stone = self.material_inventory.get('sharp_stone', 0)
+            if stone < 1:
+                stone = self.resources.get('stone', 0)
+            if stone >= 1:
+                self.tool = 'sharp_stone'
+                if 'sharp_stone' in self.material_inventory:
+                    self.material_inventory['sharp_stone'] -= 1
+                else:
+                    self.resources['stone'] = max(0, self.resources.get('stone', 0) - 1)
+
+    def _disease_tick(self, world):
+        if self.disease_id is None:
+            return
+        rec = REMEDY_REGISTRY.get(self.disease_id, {})
+        severity   = rec.get('severity', 0.5)
+        biome      = world.get_biome(*self.pos)
+        biome_mult = 1.3 if biome in rec.get('worse_in', []) else 1.0
+        drain      = severity * biome_mult
+        self.health -= drain
+        self.sick    = min(100.0, self.sick + drain)
+        if self.health <= 0:
+            self.alive = False
+
+    def _age_tick(self):
+        self.age += 1
+        if self.age > AGE_HEALTH_DECAY_START:
+            rate = 0.04 if self.age < AGE_HEALTH_DECAY_HARD else 0.12
+            self.health = max(0.0, self.health - rate)
+        if self.age >= AGE_LIMIT:
+            self.alive = False
+
+    def _sleep_tick(self, mods):
+        sleep_drive = mods.get('sleep_drive', 0.0)
+        if not self.is_sleeping and sleep_drive > SLEEP_DRIVE_THRESHOLD:
+            self.is_sleeping = True
+        if self.is_sleeping:
+            self.energy   = min(MAX_ENERGY, self.energy   + SLEEP_ENERGY_REGEN)
+            self.health   = min(100.0,      self.health   + SLEEP_HEALTH_REGEN)
+            self.hydration = max(0.0,       self.hydration - 0.1)
+            # wake when sleep drive dissipates
+            if sleep_drive < 0.20:
+                self.is_sleeping = False
+
+    def update(
+        self,
+        world,
+        agents,
+        tick: int,
+        season_state=None,
+        weather_state=None,
+        tribes=None,
+        economy=None,
+        technology=None,
+    ):
+        """
+        Main per-tick update. Returns child_genes dict if reproduction occurs,
+        otherwise None.
+        """
+        if not self.alive:
+            return None
+
+        _ensure_new_fields(self)
+
+        # --- endocrine update (must come first) ---
+        self.endocrine.update(self, world)
+        mods = self.endocrine.modifiers()
+
+        # --- age & disease ---
+        self._age_tick()
+        self._disease_tick(world)
+        if not self.alive:
+            return None
+
+        # --- sleep ---
+        self._sleep_tick(mods)
+
+        # --- passive drains ---
+        move_cost = 0.5 * mods.get('move_cost_mult', 1.0)
+        self.energy    = max(0.0, self.energy    - move_cost)
+        self.hydration = max(0.0, self.hydration - 0.3)
+        health_drain   = mods.get('health_drain', 0.0)
+        self.health    = max(0.0, self.health    - health_drain)
+
+        # starvation / dehydration
+        if self.energy <= 0:
+            self.health = max(0.0, self.health - 1.5)
+        if self.hydration <= 0:
+            self.health = max(0.0, self.health - 1.0)
+        if self.health <= 0:
+            self.alive = False
+            return None
+
+        # --- brain: observe & act ---
+        features = self.local_features(world, agents)
+        if self.hidden_state is None:
+            self.hidden_state = self.brain.initial_hidden()
+
+        brain_step = self.brain.act(
+            features,
+            self.hidden_state,
+            use_planning=True,
+        )
+        self.hidden_state = brain_step['next_hidden']
+        action_list = brain_step['action_list']
+
+        # map 6 continuous outputs to named action dict
+        action = {
+            'move_x':     action_list[0],
+            'move_y':     action_list[1],
+            'forage':     action_list[2],
+            'cooperate':  action_list[3],
+            'attack':     action_list[4],
+            'build':      action_list[5],
+        }
+
+        # --- execute actions ---
+        reward = 0.0
+
+        self.primitive_move(world, action)
+        apply_structure_effects(self, world.get_cell(*self.pos))
+
+        mode = 'idle'
+        if not self.is_sleeping:
+            if action['forage'] > 0.0:
+                gained = self._forage(world, mods)
+                reward += gained * 0.05
+                if gained > 0:
+                    mode = 'forage'
+                    self._collect_herbs(world)
+
+            if action['cooperate'] > 0.2:
+                reward += self._cooperate(agents, mods)
+                mode = 'cooperate'
+
+            if action['attack'] > 0.5:
+                reward += self._attack(agents, mods)
+                mode = 'attack'
+
+            if action['build'] > 0.4:
+                self._collect_resources(world)
+                self._build(world)
+                mode = 'build'
+
+            self._maybe_craft_tool()
+            self._try_remedy()
+            self._share_remedy(agents)
+
+        self.last_action_mode = mode
+
+        # --- territory reward ---
+        territory_r = territory_reward_for_agent(world, self)
+        reward += territory_r
+
+        # --- reproduction ---
+        self._try_reproduce(agents)
+        child_genes = self.progress_pregnancy()
+
+        # --- social learning (Schicht 2) ---
+        social_learning_step(self, agents)
+
+        # --- need-driven invention (Schicht 1) ---
+        if self._need_inv_cooldown <= 0:
+            need_vec = compute_need_vector(self)
+            inv_result = agent_invent_from_need(self, world.get_cell(*self.pos), need_vec)
+            if inv_result:
+                reward += 0.5
+                self.endocrine.apply_discovery(1.0)
+            self._need_inv_cooldown = NEED_INVENTION_INTERVAL
+        else:
+            self._need_inv_cooldown -= 1
+
+        # --- standard invention & cooking ---
+        inv_prob = INVENTION_BASE_PROB + INVENTION_CURIOSITY_MULT * self.genes.get('curiosity', 0.5)
+        if random.random() < inv_prob:
+            invented = agent_try_invention(self, world.get_cell(*self.pos))
+            if invented:
+                reward += 1.0
+                self.endocrine.apply_discovery(1.0)
+        if random.random() < 0.3:
+            cooked = agent_try_cook(self, world.get_cell(*self.pos))
+            if cooked:
+                reward += 0.3
+                self.endocrine.apply_substance('cooked_meat', 1.0)
+
+        # --- economy participation ---
+        if economy is not None:
+            economy.agent_trade(self, agents)
+
+        # --- causal memory update ---
+        next_features = self.local_features(world, agents)
+        delta_energy = (self.energy - features[0] * MAX_ENERGY) / MAX_ENERGY
+        if abs(delta_energy) > 0.02:
+            seq_key = (mode, round(delta_energy, 1))
+            self.causal_memory.record(seq_key, delta_energy)
+
+        # --- intrinsic reward & brain training ---
+        next_features_raw = self.local_features(world, agents)
+        intrinsic = self.brain.intrinsic_reward(
+            brain_step['hidden_in'],
+            brain_step['action_tensor'],
+            next_features_raw,
+        )
+        reward += 0.3 * intrinsic
+
+        # update episodic memory with current observation
+        import torch
+        next_obs_t = torch.tensor(next_features_raw, dtype=torch.float32,
+                                  device=self.brain.initial_hidden().device)
+        self.brain.episodic_memory.add(next_obs_t)
+
+        # store transition and maybe train
+        cognition_mult = mods.get('cognition', 1.0)
+        effective_reward = reward * cognition_mult
+        self.brain.store_transition(
+            brain_step['obs_tensor'],
+            brain_step['hidden_in'],
+            brain_step['action_tensor'],
+            brain_step['log_prob'],
+            brain_step['value'],
+            effective_reward,
+            not self.alive,
+            next_features_raw,
+        )
+        loss = self.brain.maybe_train()
+        if loss is not None:
+            self.last_loss = loss
+
+        self.last_reward = effective_reward
+        self.reproduction_cooldown = max(0, self.reproduction_cooldown - 1)
+
+        # ToM & emotional memory update
+        self.tom.update_beliefs(agents)
+        self.emotional_memory.record_event(
+            pos=self.pos,
+            emotion_tag=mode,
+            valence=min(1.0, max(-1.0, reward * 0.1)),
+            tick=tick,
+        )
+
+        return child_genes
