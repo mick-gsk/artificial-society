@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Artificial Society — Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>Artificial Society <span class="muted">— Simulation Dashboard</span></h1>
+    <div id="device" class="badge badge-unknown">device: …</div>
+  </header>
+
+  <section class="panel controls">
+    <form id="run-form">
+      <label>seed <input type="number" name="seed" value="42" /></label>
+      <label>ticks <input type="number" name="ticks" placeholder="∞" /></label>
+      <label>grid_w <input type="number" name="grid_w" value="60" /></label>
+      <label>grid_h <input type="number" name="grid_h" value="40" /></label>
+      <label>pop <input type="number" name="pop" value="36" /></label>
+      <button type="submit" id="start-btn">Start</button>
+      <button type="button" id="stop-btn">Stop</button>
+    </form>
+    <div id="status-line" class="muted">status: idle</div>
+  </section>
+
+  <section class="panel">
+    <div id="cards" class="cards"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Live series <span class="muted">(last 200 ticks)</span></h2>
+    <div id="charts" class="charts"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Ecology graph</h2>
+    <img id="ecology" alt="ecology graph (starts once a run produces data)" />
+  </section>
+
+  <script src="/static/dashboard.js"></script>
+</body>
+</html>

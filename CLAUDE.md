@@ -30,6 +30,19 @@ venv/bin/python -c "from artificial_society.simulation import Simulation; Simula
 `Simulation(headless=True, ...)` constructs without opening a window (`sim.screen` and
 `sim.renderer` are `None`). Use it for tests, batch runs, and any non-visual work.
 
+### Dashboard / remote GPU hosting
+
+```bash
+# Web dashboard: drives a headless sim in a background thread, serves a LAN UI on :8000
+pip install -e ".[serve]"            # fastapi + uvicorn
+PYTHONHASHSEED=0 python -m artificial_society.serve   # or scripts/run-dashboard.{bat,sh}
+```
+
+`artificial_society/serve/` (infra lane) hosts the sim on the GPU PC and is controlled
+remotely from the MacBook. `runner.SimulationRunner` steps the sim in a thread and calls
+`sim.stats.update(...)` after each tick (`step` does not collect stats itself); `app` exposes
+`/api/{run,stop,status,history,graph.png,health}`. Full setup: `docs/serve-setup.md`.
+
 ## Tests
 
 ```bash

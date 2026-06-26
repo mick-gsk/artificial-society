@@ -13,9 +13,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+serve = [
+    "fastapi>=0.110,<1",
+    "uvicorn[standard]>=0.27,<1",
+]
 dev = [
     "pytest>=8.4,<9",
     "ruff>=0.6",
+    "httpx>=0.27",  # FastAPI TestClient for the dashboard tests
 ]
 
 [tool.setuptools.packages.find]
