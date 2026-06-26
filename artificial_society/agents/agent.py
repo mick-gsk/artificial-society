@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import random
 from dataclasses import dataclass, field
 
@@ -302,11 +304,6 @@ class Agent:
                 self.gestation = 0
                 self.stored_child_genes = None
 
-        print(
-            "[BIRTH]",
-            self.id,
-            "generation=", self.generation,
-        )
         return child
 
     def primitive_move(self, world, action):
@@ -468,14 +465,6 @@ class Agent:
         return reward
 
     def _try_reproduce(self, agents):
-        if self.id == 1 and self.age % 100 == 0:
-            print(
-                "[TRY]",
-                self.id,
-                "age=", self.age,
-                "energy=", round(self.energy, 1),
-                "cooldown=", self.reproduction_cooldown,
-            )
         if not self.can_reproduce() or self.sex != 'f':
             return None
         x, y = self.pos
@@ -499,12 +488,6 @@ class Agent:
         self.reproduction_cooldown = REPRODUCTION_COOLDOWN
         mate.reproduction_cooldown = REPRODUCTION_COOLDOWN
         self.pregnant = True
-        print(
-            "[PREGNANCY_START]",
-            "mother=", self.id,
-            "father=", mate.id,
-            "tick=", self.age,
-        )
         eff = self.genes.get("gestation_efficiency", 1.0)
 
         self.gestation = max(

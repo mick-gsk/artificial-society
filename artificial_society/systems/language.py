@@ -166,6 +166,11 @@ class TokenWorld:
         self.tokens: dict[str, Token] = {}      # token_id → Token
         self.world_log: list[dict]    = []      # Sprach-Events
 
+    def reset(self) -> None:
+        """Clear all language tokens, for a fresh reproducible run."""
+        self.tokens.clear()
+        self.world_log.clear()
+
     def place_token(self, token: Token):
         self.tokens[token.token_id] = token
 

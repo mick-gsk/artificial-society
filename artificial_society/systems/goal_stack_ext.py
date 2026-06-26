@@ -17,12 +17,13 @@ Erweiterung von goal_stack.py um:
                     Nicht hardcodiert -- nur wenn die Sequenz konsistent
                     dasselbe Ergebnis erzeugt.
 """
+from __future__ import annotations
 
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional, Callable
 
-from artificial_society.systems.goal_stack import SubGoal, GoalStack
+from artificial_society.systems.goal_stack import SubGoal, GoalStack, GOAL_PLANNER
 from artificial_society.environment.materials import DISCOVERY_REGISTRY
 
 

@@ -6,6 +6,7 @@ They store causal sequences: (action, mat_a, mat_b) -> observed_effects.
 Successful sequences can be socially observed and imperfectly transmitted.
 This is the foundation of cumulative culture without pre-programmed recipes.
 """
+from __future__ import annotations
 
 import random
 from collections import defaultdict

@@ -380,24 +380,6 @@ def agent_invent_from_need(
         if emergent_reward > 0.5 and hasattr(agent, 'endocrine'):
             agent.endocrine.apply_discovery(min(1.0, emergent_reward * 0.7))
 
-        # Logging
-        if emergent_reward > 0.4:
-            props_found = {
-                PROP_DIMS[i]: round(float(new_vec[i]), 2)
-                for i in range(N_PROPS) if new_vec[i] > 0.05
-            }
-            need_desc = [
-                PROP_DIMS[i]
-                for i in range(N_PROPS)
-                if need[i] > 0.3
-            ]
-            print(
-                f'[NEED-INVENTION] tick={tick} agent={agent.id} '
-                f'need={need_desc} action={action} '
-                f'{mat_a}+{mat_b} -> {mat_id} '
-                f'fulfillment={fulfillment_normalized:.2f} reward={emergent_reward:.2f}'
-            )
-
     total_reward = legacy_reward + emergent_reward * 0.7
 
     # Step 7: In CausalMemory speichern

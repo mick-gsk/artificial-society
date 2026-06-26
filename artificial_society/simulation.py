@@ -5,6 +5,7 @@ import pygame
 
 import artificial_society.runtime_patches  # noqa: F401
 
+from artificial_society.rng import seed_all
 from artificial_society.world import World
 from artificial_society.renderer import Renderer
 from artificial_society.agents.agent import Agent, CORPSE_ENERGY, MAX_ENERGY
@@ -23,6 +24,8 @@ from artificial_society.visualization.statistics import StatisticsTracker
 from artificial_society.systems.remedy import try_infect_agent, REMEDY_REGISTRY
 from artificial_society.systems.invention import tick_materials, seed_world_materials, share_discovery
 from artificial_society.systems.culture import CausalMemory
+from artificial_society.environment.materials import DISCOVERY_REGISTRY
+from artificial_society.systems.language import TOKEN_WORLD
 
 EVENT_WARMUP_TICKS = 600
 MIN_POPULATION = 8
@@ -81,7 +84,19 @@ def _migrate_agent(agent):
 
 
 class Simulation:
-    def __init__(self, width=1200, height=800, grid_w=60, grid_h=40, initial_population=36):
+    def __init__(self, width=1200, height=800, grid_w=60, grid_h=40, initial_population=36,
+                 headless=False, seed=None, load_checkpoint=True):
+        # Seed first, before anything stochastic (biome grid, population) is built.
+        self.headless = headless
+        self.seed     = seed
+        if seed is not None:
+            seed_all(seed)
+            # Reset the agent id sequence so a seed reproduces the same ids too.
+            Agent.id_counter = 0
+        # Each simulation starts with fresh emergent-discovery / language state, so a
+        # run is reproducible and independent of any prior simulation in this process.
+        DISCOVERY_REGISTRY.reset()
+        TOKEN_WORLD.reset()
         self.width    = width
         self.height   = height
         self.grid_w   = grid_w
@@ -95,16 +110,23 @@ class Simulation:
         self.technology = TechnologySystem()
         self.evolution  = EvolutionSystem()
         self.stats      = StatisticsTracker()
-        # Fenster explizit mit voller Breite (Spielfeld + Sidebar)
-        self.screen = pygame.display.set_mode((width, height), 0, 32)
-        self.clock  = pygame.time.Clock()
-        pygame.display.set_caption('Artificial Society v3.5')
-        self.renderer = Renderer(width, height, self.cell_px)
-        self.font     = pygame.font.SysFont('consolas', 16)
+        if headless:
+            # No window, font, or renderer in headless mode (tests / batch runs).
+            self.screen   = None
+            self.clock    = None
+            self.renderer = None
+            self.font     = None
+        else:
+            # Fenster explizit mit voller Breite (Spielfeld + Sidebar)
+            self.screen = pygame.display.set_mode((width, height), 0, 32)
+            self.clock  = pygame.time.Clock()
+            pygame.display.set_caption('Artificial Society v3.5')
+            self.renderer = Renderer(width, height, self.cell_px)
+            self.font     = pygame.font.SysFont('consolas', 16)
         self.running  = True
         self.tick     = 0
         self.agents   = []
-        if os.path.exists(CHECKPOINT_PATH):
+        if load_checkpoint and os.path.exists(CHECKPOINT_PATH):
             self._load_checkpoint()
         else:
             self.spawn_initial_population(initial_population)
@@ -327,106 +349,92 @@ class Simulation:
         })
 
     def step(self):
-        self.tick += 1
-        season = self.seasons.current_season(self.tick)
-        weather = self.weather.current(self.tick)
-        phase   = day_phase(self.tick)
+        """Advance the simulation by exactly one tick.
 
-        # Agenten updaten
-        new_children = []
-        for agent in self.agents:
+        Single, explicit per-tick pipeline. It reproduces only the operations
+        that are *effective* in today's live loop, so moving off the
+        bootstrap/monkeypatch loop is behaviour-preserving. Operations the old
+        live loop silently dropped — world regrowth, births, disease spread,
+        society systems, statistics — are re-wired in Phase 2 and marked
+        TODO(phase2) below.
+        """
+        tick = self.tick
+
+        # --- world systems effective today ---
+        update_territory_claims(self.world, self.agents)
+        tick_materials(self.world)
+        # TODO(phase2): self.world.update_environment(season_state, weather_state, tick)
+
+        # --- per-agent update ---
+        # The patched Agent.update returns completed-pregnancy genes; the current
+        # live loop discards them, so no births happen yet.
+        # TODO(phase2): consume the return value -> spawn_child_from_parent(...)
+        for agent in list(self.agents):
             if not agent.alive:
                 continue
-            result = agent.update(
-                self.world, self.agents,
-                season=season, weather=weather,
-                day_phase=phase,
-                tribes=self.tribes,
-                economy=self.economy,
-                technology=self.technology,
-                tick=self.tick,
-            )
-            if result and result.get('birth'):
-                child = self.spawn_child_from_parent(agent, result.get('child_genes'))
-                new_children.append(child)
-            if result and result.get('discovery'):
-                share_discovery(agent, self.agents, result['discovery'])
-
-        if self.tick % 100 == 0:
-
-            alive = [a for a in self.agents if a.alive]
-
-            repro_ready = sum(
-                1 for a in alive
-                if hasattr(a, "can_reproduce") and a.can_reproduce()
+            agent.update(
+                self.world, self.agents, tick,
+                season_state=None, weather_state=None,
+                tribes=self.tribes, economy=self.economy, technology=self.technology,
             )
 
-            pregnant = sum(
-                1 for a in alive
-                if getattr(a, "pregnant", False)
-            )
+        # Drop agents that died during their own update. As in the current live
+        # loop, pre-filtering means remove_dead() finds no bodies (no carcass or
+        # death-knowledge broadcast yet).
+        # TODO(phase2): route deaths through remove_dead() for carcass + broadcast.
+        self.agents = [a for a in self.agents if a.alive]
+        self.remove_dead()
 
-            print(
-                f"[REPRO]",
-                f"tick={self.tick}",
-                f"alive={len(alive)}",
-                f"ready={repro_ready}",
-                f"pregnant={pregnant}",
-            )
-
-        self.agents.extend(new_children)
-
-        # Welt-Systeme
-        tick_materials(self.world)
-        self.spread_diseases()
         self.tick_immunity_and_recovery()
         self._apply_hamilton_rewards()
-
-        if self.tick % SOCIAL_SHARING_INTERVAL == 0:
-            try:
-                from artificial_society.systems.social_learning import social_learning_step
-                social_learning_step(self.agents, self.world, radius=SOCIAL_SHARING_RADIUS,
-                                     energy_reward=SOCIAL_SHARING_ENERGY_REWARD)
-            except Exception:
-                pass
-
-        if self.tick % 10 == 0:
-            update_territory_claims(self.agents, self.world)
-
-        self.remove_dead()
+        # TODO(phase2): spread_diseases(); tribes/economy/technology.update(...); stats
 
         if len(self.agents) < MIN_POPULATION:
             self.emergency_respawn()
 
-        if self.tick % 5 == 0:
-            self._collect_stats()
-
-        if self.tick % CHECKPOINT_INTERVAL == 0:
+        if CHECKPOINT_INTERVAL and tick > 0 and tick % CHECKPOINT_INTERVAL == 0:
             self._save_checkpoint()
 
-    def run(self):
+        self.tick = tick + 1
+
+    def run(self, max_ticks=None):
+        """Drive the simulation loop.
+
+        Headless when the simulation was constructed with ``headless=True``.
+        ``max_ticks`` bounds the number of ticks (tests / batch runs); ``None``
+        runs until the window is closed (GUI mode only).
+        """
+        self.running = True
+        n = 0
         while self.running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    self.running = False
-                elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        self.running = False
-                    elif event.key == pygame.K_s:
-                        self._save_checkpoint()
-                        print('[checkpoint] manually saved')
-                    elif event.key == pygame.K_DELETE:
-                        if os.path.exists(CHECKPOINT_PATH):
-                            os.remove(CHECKPOINT_PATH)
-                            print('[checkpoint] deleted')
+            if not self.headless:
+                self._handle_events()
 
             self.step()
-            self.renderer.draw(
-                self.screen,
-                self.world,
-                self.agents,
-                self.stats,
-                self.tribes,
-                self.technology,
-            )
-            self.clock.tick(30)
+
+            if not self.headless and self.renderer is not None:
+                self.renderer.draw(
+                    self.screen, self.world, self.agents,
+                    self.stats, self.tribes, self.technology,
+                )
+                if self.clock is not None:
+                    self.clock.tick(30)
+
+            n += 1
+            if max_ticks is not None and n >= max_ticks:
+                break
+
+    def _handle_events(self):
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    self.running = False
+                elif event.key == pygame.K_s:
+                    self._save_checkpoint()
+                    print('[checkpoint] manually saved')
+                elif event.key == pygame.K_DELETE:
+                    if os.path.exists(CHECKPOINT_PATH):
+                        os.remove(CHECKPOINT_PATH)
+                        print('[checkpoint] deleted')

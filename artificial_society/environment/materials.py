@@ -20,6 +20,7 @@ Property dimensions (PROP_DIMS):
   10 conductivity    -- heat/energy transfer       [0..1]
   11 scent           -- volatile aroma strength    [0..1]
 """
+from __future__ import annotations
 
 import random
 import math
@@ -128,6 +129,11 @@ class DiscoveryRegistry:
     def __init__(self, similarity_threshold: float = 0.08):
         self.entries: list[dict] = []
         self.threshold = similarity_threshold
+
+    def reset(self) -> None:
+        """Clear all discovered materials, for a fresh reproducible run."""
+        self.entries.clear()
+        self._known_ids_cache = None
 
     def register(
         self,
