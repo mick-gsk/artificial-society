@@ -243,6 +243,7 @@ class DiscoveryRegistry:
     def __init__(self, similarity_threshold: float = 0.08):
         self.entries: list[dict] = []
         self.threshold = similarity_threshold
+        self._known_ids_cache: list[str] | None = None
 
     def reset(self) -> None:
         """Clear all discovered materials, for a fresh reproducible run."""
@@ -258,6 +259,7 @@ class DiscoveryRegistry:
     ) -> str:
         for entry in self.entries:
             if np.linalg.norm(vector - entry["vector"]) < self.threshold:
+                self._known_ids_cache = None
                 return entry["id"]
         new_id = f"mat_{len(self.entries):04d}"
         self.entries.append(
@@ -277,6 +279,7 @@ class DiscoveryRegistry:
             f"sharpness={vector[IDX['sharpness']]:.2f} "
             f"scent={vector[IDX['scent']]:.2f}"
         )
+        self._known_ids_cache = None
         return new_id
 
     def get_vector(self, mat_id: str) -> np.ndarray:
@@ -287,7 +290,11 @@ class DiscoveryRegistry:
         return np.zeros(N_PROPS, dtype=np.float32)
 
     def known_ids(self) -> list[str]:
-        return [e["id"] for e in self.entries]
+        cached = getattr(self, "_known_ids_cache", None)
+        if cached is None:
+            cached = [e["id"] for e in self.entries]
+            self._known_ids_cache = cached
+        return list(cached)
 
     def summary(self) -> list[dict]:
         return [

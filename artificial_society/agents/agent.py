@@ -3,18 +3,16 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 
-from artificial_society.agents.brain import INPUT_SIZE, RESEARCH_DRIVE_THRESHOLD, Brain
+import numpy as np
+import torch
+
+from artificial_society.agents.brain import INPUT_SIZE, Brain
 from artificial_society.agents.communication import CommunicationSystem
 from artificial_society.agents.emotional_memory import EmotionalMemory
-from artificial_society.agents.endocrine import (
-    ADRENALINE,
-    CORTISOL,
-    DOPAMINE,
-    SEROTONIN,
-    EndocrineSystem,
-)
+from artificial_society.agents.endocrine import EndocrineSystem
 from artificial_society.agents.genetics import inherit_genes, random_genes
 from artificial_society.agents.knowledge import KnowledgeGraph
+from artificial_society.agents.life_stage import get_stage_stats
 from artificial_society.agents.memory import EpisodicMemory
 from artificial_society.agents.theory_of_mind import TheoryOfMind
 from artificial_society.environment.herbs import available_herbs, collect_herb
@@ -29,9 +27,18 @@ from artificial_society.environment.territory import (
     territory_reward_for_agent,
 )
 from artificial_society.systems.culture import CausalMemory
+from artificial_society.systems.goal_stack import GoalStack
+from artificial_society.systems.goal_stack_ext import agent_tick_with_goals
 from artificial_society.systems.invention import agent_try_cook, agent_try_invention
+from artificial_society.systems.language import (
+    TOKEN_WORLD,
+    TokenMemory,
+    agent_mark,
+    agent_observe_token,
+)
 from artificial_society.systems.need_driven_invention import (
     agent_invent_from_need,
+    compute_need_vector,
 )
 from artificial_society.systems.remedy import (
     REMEDY_REGISTRY,
@@ -85,6 +92,12 @@ NEED_INVENTION_INTERVAL = 12
 # Emergenz v3: Macro-Aktion Reward-Bonus wenn eine bekannte Sequenz ausgefuehrt wird
 MACRO_ACTION_REWARD_BONUS = 0.4
 
+_RESOURCE_ALIASES = {
+    "wood": ("dry_wood", "wet_wood", "wood"),
+    "stone": ("stone", "flint"),
+    "fiber": ("fiber", "dry_grass", "crushed_herb", "leaf"),
+}
+
 
 def _ensure_new_fields(agent):
     if not hasattr(agent, "_brain_device"):
@@ -123,6 +136,102 @@ def _ensure_new_fields(agent):
     # Emergenz v3: recent_action_sequence fuer Makro-Aktion-Erkennung
     if not hasattr(agent, "_recent_action_seq"):
         agent._recent_action_seq = []
+
+
+def _ensure_runtime_fields(agent) -> None:
+    if not hasattr(agent, "goal_stack") or agent.goal_stack is None:
+        agent.goal_stack = GoalStack()
+    if not hasattr(agent, "token_memory") or agent.token_memory is None:
+        agent.token_memory = TokenMemory()
+    if not hasattr(agent, "_next_planning_tick"):
+        agent._next_planning_tick = 0
+    if not hasattr(agent, "_planning_stride"):
+        agent._planning_stride = 4
+    if not hasattr(agent, "_last_goal_action"):
+        agent._last_goal_action = None
+    if not hasattr(agent, "_language_retry_tick"):
+        agent._language_retry_tick = 0
+    if not hasattr(agent, "_inventory_cap"):
+        agent._inventory_cap = 24
+    if not hasattr(agent, "_cached_nearby_agents"):
+        agent._cached_nearby_agents = []
+    if not hasattr(agent, "_cached_nearby_radius"):
+        agent._cached_nearby_radius = 2
+    if not hasattr(agent, "_disease_immunity"):
+        agent._disease_immunity = {}
+
+
+def _compact_material_inventory(agent, max_entries: int = 24) -> None:
+    inv = getattr(agent, "material_inventory", None)
+    if not inv:
+        return
+
+    cleaned = {k: float(v) for k, v in inv.items() if float(v) > 0.01}
+    if len(cleaned) <= max_entries:
+        agent.material_inventory = cleaned
+        return
+
+    protected = {k: v for k, v in cleaned.items() if not k.startswith("mat_")}
+    discovered = sorted(
+        ((k, v) for k, v in cleaned.items() if k.startswith("mat_")),
+        key=lambda item: (-item[1], item[0]),
+    )
+
+    remaining = max_entries - len(protected)
+    kept = dict(protected)
+    if remaining > 0:
+        for mat_id, qty in discovered[:remaining]:
+            kept[mat_id] = qty
+
+    if len(kept) > max_entries:
+        essentials = [
+            ("sharp_stone", kept.get("sharp_stone", 0.0)),
+            ("fire", kept.get("fire", 0.0)),
+            ("ember", kept.get("ember", 0.0)),
+            ("cooked_meat", kept.get("cooked_meat", 0.0)),
+            ("raw_meat", kept.get("raw_meat", 0.0)),
+            ("raw_root", kept.get("raw_root", 0.0)),
+            ("stone", kept.get("stone", 0.0)),
+            ("wood", kept.get("wood", 0.0)),
+            ("fiber", kept.get("fiber", 0.0)),
+        ]
+        essentials = [(k, v) for k, v in essentials if k in kept and v > 0]
+        kept = dict(essentials[:max_entries])
+
+    agent.material_inventory = kept
+
+
+def _maybe_mark_language(agent, cell: dict, tick: int, context_vec, reward: float) -> float:
+    if reward < 0.9 or tick < getattr(agent, "_language_retry_tick", 0):
+        return reward
+    if random.random() > 0.12:
+        return reward
+
+    token_id = agent_mark(agent, cell, context_vec, tick)
+    if token_id:
+        agent._language_retry_tick = tick + 12
+        return reward + 0.1
+    return reward
+
+
+def _observe_tokens(agent, cell: dict, context_vec, reward: float) -> None:
+    x, y = agent.pos
+    tokens = TOKEN_WORLD.tokens_at(x, y, radius=1)
+    if not tokens:
+        return
+    signal = max(0.0, reward)
+    for token in tokens:
+        agent_observe_token(agent, token, context_vec, reward_signal=signal)
+
+
+def _maybe_collect_language_convergence(agent, agents: list, tick: int) -> None:
+    if tick % 90 != 0 or getattr(agent, "id", 0) != 1:
+        return
+    memories = [getattr(a, "token_memory", None) for a in agents]
+    memories = [m for m in memories if m is not None]
+    if len(memories) >= 2:
+        TOKEN_WORLD.check_convergence(memories, tick)
+        TOKEN_WORLD.tick_decay()
 
 
 @dataclass
@@ -199,6 +308,7 @@ class Agent:
         agent.knowledge = KnowledgeGraph()
         agent.emotional_memory = EmotionalMemory()
         agent._recent_action_seq = []
+        _ensure_runtime_fields(agent)
         return agent
 
     @classmethod
@@ -231,7 +341,34 @@ class Agent:
             random.shuffle(known_places)
             for pos, info in known_places[:50]:
                 agent.world_memory[pos] = dict(info)
+        _ensure_runtime_fields(agent)
         return agent
+
+    @property
+    def x(self):
+        return self.pos[0]
+
+    @property
+    def y(self):
+        return self.pos[1]
+
+    def _nearby_cached(self, agents, radius=2):
+        cached = getattr(self, "_cached_nearby_agents", None)
+        cached_radius = getattr(self, "_cached_nearby_radius", None)
+        if cached is not None and cached_radius == radius:
+            return cached
+        x, y = self.pos
+        nearby = [
+            other
+            for other in agents
+            if other is not self
+            and other.alive
+            and abs(other.pos[0] - x) <= radius
+            and abs(other.pos[1] - y) <= radius
+        ]
+        self._cached_nearby_agents = nearby
+        self._cached_nearby_radius = radius
+        return nearby
 
     def life_stage(self):
         if self.age < STAGE_CHILD:
@@ -554,39 +691,41 @@ class Agent:
         return None
 
     def _collect_resources(self, world):
-
         x, y = self.pos
         cell = world.get_cell(x, y)
+        slot = cell.setdefault("materials", {})
+        tool_bonus = 0.20 if getattr(self, "tool", None) == "sharp_stone" else 0.0
 
-        materials = cell.get("materials", {})
-
-        wood_amount = materials.get("dry_wood", 0)
-
-        if wood_amount > 0:
-            take = min(1.0, wood_amount)
-            materials["dry_wood"] -= take
-            self.resources["wood"] += int(take)
-
-        stone_amount = materials.get("stone", 0)
-
-        if stone_amount > 0:
-            take = min(1.0, stone_amount)
-            materials["stone"] -= take
-            self.resources["stone"] += int(take)
-
-        fiber_amount = materials.get("fiber", 0)
-
-        if fiber_amount > 0:
-            take = min(1.0, fiber_amount)
-            materials["fiber"] -= take
-            self.resources["fiber"] += int(take)
+        for resource, aliases in _RESOURCE_ALIASES.items():
+            collected = 0.0
+            target_take = 1.0 + tool_bonus
+            for material_name in aliases:
+                qty = float(slot.get(material_name, 0.0))
+                if qty <= 0:
+                    continue
+                take = min(qty, max(0.0, target_take - collected))
+                if take <= 0:
+                    continue
+                slot[material_name] = max(0.0, qty - take)
+                if slot[material_name] <= 0.01:
+                    slot.pop(material_name, None)
+                collected += take
+                if collected >= target_take:
+                    break
+            if collected > 0:
+                self.resources[resource] = float(self.resources.get(resource, 0.0)) + collected
 
     def _build(self, world):
         x, y = self.pos
         cell = world.get_cell(x, y)
         result = maybe_build_structure(cell, self.resources)
-        if result:
-            self.energy -= BUILD_ENERGY_COST.get(result, 10)
+        if not result:
+            return
+        if isinstance(BUILD_ENERGY_COST, dict):
+            cost = float(BUILD_ENERGY_COST.get(result, 10.0))
+        else:
+            cost = float(BUILD_ENERGY_COST)
+        self.energy = max(0.0, self.energy - cost)
 
     def _maybe_craft_tool(self):
         if self.tool is None:
@@ -862,10 +1001,11 @@ class Agent:
         if not self.alive:
             return None
 
-        _ensure_new_fields(self)
+        _ensure_runtime_fields(self)
 
         self.endocrine.update(self, world)
         mods = self.endocrine.modifiers()
+        stage = get_stage_stats(self.age)
 
         self._age_tick()
         self._disease_tick(world)
@@ -874,11 +1014,27 @@ class Agent:
 
         self._sleep_tick(mods)
 
-        move_cost = 0.5 * mods.get("move_cost_mult", 1.0)
+        current_cell = world.get_cell(*self.pos)
+        structure_mods = apply_structure_effects(self, current_cell)
+
+        move_cost = (
+            0.5
+            * mods.get("move_cost_mult", 1.0)
+            * stage["move_cost_mult"]
+            * structure_mods.get("cold_factor", 1.0)
+        )
+        hydration_loss = 0.3 * mods.get("hydration_loss_mult", 1.0) * stage["hydration_loss_mult"]
         self.energy = max(0.0, self.energy - move_cost)
-        self.hydration = max(0.0, self.hydration - 0.3)
-        health_drain = mods.get("health_drain", 0.0)
-        self.health = max(0.0, self.health - health_drain)
+        self.hydration = max(
+            0.0,
+            min(
+                100.0, self.hydration - hydration_loss + structure_mods.get("hydration_bonus", 0.0)
+            ),
+        )
+        self.health = max(
+            0.0,
+            self.health - mods.get("health_drain", 0.0) * structure_mods.get("disease_factor", 1.0),
+        )
 
         if self.energy <= 0:
             self.health = max(0.0, self.health - 1.5)
@@ -888,38 +1044,29 @@ class Agent:
             self.alive = False
             return None
 
+        nearby_agents = self._nearby_cached(agents, 2)
         features = self.local_features(world, agents)
         if self.hidden_state is None:
             self.hidden_state = self.brain.initial_hidden()
 
-        # -------------------------------------------------------------------
-        # Emergenz v3: research_mode automatisch aktivieren
-        # Bedingung: niedriger Dopamin (Reward-Hunger) + hohes Curiosity-Gen
-        #            + genug Energie um sicher zu forschen
-        # Biologisch: Menschen forschen wenn sie nicht unmittelbar ums
-        # Ueberleben kaempfen muessen und intrinsisch motiviert sind.
-        # -------------------------------------------------------------------
-        dopamine = self.endocrine.h[DOPAMINE]
-        curiosity = self.genes.get("curiosity", 0.5)
-        research_mode = (
-            dopamine < 0.3 and curiosity > 0.65 and self.energy > 80.0 and not self.is_sleeping
+        self._planning_stride = (
+            2 if getattr(self, "goal_stack", None) and not self.goal_stack.is_empty() else 4
         )
+        use_planning = tick >= getattr(self, "_next_planning_tick", 0)
+        if use_planning:
+            self._next_planning_tick = tick + self._planning_stride
 
-        self.update_memory(world)
-
-        self.current_goal = self.choose_goal()
-
-        self.select_goal_target()
-
+        research_mode = self._need_inv_cooldown <= 0 or (
+            getattr(self, "goal_stack", None) is not None and not self.goal_stack.is_empty()
+        )
         brain_step = self.brain.act(
             features,
             self.hidden_state,
-            use_planning=True,
+            use_planning=use_planning,
             research_mode=research_mode,
         )
         self.hidden_state = brain_step["next_hidden"]
         action_list = brain_step["action_list"]
-
         action = {
             "move_x": action_list[0],
             "move_y": action_list[1],
@@ -927,26 +1074,54 @@ class Agent:
             "cooperate": action_list[3],
             "attack": action_list[4],
             "build": action_list[5],
-            # Emergenz v3: research_drive direkt aus dem Brain-Output
-            "research_drive": brain_step.get("research_drive", 0.0),
         }
 
-        goal_move = self.goal_move(world)
-
-        if goal_move is not None:
-            action["move_x"] = goal_move[0]
-            action["move_y"] = goal_move[1]
-
         reward = 0.0
+        mode = "idle"
+
+        if getattr(self, "goal_stack", None) is not None:
+            goal_action, goal_shaping = agent_tick_with_goals(
+                self,
+                current_cell,
+                {
+                    "tick": tick,
+                    "season_state": season_state or {},
+                    "weather_state": weather_state or {},
+                    "tribes": tribes,
+                    "economy": economy,
+                    "technology": technology,
+                },
+                tick,
+            )
+            self._last_goal_action = goal_action
+            reward += 0.6 * goal_shaping
+            if goal_action is not None:
+                self._next_planning_tick = tick
+                if goal_action in {"collect", "harvest"}:
+                    action["forage"] = max(action["forage"], 0.7)
+                elif goal_action in {"place_on_heat", "arch", "build_dome", "fire_pottery", "form"}:
+                    action["build"] = max(action["build"], 0.7)
+                elif goal_action == "wait":
+                    action["move_x"] = 0.0
+                    action["move_y"] = 0.0
+                    action["forage"] = 0.0
+                    action["attack"] = 0.0
 
         self.primitive_move(world, action)
-        apply_structure_effects(self, world.get_cell(*self.pos))
+        current_cell = world.get_cell(*self.pos)
+        structure_mods = apply_structure_effects(self, current_cell)
 
-        mode = "idle"
         if not self.is_sleeping:
             if action["forage"] > 0.0:
-                gained = self._forage(world, mods)
-                reward += gained * 0.05
+                gained = self._forage(
+                    world,
+                    {
+                        **mods,
+                        "forage_eff": mods.get("forage_eff", 1.0)
+                        * (1.0 + structure_mods.get("forage_bonus", 0.0)),
+                    },
+                )
+                reward += gained * 0.05 * stage.get("foraging_mult", 1.0)
                 if gained > 0:
                     mode = "forage"
                     self._collect_herbs(world)
@@ -955,11 +1130,11 @@ class Agent:
                 reward += self._cooperate(agents, mods, tick)
                 mode = "cooperate"
 
-            if action["attack"] > 0.5:
+            if action["attack"] > 0.5 and stage.get("can_attack", True):
                 reward += self._attack(agents, mods)
                 mode = "attack"
 
-            if action["build"] > 0.4:
+            if action["build"] > 0.4 and stage.get("can_build", True):
                 self._collect_resources(world)
                 self._build(world)
                 mode = "build"
@@ -968,69 +1143,41 @@ class Agent:
             self._try_remedy()
             self._share_remedy(agents)
 
-            # -------------------------------------------------------------------
-            # Emergenz v3: research_drive steuert Erfindung
-            # Das Netz entscheidet jetzt wann es forscht -- kein Zufallswurf mehr.
-            # Fallback: Wenn research_drive niedrig, traditioneller Zufallspfad
-            # mit reduzierter Basis-Wahrscheinlichkeit als Hintergrundexploration.
-            # -------------------------------------------------------------------
-            brain_wants_research = action["research_drive"] > RESEARCH_DRIVE_THRESHOLD
+        self.last_action_mode = mode
+        reward += territory_reward_for_agent(self, world)
 
-            if self._need_inv_cooldown <= 0:
-                inv_result = agent_invent_from_need(
-                    self, world.get_cell(*self.pos), world.get_cell(*self.pos), tick
-                )
-                if inv_result:
-                    reward += 0.5
-                    self.endocrine.apply_discovery(1.0)
-                self._need_inv_cooldown = NEED_INVENTION_INTERVAL
-            else:
-                self._need_inv_cooldown -= 1
+        if stage.get("can_reproduce", True):
+            self._try_reproduce(agents)
+        child_genes = self.progress_pregnancy()
 
-            if brain_wants_research:
-                # Brain-gesteuertes Forschen: voller Reward, research_mode-Planung aktiv
-                invented = agent_try_invention(
-                    self, world.get_cell(*self.pos), world.get_cell(*self.pos)
-                )
-                if invented:
-                    reward += 1.5  # Erhoehter Bonus da Brain aktiv entschieden hat
-                    self.endocrine.apply_discovery(1.0)
-                    mode = "research"
-            else:
-                # Hintergrund-Exploration: geringere Basiswahrscheinlichkeit
-                # (von 0.55 auf 0.25 reduziert, da Brain jetzt Hauptpfad ist)
-                bg_inv_prob = 0.03 + INVENTION_CURIOSITY_MULT * curiosity
-                if random.random() < bg_inv_prob:
-                    invented = agent_try_invention(
-                        self, world.get_cell(*self.pos), world.get_cell(*self.pos)
-                    )
-                    if invented:
-                        reward += 1.0
-                        self.endocrine.apply_discovery(1.0)
+        if tick % 3 == 0:
+            reward += social_learning_step(self, agents, tick)
 
-            if random.random() < 0.3:
-                cooked = agent_try_cook(self, world.get_cell(*self.pos))
-                if cooked:
-                    reward += 0.3
-                    self.endocrine.apply_substance("cooked_meat", 1.0)
+        if self._need_inv_cooldown <= 0:
+            compute_need_vector(self, current_cell)
+            inv_result = agent_invent_from_need(self, current_cell, current_cell, tick)
+            if inv_result:
+                reward += 0.5
+                self.endocrine.apply_discovery(1.0)
+            self._need_inv_cooldown = NEED_INVENTION_INTERVAL
+        else:
+            self._need_inv_cooldown -= 1
+
+        inv_prob = INVENTION_BASE_PROB + INVENTION_CURIOSITY_MULT * self.genes.get("curiosity", 0.5)
+        if tick % 3 == 0 and random.random() < inv_prob:
+            invented = agent_try_invention(self, current_cell, current_cell)
+            if invented:
+                reward += 1.0
+                self.endocrine.apply_discovery(1.0)
+
+        if tick % 4 == 0 and random.random() < 0.18:
+            cooked = agent_try_cook(self, current_cell)
+            if cooked:
+                reward += 0.3
+                self.endocrine.apply_substance("cooked_meat", 1.0)
 
         if economy is not None:
             economy.maybe_trade(self, agents)
-
-        # Emergenz v3: Makro-Aktions-Sequenz aufzeichnen und Bonus erhalten
-        macro_bonus = self._record_macro_if_successful(mode, reward)
-        reward += macro_bonus
-
-        self.last_action_mode = mode
-
-        territory_r = territory_reward_for_agent(self, world)
-        reward += territory_r
-
-        self._try_reproduce(agents)
-        child_genes = self.progress_pregnancy()
-
-        if tick % 5 == 0:
-            social_learning_step(self, agents, tick)
 
         next_features_raw = self.local_features(world, agents)
         intrinsic = self.brain.intrinsic_reward(
@@ -1040,10 +1187,18 @@ class Agent:
         )
         reward += 0.3 * intrinsic
 
-        import torch
-
-        next_obs_t = torch.tensor(next_features_raw, dtype=torch.float32, device=self._brain_device)
+        next_obs_t = torch.tensor(
+            next_features_raw,
+            dtype=torch.float32,
+            device=brain_step["hidden_in"].device,
+        )
         self.brain.episodic_memory.novelty(next_obs_t)
+
+        context_vec = np.asarray(next_features_raw, dtype=np.float32)
+        reward = _maybe_mark_language(self, current_cell, tick, context_vec, reward)
+        _observe_tokens(self, current_cell, context_vec, reward)
+        _maybe_collect_language_convergence(self, agents, tick)
+        _compact_material_inventory(self, getattr(self, "_inventory_cap", 24))
 
         cognition_mult = mods.get("cognition", 1.0)
         effective_reward = reward * cognition_mult
@@ -1057,6 +1212,7 @@ class Agent:
             not self.alive,
             next_features_raw,
         )
+
         loss = self.brain.maybe_train()
         if loss is not None:
             self.last_loss = loss
@@ -1064,20 +1220,12 @@ class Agent:
         self.last_reward = effective_reward
         self.reproduction_cooldown = max(0, self.reproduction_cooldown - 1)
 
-        x, y = self.pos
-        nearby_for_tom = [
-            a
-            for a in agents
-            if a is not self
-            and a.alive
-            and abs(a.pos[0] - x) <= COOP_PROXIMITY_RADIUS
-            and abs(a.pos[1] - y) <= COOP_PROXIMITY_RADIUS
-        ]
-        for other in nearby_for_tom:
+        for other in nearby_agents:
             self.tom.observe_agent(other, tick)
+
         h = self.endocrine.h
-        arousal = min(1.0, max(0.0, (h[CORTISOL] + h[ADRENALINE]) / 2))
-        context_hormones = [h[CORTISOL], h[SEROTONIN], h[DOPAMINE], h[ADRENALINE]]
+        arousal = min(1.0, max(0.0, (h[0] + h[1]) / 2))
+        context_hormones = [h[0], h[3], h[4], h[1]]
         self.emotional_memory.encode_experience(
             stimulus=mode,
             valence=min(1.0, max(-1.0, reward * 0.1)),

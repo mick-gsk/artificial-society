@@ -62,15 +62,14 @@ SimulationCore (simulation.py — HOT)         systems/registry.py (HOT) — @re
 ```
 
 - **Agents** (`agents/agent.py`, `brain.py` — HOT): dataclass state + PPO brain with
-  model-based planning. `Agent.update` is *still* monkeypatched by `emergence_runtime`
-  (`patched_update`) — **Phase 1b** folds it back into the class.
+  model-based planning. `Agent.update` is a normal method again (Phase 1b removed the
+  `emergence_runtime` monkeypatch layer).
 - **Determinism**: `rng.seed_all` seeds python/numpy/torch; `Simulation.__init__` also resets
   the global `DISCOVERY_REGISTRY` / `TOKEN_WORLD`. Set `PYTHONHASHSEED=0` for cross-process.
 
 **Hot/core files (frozen contract — only the `core-lead`, serially):** `simulation.py`,
 `world.py`, `rng.py`, `agents/agent.py`, `agents/brain.py`, `environment/materials.py`,
-`systems/registry.py`, `systems/_builtins.py`, `systems/emergence_runtime.py`,
-`runtime_patches.py`, and the determinism tests.
+`systems/registry.py`, `systems/_builtins.py`, and the determinism tests.
 
 ---
 
@@ -97,22 +96,24 @@ golden test will go red — that is expected; **do not touch it**; note it in yo
 
 ## 4. Roadmap (remaining work, by phase)
 
-### Phase 1b — finish removing the monkeypatch layer  ·  lane: **core (serial)**  ·  golden: neutral
-The dual loop is gone; constant-mutations are baked into source. Remaining:
-- Relocate `patched_update`, `_collect_resources_from_materials`, `_build_from_resources`
-  from `systems/emergence_runtime.py` into `agents/agent.py` as real methods (verbatim — keep
-  behaviour identical; the golden must stay green).
-- Move `_maybe_trade_cached` → `EconomySystem.maybe_trade` and `_social_learning_step_cached`
-  → `social_learning.social_learning_step` into their own modules (these are *systems* files
-  but the move is part of the core un-patching — coordinate as a core change).
-- Delete `runtime_patches.py`; reduce `emergence_runtime.py` to nothing (or remove) so
-  `Agent.update` is a normal method. `emergence_runtime.py` carries ~20 pre-existing ruff
-  errors that vanish when it's gutted.
-- **Acceptance:** no runtime patching of `Agent.update`/economy/social-learning; golden
-  unchanged; full suite green; `grep -r "apply_emergence_integration" artificial_society`
-  returns nothing.
-- **⚠ Until this lands:** editing `economy.maybe_trade` or `social_learning.social_learning_step`
-  in the *systems* lane is **dead** — `emergence_runtime` overrides them at import.
+### Phase 1b — finish removing the monkeypatch layer  ·  lane: **core (serial)**  ·  golden: neutral  ·  ✅ DONE
+**Done (branch `core/unpatch-phase1b`):** the monkeypatch layer is gone.
+- `patched_update` → `Agent.update`, `_collect_resources_from_materials`/`_build_from_resources`
+  → `Agent._collect_resources`/`_build` (the old class-body `update` was dead code; relocated
+  verbatim). Helpers `_ensure_runtime_fields`, `_compact_material_inventory`, language helpers,
+  `_RESOURCE_ALIASES`, and `x`/`y` properties moved into `agents/agent.py`; the per-tick neighbour
+  cache is now `Agent._nearby_cached` (a method, so economy/social_learning can call it without an
+  import cycle).
+- `_maybe_trade_cached` → `EconomySystem.maybe_trade`; `_social_learning_step_cached` →
+  `social_learning.social_learning_step`. **NB:** the live cached `social_learning_step` had only
+  3 blocks — the source's KnowledgeGraph "block 4" was dead, so it was dropped (keeping it would
+  shift the RNG sequence and break the golden).
+- `DiscoveryRegistry.known_ids` memoised + `register` invalidation folded into
+  `environment/materials.py`.
+- `runtime_patches.py` and `systems/emergence_runtime.py` deleted; import removed from
+  `simulation.py`; stale discovery-skip entry removed from `registry.py`.
+- **Verified:** golden unchanged, full suite green (39 tests), 200-tick health sane,
+  `grep apply_emergence_integration` empty.
 
 ### Phase 2 remainder — activate the remaining dormant systems  ·  lanes: **core + systems**
 Give `_builtins.py` tick hooks (core) or add new systems (systems lane):
@@ -170,7 +171,7 @@ Each is an independent, behaviour-changing task (golden regen at integration):
 | A | Activate **stats** tick + fix the `life_stage` method/count bug | core | neutral | — |
 | B | Activate **tribes** formation + membership/cleanup tick | core | regen | — |
 | C | Activate **economy** + **technology** update ticks | core | regen | — |
-| D | **Phase 1b** un-monkeypatch (see above) | core | neutral | — |
+| ~~D~~ | ~~**Phase 1b** un-monkeypatch (see above)~~ ✅ done (`core/unpatch-phase1b`) | core | neutral | — |
 | E | **Energy conservation** + carcass bug (Phase 4 core) | core | regen | D preferred |
 | F | Temperature/season → regrowth & danger coupling | environment | regen | — |
 | G | Biome-specific scarcity + equilibrium tuning | environment | regen | — |
@@ -223,8 +224,8 @@ for the combined behaviour change, verify health, run the gate, push. 5. `git wo
   mutate, check whether it's read at call-time (safe to bake) or bound as a function-default at
   def-time (baking changes behaviour). `PLAN_CANDIDATES` was a def-time default → its runtime
   mutation was a dead no-op.
-- **`emergence_runtime` still patches `Agent.update`/economy/social-learning at import** until
-  Phase 1b — domain edits to those targets are dead until then.
+- ~~**`emergence_runtime` still patches `Agent.update`/economy/social-learning at import**~~ —
+  resolved in Phase 1b; the patch layer is deleted and those are now plain source methods.
 - **`materials.py` (HOT)**: 14+ importers depend on its property-vector layout and
   `DISCOVERY_REGISTRY`; treat as frozen. `brain.py` `INPUT_SIZE` is likewise a contract.
 - Construction resets only `DISCOVERY_REGISTRY`/`TOKEN_WORLD`; `SEQUENCE_LIBRARY`/

@@ -20,7 +20,6 @@ in einen gemeinsamen Pool und lernen daraus -- kein bilateraler Transfer mehr.
 
 import random
 
-
 TRANSMISSION_RADIUS = 2
 OBSERVE_PROB = 0.18
 TEACH_PROB = 0.12
@@ -29,12 +28,12 @@ FIDELITY_TRUST_BONUS = 0.18
 
 # Schwellenwert: Nachbar muss X-mal erfolgreicher sein damit Imitation ausgeloest wird
 IMITATION_SUCCESS_RATIO = 1.5
-IMITATION_MIN_TRUST     = 0.4
+IMITATION_MIN_TRUST = 0.4
 
 # Emergenz v3: Lagerfeuer-Kollektivwissen
-CAMPFIRE_RADIUS         = 3   # Wie nah muessen Agenten am Feuer sein?
-CAMPFIRE_MIN_AGENTS     = 2   # Mindestanzahl Agenten fuer Gruppenlernen
-CAMPFIRE_CONF_THRESHOLD = 0.3 # Mindest-Confidence fuer Weitergabe
+CAMPFIRE_RADIUS = 3  # Wie nah muessen Agenten am Feuer sein?
+CAMPFIRE_MIN_AGENTS = 2  # Mindestanzahl Agenten fuer Gruppenlernen
+CAMPFIRE_CONF_THRESHOLD = 0.3  # Mindest-Confidence fuer Weitergabe
 
 
 def social_learning_step(agent, agents: list, tick: int) -> float:
@@ -45,29 +44,26 @@ def social_learning_step(agent, agents: list, tick: int) -> float:
        (Spiegelneuronen-Analogie: unbewusste Verhaltensimitation bei Beobachtung)
     Returns a small reward for successful transmission.
     """
-    causal_mem = getattr(agent, 'causal_memory', None)
+    causal_mem = getattr(agent, "causal_memory", None)
     if causal_mem is None:
         return 0.0
 
-    nearby = [
-        a for a in agents
-        if a is not agent and a.alive
-        and abs(a.pos[0] - agent.pos[0]) <= TRANSMISSION_RADIUS
-        and abs(a.pos[1] - agent.pos[1]) <= TRANSMISSION_RADIUS
-    ]
+    # Nachbar-Cache wird einmal pro Tick auf dem Agenten gehalten (Agent._nearby_cached);
+    # Radius 2 == TRANSMISSION_RADIUS.
+    nearby = agent._nearby_cached(agents, 2)
     if not nearby:
         return 0.0
 
     reward = 0.0
-    agent_reward = getattr(agent, 'last_reward', 0.0)
+    agent_reward = getattr(agent, "last_reward", 0.0)
 
     for other in nearby:
-        other_mem = getattr(other, 'causal_memory', None)
+        other_mem = getattr(other, "causal_memory", None)
         if other_mem is None:
             continue
 
-        other_reward = getattr(other, 'last_reward', 0.0)
-        curiosity = agent.genes.get('curiosity', 0.5)
+        other_reward = getattr(other, "last_reward", 0.0)
+        curiosity = agent.genes.get("curiosity", 0.5)
         trust = agent.trust.get(other.id, 0.0)
 
         # --- 1. Kausal-Sequenz beobachten ---
@@ -82,9 +78,11 @@ def social_learning_step(agent, agents: list, tick: int) -> float:
         # --- 2. Aktives Lehren bei hohem Vertrauen ---
         if trust > 0.5 and random.random() < TEACH_PROB:
             seq = causal_mem.sample_for_transmission()
-            other_causal = getattr(other, 'causal_memory', None)
+            other_causal = getattr(other, "causal_memory", None)
             if seq and other_causal:
-                other_causal.receive_transmitted(seq, fidelity=FIDELITY_BASE + FIDELITY_TRUST_BONUS * trust)
+                other_causal.receive_transmitted(
+                    seq, fidelity=FIDELITY_BASE + FIDELITY_TRUST_BONUS * trust
+                )
                 reward += 0.06
 
         # --- 3. Neuronale Gewichtsangleichung (Spiegelneuronen-Analogie) ---
@@ -94,25 +92,11 @@ def social_learning_step(agent, agents: list, tick: int) -> float:
             and trust >= IMITATION_MIN_TRUST
             and random.random() < 0.15 + 0.20 * curiosity
         ):
-            agent_brain = getattr(agent, 'brain', None)
-            other_brain = getattr(other, 'brain', None)
+            agent_brain = getattr(agent, "brain", None)
+            other_brain = getattr(other, "brain", None)
             if agent_brain is not None and other_brain is not None:
                 agent_brain.imitate_from(other_brain)
                 reward += 0.08
-
-        # --- 4. Emergenz v3: KnowledgeGraph + Makro-Aktionen imitieren ---
-        # Wenn ein Nachbar deutlich erfolgreicher ist und vertrauenswuerdig,
-        # werden sein KnowledgeGraph-Wissen und bekannte Makro-Aktionen imitiert.
-        agent_kg = getattr(agent, 'knowledge', None)
-        other_kg = getattr(other, 'knowledge', None)
-        if (
-            agent_kg is not None and other_kg is not None
-            and other_reward > agent_reward + 0.2
-            and trust >= 0.2
-            and random.random() < 0.10 + 0.15 * curiosity
-        ):
-            agent_kg.imitate_from(other_kg, strength=0.12)
-            reward += 0.04
 
     return reward
 
@@ -141,27 +125,27 @@ def campfire_knowledge_sharing(agents: list, world, tick: int) -> int:
     for y in range(world.height):
         for x in range(world.width):
             cell = world.cells[y][x]
-            materials = cell.get('materials', {})
-            if materials.get('fire', 0) > 0.3 or materials.get('ember', 0) > 0.5:
+            materials = cell.get("materials", {})
+            if materials.get("fire", 0) > 0.3 or materials.get("ember", 0) > 0.5:
                 fire_positions.append((x, y))
 
-    for (fx, fy) in fire_positions:
+    for fx, fy in fire_positions:
         # Agenten in der Naehe des Feuers
         near_fire = [
-            a for a in alive_agents
-            if abs(a.pos[0] - fx) <= CAMPFIRE_RADIUS
-            and abs(a.pos[1] - fy) <= CAMPFIRE_RADIUS
+            a
+            for a in alive_agents
+            if abs(a.pos[0] - fx) <= CAMPFIRE_RADIUS and abs(a.pos[1] - fy) <= CAMPFIRE_RADIUS
         ]
         if len(near_fire) < CAMPFIRE_MIN_AGENTS:
             continue
 
         # Kollektiven Wissenspool aufbauen:
         # Alle confident facts und macros der Gruppe zusammenfuehren
-        pooled_facts = {}     # key -> best CausalFact
-        pooled_macros = {}    # key -> best CompositeAction
+        pooled_facts = {}  # key -> best CausalFact
+        pooled_macros = {}  # key -> best CompositeAction
 
         for a in near_fire:
-            kg = getattr(a, 'knowledge', None)
+            kg = getattr(a, "knowledge", None)
             if kg is None:
                 continue
             for key, fact in kg.facts.items():
@@ -177,7 +161,7 @@ def campfire_knowledge_sharing(agents: list, world, tick: int) -> int:
 
         # Alle Agenten am Feuer lernen aus dem Pool
         for a in near_fire:
-            kg = getattr(a, 'knowledge', None)
+            kg = getattr(a, "knowledge", None)
             if kg is None:
                 continue
             for key, fact in pooled_facts.items():
