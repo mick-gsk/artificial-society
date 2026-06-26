@@ -31,20 +31,26 @@ Das System funktioniert vollstaendig ohne hardcodierte Rezepte:
 """
 
 import random
-import numpy as np
 from typing import Optional
 
+import numpy as np
+
 from artificial_society.environment.materials import (
-    IDX, N_PROPS, PROP_DIMS,
-    get_vector, combine_vectors, apply_interaction,
-    material_reward, DISCOVERY_REGISTRY,
-    decay_materials,
+    DISCOVERY_REGISTRY,
+    IDX,
+    N_PROPS,
+    PROP_DIMS,
+    apply_interaction,
+    combine_vectors,
+    get_vector,
+    material_reward,
 )
 from artificial_society.systems.invention import (
-    PRIMITIVE_ACTIONS,
+    NEW_DISCOVERY_BONUS,
+    REDISCOVERY_REWARD,
+    _agent_homeostatic_state,
     _evaluate_legacy_outcomes,
     _maybe_upgrade_tool,
-    _agent_homeostatic_state,
 )
 
 # Wie stark Need-Vektor die Materialauswahl beeinflusst vs. Zufall
@@ -55,6 +61,11 @@ CANDIDATE_POOL_SIZE = 8
 NEED_THRESHOLD      = 0.25
 # Bonus-Reward wenn neu entdecktes Material den Need stark erfuellt
 NEED_FULFILLMENT_BONUS = 1.2
+# Gewichtung des emergenten Pfads im Gesamtreward.
+# Vorher 0.7 — damit wurde echte Emergenz gegenüber dem ungewichteten
+# Legacy-Pfad systematisch benachteiligt. Auf 1.0 angehoben (gleichberechtigt),
+# passend zum Rebalance in invention.py.
+EMERGENT_WEIGHT = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +90,6 @@ def compute_need_vector(agent, cell: dict) -> np.ndarray:
 
     energy_ratio    = agent.energy    / MAX_ENERGY
     health_ratio    = agent.health    / 100.0
-    hydration_ratio = agent.hydration / 100.0
     temperature     = cell.get('temperature', 20)
     light           = cell.get('light', 1.0)
     is_sick         = getattr(agent, 'disease_id', None) is not None
@@ -283,7 +293,7 @@ def _select_action_by_need(
 
     # CausalMemory-Boost: bekannte erfolgreiche Sequenzen bevorteilen
     if causal_mem is not None:
-        for (act, ma, mb), stats in causal_mem.sequences.items():
+        for (act, _ma, _mb), stats in causal_mem.sequences.items():
             if stats.get('successes', 0) > 0 and act in action_scores:
                 action_scores[act] += stats['reward'] * 0.3
 
@@ -364,12 +374,27 @@ def agent_invent_from_need(
         # Emergent Reward = base reward + Need-Fulfillment Bonus
         emergent_reward = base_reward + fulfillment_normalized * NEED_FULFILLMENT_BONUS
 
+        # Prüfen ob die Kombination wirklich neu ist, BEVOR sie registriert wird.
+        existing_ids = (
+            set(DISCOVERY_REGISTRY.known_ids())
+            if hasattr(DISCOVERY_REGISTRY, 'known_ids') else set()
+        )
         mat_id = DISCOVERY_REGISTRY.register(
             new_vec,
             discoverer_id=agent.id,
             tick=tick,
             recipe=(action, mat_a, mat_b),
         )
+
+        # Rebalance: genuine Neu-Entdeckung erhält den vollen Discovery-Bonus
+        # (wie im klassischen invention.py-Pfad), Re-Entdeckung mindestens den
+        # Legacy-konkurrenzfähigen Re-Discovery-Reward. So ist need-getriebene
+        # Emergenz nie schwächer als ein Skript-Rezept.
+        if mat_id not in existing_ids:
+            emergent_reward += NEW_DISCOVERY_BONUS
+        else:
+            emergent_reward = max(emergent_reward, REDISCOVERY_REWARD)
+
         inv = getattr(agent, 'material_inventory', {})
         inv[mat_id] = inv.get(mat_id, 0.0) + 0.5
         agent.material_inventory = inv
@@ -380,7 +405,7 @@ def agent_invent_from_need(
         if emergent_reward > 0.5 and hasattr(agent, 'endocrine'):
             agent.endocrine.apply_discovery(min(1.0, emergent_reward * 0.7))
 
-    total_reward = legacy_reward + emergent_reward * 0.7
+    total_reward = legacy_reward + emergent_reward * EMERGENT_WEIGHT
 
     # Step 7: In CausalMemory speichern
     if causal_mem is not None:

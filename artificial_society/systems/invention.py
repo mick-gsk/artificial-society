@@ -33,21 +33,20 @@ FIX (v3):
 """
 
 import random
+
 import numpy as np
 
 from artificial_society.environment.materials import (
-    apply_interaction,
-    combine_vectors,
-    material_heat,
-    material_light,
-    material_danger,
-    material_reward,
-    decay_materials,
-    get_vector,
-    MATERIALS,
     DISCOVERY_REGISTRY,
     IDX,
-    N_PROPS,
+    apply_interaction,
+    combine_vectors,
+    decay_materials,
+    get_vector,
+    material_danger,
+    material_heat,
+    material_light,
+    material_reward,
 )
 
 PRIMITIVE_ACTIONS = ['rub', 'strike', 'place_on_heat', 'bundle', 'blow', 'carry', 'eat', 'bind']
@@ -58,16 +57,36 @@ ACTIONS_FOR_COLD    = ['rub', 'strike', 'blow', 'carry']
 ACTIONS_FOR_SICK    = ['bundle', 'bind', 'eat']
 ACTIONS_FOR_CURIOUS = PRIMITIVE_ACTIONS  # Kein Druck → maximale Exploration
 
-WARMTH_REWARD  = 0.08
-LIGHT_REWARD   = 0.06
-COOK_REWARD    = 0.35
-SHARP_REWARD   = 0.45
+# ---------------------------------------------------------------------------
+# REWARD REBALANCE (Emergenz > Skript)
+# ---------------------------------------------------------------------------
+# Projektziel: Emergenz aus lokalen Regeln, NICHT geskriptete Outcomes.
+# Die 5 Legacy-Rezepte (sharp_stone, cooked_meat, fire/warmth, light, tinder)
+# bleiben erhalten — sie bootstrappen das frühe Überleben — werden aber so
+# gedämpft, dass sie echte Vektor-Entdeckungen nicht mehr übertönen.
+#
+# Vorher gaben Legacy-Outcomes pro Versuch verlässlich 0.35–0.55, während eine
+# Re-Entdeckung nur 0.1 brachte. Dadurch lernten Agenten, ausschließlich die
+# Skript-Rezepte zu wiederholen. Jetzt gilt: Neu-Entdeckung >> Legacy, und eine
+# Re-Entdeckung ist mindestens so wertvoll wie das stärkste Legacy-Outcome.
+WARMTH_REWARD  = 0.06   # war 0.08 — Wärme weiter nützlich, aber kein Selbstläufer
+LIGHT_REWARD   = 0.05   # war 0.06
+COOK_REWARD    = 0.22   # war 0.35 — kochen lohnt sich, dominiert aber nicht
+SHARP_REWARD   = 0.28   # war 0.45 — Werkzeug schärfen bleibt attraktiv
 DANGER_PENALTY = -0.12
 
-# Bonus für echte Neu-Entdeckung (noch nie registriert)
-NEW_DISCOVERY_BONUS = 3.0
-# Kleiner Reward für Re-Entdeckung (stabilisiert Exploration-Verhalten)
-REDISCOVERY_REWARD  = 0.1
+# Obergrenze für das stärkste verlässliche Legacy-Outcome (fire ≈ 0.55 vorher).
+# Dient als Referenz, gegen die emergente Rewards kalibriert werden.
+LEGACY_MAX_REWARD = max(COOK_REWARD, SHARP_REWARD, 0.40)  # ~0.40 (fire gedämpft, s.u.)
+
+# Bonus für echte Neu-Entdeckung (noch nie registriert).
+# Deutlich über jedem Legacy-Outcome: eine genuin neue Erfindung ist das
+# wertvollste Ereignis im System.
+NEW_DISCOVERY_BONUS = 4.5   # war 3.0
+# Reward für Re-Entdeckung (Wiederholen einer bekannten emergenten Kombination).
+# Mindestens so hoch wie das stärkste Legacy-Outcome, damit das Wiederholen einer
+# selbst-entdeckten Vektor-Kombination nie schlechter ist als ein Skript-Rezept.
+REDISCOVERY_REWARD  = LEGACY_MAX_REWARD * 1.2  # war 0.1  → ~0.54
 
 # Maximale Anzahl entdeckter Materialien die als rekursive Inputs berücksichtigt werden
 MAX_RECURSIVE_INPUTS = 4
@@ -120,9 +139,7 @@ def agent_try_invention(agent, cell: dict, env: dict) -> float:
         agent_state     = _agent_homeostatic_state(agent, cell)
         emergent_reward = material_reward(new_vec, agent_state)
 
-        # Prüfe ob diese Entdeckung wirklich neu ist (vor der Registrierung)
-        known_before = mat_a in DISCOVERY_REGISTRY.known_ids() if hasattr(DISCOVERY_REGISTRY, 'known_ids') else False
-        # Prüfe ob die resultierende Kombination bereits bekannt ist
+        # Prüfe ob die resultierende Kombination bereits bekannt ist (vor der Registrierung)
         existing_ids = set(DISCOVERY_REGISTRY.known_ids()) if hasattr(DISCOVERY_REGISTRY, 'known_ids') else set()
 
         mat_id = DISCOVERY_REGISTRY.register(
@@ -419,11 +436,13 @@ def _evaluate_legacy_outcomes(
         elif result == 'ember':
             slot['ember'] = slot.get('ember', 0.0) + 0.6
             cell['materials'] = slot
-            reward += 0.12
+            reward += 0.10  # war 0.12
         elif result == 'fire':
             slot['fire'] = slot.get('fire', 0.0) + 1.0
             cell['materials'] = slot
-            reward += 0.55
+            # war 0.55 — gedämpft auf LEGACY_MAX_REWARD-Niveau, damit Feuer-Schlagen
+            # nicht das dominante Skript-Outcome bleibt und Emergenz erstickt.
+            reward += 0.40
         elif result == 'ash':
             slot['ash'] = slot.get('ash', 0.0) + 0.5
         elif result == 'cooked_meat':
