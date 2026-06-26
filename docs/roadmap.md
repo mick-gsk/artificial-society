@@ -181,6 +181,8 @@ Each is an independent, behaviour-changing task (golden regen at integration):
 | K | Logic-gate topology generalisation | systems | regen | — |
 | L | Tribe / lineage / discovery overlays | visualization | neutral | — |
 | M | Per-agent inspector overlay (state, brain, memory) | visualization | neutral | — |
+| N | **Live web viz MVP** — WS frames + PixiJS world (Svelte/Vite `frontend/`) ✅ done (`feat/infra-live-viz`) | infra + visualization | neutral | — |
+| N+ | Live-viz follow-ups: emergent-material rendering (port `vector_to_visual`), uPlot charts, agent inspector, layer toggles, speed slider | visualization | neutral | N |
 
 Branch naming: `feat/<lane>-<topic>` (or `core/<topic>`). One worktree per branch.
 

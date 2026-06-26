@@ -10,13 +10,15 @@ with ``load_checkpoint=False`` so seeded runs start fresh and reproducible. The
 core ``Simulation.step`` is left untouched — we explicitly call
 ``sim.stats.update(...)`` here because ``step`` does not populate stats itself.
 """
+
 from __future__ import annotations
 
 import threading
 import time
 import traceback
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
+from artificial_society.serve.frame import build_frame
 from artificial_society.simulation import Simulation
 
 # History buffers maintained by StatisticsTracker (each a list of (tick, value)).
@@ -28,11 +30,15 @@ HISTORY_KEYS = (
     "energy_history",
 )
 
+# Upper bound on how often a live frame is rebuilt (wall-clock seconds, ~20 Hz).
+# The sim may step far faster; frames are sampled, not produced per tick.
+FRAME_INTERVAL = 0.05
+
 # Defaults mirror the headless CLI (artificial_society.main).
 DEFAULTS = {"grid_w": 60, "grid_h": 40, "pop": 36, "seed": None, "ticks": None}
 
 
-def _empty_history() -> Dict[str, List[Tuple[int, float]]]:
+def _empty_history() -> dict[str, list[tuple[int, float]]]:
     return {k: [] for k in HISTORY_KEYS}
 
 
@@ -47,15 +53,21 @@ class SimulationRunner:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._sim: Optional[Simulation] = None
+        self._thread: threading.Thread | None = None
+        self._sim: Simulation | None = None
 
         self._status = "idle"
-        self._error: Optional[str] = None
-        self._params: Dict[str, Any] = {}
+        self._error: str | None = None
+        self._params: dict[str, Any] = {}
         self._tick = 0
-        self._last_stats: Dict[str, Any] = {}
+        self._last_stats: dict[str, Any] = {}
         self._history = _empty_history()
+
+        # Live-frame state for the WebSocket dashboard. Frames are only built while
+        # at least one client is connected, and at most every FRAME_INTERVAL seconds.
+        self._last_frame: dict[str, Any] | None = None
+        self._ws_clients = 0
+        self._last_frame_t = 0.0
 
     # -- introspection ------------------------------------------------------
 
@@ -64,7 +76,7 @@ class SimulationRunner:
         t = self._thread
         return t is not None and t.is_alive()
 
-    def device_info(self) -> Dict[str, str]:
+    def device_info(self) -> dict[str, str]:
         """Report the torch compute device so the dashboard can confirm the GPU
         is actually in use (or warn loudly when it falls back to CPU)."""
         try:
@@ -76,7 +88,7 @@ class SimulationRunner:
         except Exception as exc:  # torch missing / driver error — never crash a request
             return {"type": "unknown", "name": str(exc)}
 
-    def snapshot(self) -> Dict[str, Any]:
+    def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return {
                 "status": self._status,
@@ -87,13 +99,27 @@ class SimulationRunner:
                 "device": self.device_info(),
             }
 
-    def history(self) -> Dict[str, List[Tuple[int, float]]]:
+    def history(self) -> dict[str, list[tuple[int, float]]]:
         with self._lock:
             return {k: list(v) for k, v in self._history.items()}
 
+    def frame(self) -> dict[str, Any] | None:
+        """Latest live frame built by the worker, or ``None`` if none yet."""
+        with self._lock:
+            return self._last_frame
+
+    def client_connect(self) -> None:
+        """A WS client subscribed — enable frame production in the worker loop."""
+        with self._lock:
+            self._ws_clients += 1
+
+    def client_disconnect(self) -> None:
+        with self._lock:
+            self._ws_clients = max(0, self._ws_clients - 1)
+
     # -- control ------------------------------------------------------------
 
-    def start(self, params: Optional[Dict[str, Any]] = None) -> None:
+    def start(self, params: dict[str, Any] | None = None) -> None:
         """Stop any active run, then launch a fresh one with ``params``
         (``seed, ticks, grid_w, grid_h, pop`` — missing keys use DEFAULTS)."""
         self.stop()  # idempotent; joins a previous thread if alive
@@ -109,6 +135,8 @@ class SimulationRunner:
             self._tick = 0
             self._last_stats = {}
             self._history = _empty_history()
+            self._last_frame = None
+            self._last_frame_t = 0.0
 
         self._thread = threading.Thread(
             target=self._run_loop, args=(merged,), name="sim-runner", daemon=True
@@ -127,7 +155,7 @@ class SimulationRunner:
 
     # -- worker -------------------------------------------------------------
 
-    def _run_loop(self, params: Dict[str, Any]) -> None:
+    def _run_loop(self, params: dict[str, Any]) -> None:
         try:
             sim = Simulation(
                 headless=True,
@@ -150,9 +178,16 @@ class SimulationRunner:
                 with self._lock:
                     self._tick = sim.tick
                     self._last_stats = dict(sim.stats.last)
-                    self._history = {
-                        k: list(getattr(sim.stats, k, [])) for k in HISTORY_KEYS
-                    }
+                    self._history = {k: list(getattr(sim.stats, k, [])) for k in HISTORY_KEYS}
+                    want_frame = self._ws_clients > 0
+                # Build a live frame at most every FRAME_INTERVAL, and only when a
+                # dashboard is watching. build_frame is read-only and only this
+                # thread touches the sim, so it is safe outside the lock.
+                if want_frame and (time.monotonic() - self._last_frame_t) >= FRAME_INTERVAL:
+                    frame = build_frame(sim)
+                    with self._lock:
+                        self._last_frame = frame
+                        self._last_frame_t = time.monotonic()
                 n += 1
                 if max_ticks is not None and n >= int(max_ticks):
                     with self._lock:

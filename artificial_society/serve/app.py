@@ -6,8 +6,10 @@ single-page dashboard from ``serve/static``.
 
 Run with ``python -m artificial_society.serve`` (see ``__main__``).
 """
+
 from __future__ import annotations
 
+import asyncio
 import io
 from pathlib import Path
 from typing import Optional
@@ -17,13 +19,17 @@ import matplotlib
 matplotlib.use("Agg")  # headless, thread-safe rendering — no display, no GUI backend
 
 import matplotlib.pyplot as plt  # noqa: E402
-from fastapi import FastAPI, Response  # noqa: E402
+from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
+from artificial_society.serve.frame import biome_legend  # noqa: E402
 from artificial_society.serve.runner import SimulationRunner  # noqa: E402
 from artificial_society.visualization.ecology_graph import build_ecology_figure  # noqa: E402
+
+# How often the WS push loop samples the runner's latest frame (seconds).
+WS_POLL_INTERVAL = 0.05
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -32,11 +38,13 @@ runner = SimulationRunner()
 
 
 class RunParams(BaseModel):
-    seed: Optional[int] = None
-    ticks: Optional[int] = None
-    grid_w: Optional[int] = None
-    grid_h: Optional[int] = None
-    pop: Optional[int] = None
+    # NB: Pydantic evaluates these annotations at runtime, and `X | None` is not
+    # valid at runtime on Python 3.9 — keep typing.Optional here (ruff UP045 off).
+    seed: Optional[int] = None  # noqa: UP045
+    ticks: Optional[int] = None  # noqa: UP045
+    grid_w: Optional[int] = None  # noqa: UP045
+    grid_h: Optional[int] = None  # noqa: UP045
+    pop: Optional[int] = None  # noqa: UP045
 
 
 class _TrackerShim:
@@ -65,7 +73,9 @@ def history() -> dict:
 @app.post("/api/run")
 def run(params: RunParams) -> JSONResponse:
     if runner.is_running:
-        return JSONResponse(status_code=409, content={"detail": "a run is already active; stop it first"})
+        return JSONResponse(
+            status_code=409, content={"detail": "a run is already active; stop it first"}
+        )
     runner.start(params.model_dump())
     return JSONResponse(runner.snapshot())
 
@@ -89,6 +99,32 @@ def graph_png() -> Response:
         plt.close(fig)
     buf.seek(0)
     return StreamingResponse(buf, media_type="image/png")
+
+
+@app.websocket("/ws")
+async def ws(sock: WebSocket) -> None:
+    """Push live frames to the dashboard ~20 Hz while connected.
+
+    The endpoint only reads the runner's pre-built ``_last_frame`` (never the sim
+    directly), so it never races the worker thread's lock-free ``sim.step``. A
+    ``hello`` message carries the stable biome legend once; ``frame`` messages
+    follow, deduplicated by tick.
+    """
+    await sock.accept()
+    runner.client_connect()
+    try:
+        await sock.send_json({"type": "hello", "biomes": biome_legend()})
+        last_tick = -1
+        while True:
+            await asyncio.sleep(WS_POLL_INTERVAL)
+            f = runner.frame()
+            if f and f["tick"] != last_tick:
+                last_tick = f["tick"]
+                await sock.send_json(f)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        runner.client_disconnect()
 
 
 @app.get("/")

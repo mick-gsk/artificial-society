@@ -50,9 +50,33 @@ the server on `0.0.0.0:8000`.
 - From the MacBook (same network): find the PC's LAN IP with `ipconfig` (IPv4 address),
   then open `http://<PC-IP>:8000`.
 
-The device badge at the top should read `cuda — NVIDIA GeForce RTX 5070 Ti`. Set the run
-parameters (seed / ticks / grid / pop), press **Start**, and watch the live cards, charts,
-and ecology graph. Leave `ticks` empty for an unbounded run; **Stop** halts it.
+The status line shows the compute device (`cuda` / `cpu`). Set the run parameters
+(seed / grid / pop), press **Start**, and watch the **live world**: agents move on a
+biome grid with a food/water heat overlay, disturbances pulse, and the stat cards update
+in real time. Frames are pushed over a WebSocket (`/ws`) at ~20 Hz — independent of the
+sim's tick rate, so the view stays fluid even when the sim runs flat-out. **Stop** halts
+the run.
+
+## Frontend (dashboard UI)
+
+The UI is a Svelte + Vite app (live world rendered with PixiJS/WebGL) under `frontend/`.
+The **built assets are committed** to `artificial_society/serve/static/`, so the PC needs
+**no Node toolchain** — `pip install -e ".[serve]"` + run is enough.
+
+Rebuild the UI only when you change `frontend/` sources:
+
+```
+cd frontend
+npm install
+npm run build      # emits into ../artificial_society/serve/static (committed)
+```
+
+For UI development with hot-reload, run the API and the Vite dev server side by side:
+
+```
+PYTHONHASHSEED=0 python -m artificial_society.serve      # API on :8000
+cd frontend && npm run dev                               # Vite on :5173, proxies /api + /ws
+```
 
 ## Day-to-day: develop on the Mac, run on the PC
 
