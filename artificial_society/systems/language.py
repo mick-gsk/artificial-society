@@ -175,6 +175,15 @@ class TokenWorld:
         self.tokens.clear()
         self.world_log.clear()
 
+    def state_dict(self) -> dict:
+        """Serialisable snapshot of placed tokens + event log, for checkpoints."""
+        return {"tokens": self.tokens, "world_log": self.world_log}
+
+    def load_state_dict(self, data: dict) -> None:
+        """Restore tokens + event log from a snapshot produced by state_dict."""
+        self.tokens = dict(data.get("tokens", {}))
+        self.world_log = list(data.get("world_log", []))
+
     def place_token(self, token: Token):
         self.tokens[token.token_id] = token
 

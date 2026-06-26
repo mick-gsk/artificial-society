@@ -349,13 +349,12 @@ def seed_world_materials(world):
             biome = world.biomes[y][x]
             if biome == "water":
                 continue
-            cell = world.cells[y][x]
             slot = {}
             for mat, base_qty in biome_mats.get(biome, []):
                 if random.random() < 0.35:
                     slot[mat] = round(base_qty * random.uniform(0.5, 1.5), 2)
-            cell["materials"] = slot
-            cell["warmth"] = 0.0
+            world.set_cell(x, y, "materials", slot)
+            world.set_cell(x, y, "warmth", 0.0)
 
 
 # ---------------------------------------------------------------------------

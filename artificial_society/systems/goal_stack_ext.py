@@ -192,6 +192,16 @@ class SequenceLibrary:
         ]:
             self.sequences[seq.seq_id] = seq
 
+    def reset(self) -> None:
+        """Drop learned sequences and restore the default library, for a fresh run.
+
+        Not checkpoint-serialised: GoalSequence default/condition callables are
+        lambdas (unpicklable), so the library is reset rather than persisted. Agents
+        keep their own ``known_sequences`` ids; the library re-seeds its defaults.
+        """
+        self.sequences.clear()
+        self._add_defaults()
+
     def register(self, seq: GoalSequence):
         """Neues Wissen hinzufuegen."""
         if seq.seq_id not in self.sequences:
@@ -264,6 +274,18 @@ class RecipeDiscovery:
     def __init__(self):
         # seq_id -> [(result_mat_id, reward), ...]
         self.outcomes: dict[str, list[tuple]] = {}
+
+    def reset(self) -> None:
+        """Clear tracked sequence outcomes, for a fresh reproducible run."""
+        self.outcomes.clear()
+
+    def state_dict(self) -> dict:
+        """Serialisable snapshot of tracked sequence outcomes, for checkpoints."""
+        return {"outcomes": self.outcomes}
+
+    def load_state_dict(self, data: dict) -> None:
+        """Restore tracked sequence outcomes from a snapshot produced by state_dict."""
+        self.outcomes = dict(data.get("outcomes", {}))
 
     def record_outcome(
         self,

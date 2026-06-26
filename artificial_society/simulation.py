@@ -16,6 +16,7 @@ from artificial_society.renderer import Renderer
 from artificial_society.rng import seed_all
 from artificial_society.systems import registry
 from artificial_society.systems.culture import CausalMemory
+from artificial_society.systems.goal_stack_ext import RECIPE_DISCOVERY, SEQUENCE_LIBRARY
 from artificial_society.systems.invention import (
     seed_world_materials,
     tick_materials,
@@ -53,6 +54,50 @@ DEATH_MATERIAL_MIN_QTY = 0.3
 DEATH_MATERIAL_TRANSFER_RATIO = 0.4
 
 SIDEBAR_W = 300
+
+
+def _reset_accumulating_singletons() -> None:
+    """Reset every global registry that accumulates across in-process runs.
+
+    A freshly-constructed Simulation must be independent of any prior one in the
+    same process (reproducibility). This is the single source of truth for which
+    globals accumulate — add new accumulating singletons here, never inline in
+    ``__init__``.
+    """
+    DISCOVERY_REGISTRY.reset()
+    TOKEN_WORLD.reset()
+    SEQUENCE_LIBRARY.reset()
+    RECIPE_DISCOVERY.reset()
+
+
+def _capture_singletons() -> dict:
+    """Snapshot every accumulating singleton for a full, reproducible checkpoint.
+
+    Restores the emergent state a save->load must not lose: discovered materials,
+    language tokens, and recipe outcomes. SEQUENCE_LIBRARY is reset-only (its default
+    sequences hold unpicklable lambdas) — see SequenceLibrary.reset.
+    """
+    return {
+        "discovery": DISCOVERY_REGISTRY.state_dict(),
+        "tokens": TOKEN_WORLD.state_dict(),
+        "recipes": RECIPE_DISCOVERY.state_dict(),
+    }
+
+
+def _restore_singletons(data: dict) -> None:
+    """Restore singleton snapshots produced by _capture_singletons.
+
+    Missing keys are left at their freshly-reset state, so a pre-Phase-3 checkpoint
+    (no "registries" block) still loads cleanly.
+    """
+    if not data:
+        return
+    if "discovery" in data:
+        DISCOVERY_REGISTRY.load_state_dict(data["discovery"])
+    if "tokens" in data:
+        TOKEN_WORLD.load_state_dict(data["tokens"])
+    if "recipes" in data:
+        RECIPE_DISCOVERY.load_state_dict(data["recipes"])
 
 
 def _migrate_agent(agent):
@@ -100,10 +145,10 @@ class Simulation:
             seed_all(seed)
             # Reset the agent id sequence so a seed reproduces the same ids too.
             Agent.id_counter = 0
-        # Each simulation starts with fresh emergent-discovery / language state, so a
-        # run is reproducible and independent of any prior simulation in this process.
-        DISCOVERY_REGISTRY.reset()
-        TOKEN_WORLD.reset()
+        # Each simulation starts with fresh emergent-discovery / language / sequence
+        # state, so a run is reproducible and independent of any prior simulation in
+        # this process. See _reset_accumulating_singletons for the full list.
+        _reset_accumulating_singletons()
         self.width = width
         self.height = height
         self.grid_w = grid_w
@@ -313,6 +358,8 @@ class Simulation:
                         "stats": self.stats,
                         "tribes": self.tribes,
                         "technology": self.technology,
+                        # Full emergent state so a save->load is reproducible.
+                        "registries": _capture_singletons(),
                     },
                     f,
                 )
@@ -329,6 +376,9 @@ class Simulation:
             self.stats = data.get("stats", self.stats)
             self.tribes = data.get("tribes", self.tribes)
             self.technology = data.get("technology", self.technology)
+            # Restore the global emergent registries; absent in pre-Phase-3 saves,
+            # in which case the freshly-reset singletons are kept.
+            _restore_singletons(data.get("registries", {}))
             for agent in self.agents:
                 _migrate_agent(agent)
             print(f"[checkpoint] loaded tick={self.tick}, agents={len(self.agents)}")
