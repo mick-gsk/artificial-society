@@ -6,6 +6,8 @@ class StatisticsTracker:
         self.population_history   = []
         self.knowledge_history    = []
         self.cooperation_history  = []
+        self.food_history         = []
+        self.energy_history       = []
         self.last = {}
 
     def update(self, tick, agents, world, tribes, technology):
@@ -26,17 +28,23 @@ class StatisticsTracker:
         n_child  = sum(1 for a in live if getattr(a, 'life_stage', STAGE_ADULT) == STAGE_CHILD)
         n_adult  = sum(1 for a in live if getattr(a, 'life_stage', STAGE_ADULT) == STAGE_ADULT)
         n_elder  = sum(1 for a in live if getattr(a, 'life_stage', STAGE_ADULT) == STAGE_ELDER)
+        avg_energy   = sum(a.energy for a in live) / pop if pop else 0
         world_means = world.regional_means()
         self.population_history.append((tick, pop))
         self.knowledge_history.append((tick, known_sites))
         self.cooperation_history.append((tick, avg_coop))
+        self.food_history.append((tick, world_means['food']))
+        self.energy_history.append((tick, avg_energy))
         self.population_history  = self.population_history[-200:]
         self.knowledge_history   = self.knowledge_history[-200:]
         self.cooperation_history = self.cooperation_history[-200:]
+        self.food_history        = self.food_history[-200:]
+        self.energy_history      = self.energy_history[-200:]
         self.last = {
             'tick':             tick,
             'population':       pop,
             'average_age':      avg_age,
+            'avg_energy':       avg_energy,
             'tribes':           tribes.count(),
             'technologies':     len(technology.capability_map),
             'knowledge':        known_sites,
