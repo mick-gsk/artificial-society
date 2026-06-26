@@ -35,6 +35,19 @@ def test_world_regrowth_runs_each_step():
     assert total_food > 0.0, "world.update_environment did not regrow food after a step"
 
 
+def test_births_occur_and_grow_population():
+    # Agents reach MIN_REPRODUCTION_AGE (60) then gestate 40 ticks, so births need
+    # ~100+ ticks; run long enough to observe several.
+    sim = Simulation(headless=True, seed=3, grid_w=22, grid_h=16,
+                     initial_population=16, load_checkpoint=False)
+    for _ in range(220):
+        sim.step()
+    alive = [a for a in sim.agents if a.alive]
+    born_after_start = [a for a in alive if a.birth_tick > 0]
+    assert born_after_start, "no child was ever born (reproduction not wired)"
+    assert len(alive) > 16, "population did not grow via births"
+
+
 def test_season_and_weather_state_published():
     sim = _fresh()
     sim.step()

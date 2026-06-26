@@ -415,13 +415,13 @@ class Simulation:
         # TODO(phase2): self.world.update_environment(season_state, weather_state, tick)
 
         # --- per-agent update ---
-        # The patched Agent.update returns completed-pregnancy genes; the current
-        # live loop discards them, so no births happen yet.
-        # TODO(phase2): consume the return value -> spawn_child_from_parent(...)
+        # A non-None return from Agent.update is a completed pregnancy: spawn the
+        # child with full genetic / brain / knowledge inheritance (spawn_child_from_parent).
+        new_children = []
         for agent in list(self.agents):
             if not agent.alive:
                 continue
-            agent.update(
+            child_genes = agent.update(
                 self.world,
                 self.agents,
                 tick,
@@ -431,6 +431,9 @@ class Simulation:
                 economy=self.economy,
                 technology=self.technology,
             )
+            if child_genes is not None:
+                new_children.append(self.spawn_child_from_parent(agent, child_genes))
+        self.agents.extend(new_children)
 
         # Drop agents that died during their own update. As in the current live
         # loop, pre-filtering means remove_dead() finds no bodies (no carcass or
