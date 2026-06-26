@@ -1,6 +1,5 @@
 from artificial_society.environment.biomes import BIOME_BASE
 
-
 DISEASE_POLLUTION_THRESHOLD = 36.0
 MEAT_SPOIL_RATE = 0.04
 CARCASS_DECAY = 0.14
@@ -10,13 +9,32 @@ CARCASS_DECAY = 0.14
 # Biologisches Vorbild: In der Natur ist Nahrung der wichtigste
 # Selektionsdruck. Zu viel Nahrung eliminiert jeden evolutionaeren
 # Druck hin zu Kooperation, Werkzeugbau oder Territorialverhalten.
-# Wir reduzieren plant_gain auf ~40% des alten Wertes und senken
-# die Initialmengen. Die Welt wird jetzt brutal: Einzelgaenger
-# sterben in Duerre/Winter, Gruppen ueberleben.
+# Wir reduzieren plant_gain und senken die Initialmengen.
+# Die Welt wird jetzt brutal: Einzelgaenger sterben in
+# Duerre/Winter, Gruppen ueberleben.
+#
+# WICHTIG (Knappheit): Frueher lief der Nachwuchs ungebremst, bis
+# eine UNBERUEHRTE Zelle ihren Standbestand auf ~1.0-1.2x der
+# carrying_capacity hochgewachsen hatte (siehe regrow_cell-Clamp
+# 1.45*capacity). Da die meisten Zellen nie befressen werden, sass
+# die Welt damit dauerhaft an der Saettigung -> keine Knappheit.
+# Loesung: logistische Decke. Der Nachwuchs wird gegen NULL gefahren,
+# sobald plant_food sich dem scarce Zielbestand
+# (SCARCITY_CEILING_FACTOR * capacity) naehert. Standbestand
+# plateaut so bei einem Bruchteil der Kapazitaet; jeder Verbrauch
+# drueckt die Zelle real darunter, Erholung ist langsam.
 # ------------------------------------------------------------------
-FOOD_SCARCITY_FACTOR = 0.50   # Pflanzenwachstum auf 42% reduziert
+FOOD_SCARCITY_FACTOR = 0.50   # Pflanzenwachstum auf 50% reduziert
 MEAT_SCARCITY_FACTOR = 0.55   # Fleischnachwuchs auf 55% reduziert
-INITIAL_FOOD_FACTOR  = 0.65   # Startwert auf 50% reduziert
+INITIAL_FOOD_FACTOR  = 0.30   # Startwert stark gesenkt -> sofortiger Hungerdruck
+
+# Logistische Decke: unberuehrte Zellen pendeln sich auf diesen
+# Bruchteil der carrying_capacity ein (statt frueher ~1.0-1.2x).
+# 0.35 => mittlerer Zell-food bleibt deutlich unter der Haelfte der
+# Kapazitaet, auch wenn niemand befrisst.
+SCARCITY_CEILING_FACTOR = 0.35
+# Analog fuer Fleischnachwuchs (Beutetiere sind ohnehin knapper).
+MEAT_CEILING_FACTOR = 0.25
 
 
 def clamp(v, lo, hi):
@@ -148,7 +166,7 @@ def regrow_cell(cell, biome, season_state, weather_state, tick, event_strength):
     # wirklich ausgelaugt werden – das erzwingt Migration und Kooperation
     stress_factor = max(0.12, 1.0 - pollution/120.0 - usage/180.0 - disturbance/180.0)
 
-    # KNAPPHEIT: plant_gain auf 42% des alten Wertes (war 0.10)
+    # KNAPPHEIT: plant_gain (Basisrate)
     plant_gain = (
         0.042 * FOOD_SCARCITY_FACTOR
         * season_food * fert_factor * moisture_factor * cap_factor * stress_factor
@@ -156,13 +174,26 @@ def regrow_cell(cell, biome, season_state, weather_state, tick, event_strength):
     )
     plant_gain += 0.012 * cell['structures']['farm']   # Farm hilft, aber nicht genug um Knappheit aufzuheben
 
-    # KNAPPHEIT: meat_gain auf 55% des alten Wertes (war 0.028)
+    # KNAPPHEIT: meat_gain (Basisrate)
     meat_gain = (
         0.015 * MEAT_SCARCITY_FACTOR
         * season_food * cap_factor
         * max(0.2, 1.0 - pollution/150.0)
         * (1.1 if biome in ('mountain','forest','swamp') else 0.7)
     )
+
+    # Logistische Decke (carrying-capacity-Kopplung):
+    # Nachwuchs faellt linear gegen 0, je naeher der aktuelle
+    # Standbestand am scarce Zielbestand liegt. Farm hebt das Ziel
+    # leicht an. Ergebnis: eine unberuehrte Zelle waechst nur bis
+    # ~SCARCITY_CEILING_FACTOR*capacity und bleibt dort knapp;
+    # befressene Zellen erholen sich langsam von unten.
+    plant_target = SCARCITY_CEILING_FACTOR * capacity + farm_bonus
+    meat_target  = MEAT_CEILING_FACTOR * capacity
+    plant_headroom = max(0.0, 1.0 - cell['plant_food'] / max(1.0, plant_target))
+    meat_headroom  = max(0.0, 1.0 - cell['meat_food']  / max(1.0, meat_target))
+    plant_gain *= plant_headroom
+    meat_gain  *= meat_headroom
 
     if biome == 'desert':
         plant_gain *= 0.3
@@ -189,7 +220,11 @@ def regrow_cell(cell, biome, season_state, weather_state, tick, event_strength):
         - 0.03*cell['structures']['well'],
         0.0, 100.0
     )
-    cell['plant_food'] = clamp(cell['plant_food'] + plant_gain - 0.012*wind - 0.02*cell['ash'], 0.0, max(20.0, capacity*1.45 + farm_bonus))
+    # Harte Decke jetzt knapp ueber dem scarce Zielbestand (war 1.45*capacity).
+    # So kann selbst ein temporaerer Ueberschuss (Carcass-Schub, Regen)
+    # die Zelle nicht in Ueberfluss kippen lassen.
+    plant_hard_cap = max(20.0, SCARCITY_CEILING_FACTOR * capacity * 1.25 + farm_bonus)
+    cell['plant_food'] = clamp(cell['plant_food'] + plant_gain - 0.012*wind - 0.02*cell['ash'], 0.0, plant_hard_cap)
     cell['meat_food']  = clamp(cell['meat_food']  + meat_gain,           0.0, max(15.0, capacity))
     cell['water']      = clamp(cell['water']      + water_gain + 0.05*cell['structures']['well'], 0.0, 100.0)
     cell['moisture']   = clamp(cell['moisture']   + 0.2*cell['water']/100.0 + 0.35*rain + 0.1*well_bonus - 0.03*abs(cell['temperature']-20), 0.0, 100.0)
