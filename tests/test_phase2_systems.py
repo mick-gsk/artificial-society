@@ -74,6 +74,11 @@ def test_society_systems_registered():
 def test_tick_order_stats_last_and_disease_before_economy():
     """Order is a contract: stats must read post-update state (last), and disease must
     seed/spread before economy and stats so the same tick reflects new infections."""
+    # `disease`/`world_regrowth`/etc. only enter the registry when discovery runs (driven
+    # by building a Simulation). Construct one first so this test does not depend on an
+    # earlier test having populated the registry (it would raise in isolation / under
+    # pytest-randomly / xdist otherwise).
+    _fresh()
     ticked = [s.name for s in registry.specs() if s.tick is not None]
     assert ticked[-1] == "stats", f"stats must tick last, got {ticked}"
     assert ticked.index("tribes") < ticked.index("disease") < ticked.index("economy")
@@ -105,9 +110,13 @@ def test_stats_collected_each_step():
 
 def test_tribes_form_from_trust():
     # Trust must build before sociable agents form a tribe; seed/pop/size chosen so a
-    # tribe reliably forms within the horizon (first forms ~tick 72 at this seed).
+    # tribe reliably forms within the horizon. After the Phase 1b/2/3 integration the
+    # combined dynamics push first formation later and make the exact tick sensitive to
+    # set/dict iteration order (PYTHONHASHSEED): across seeds the first tribe forms
+    # anywhere from ~tick 72 up to ~tick 189. The horizon is set well above that worst
+    # case so the test is robust regardless of hash seed (CI does not pin PYTHONHASHSEED).
     sim = _fresh(seed=1, grid_w=22, grid_h=16, initial_population=16)
-    for _ in range(120):
+    for _ in range(250):
         sim.step()
     assert sim.tribes.count() >= 1, "no tribe ever formed (tribes tick not wired)"
     assert any(a.tribe_id is not None for a in sim.agents if a.alive)
