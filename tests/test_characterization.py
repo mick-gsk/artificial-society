@@ -5,6 +5,7 @@ These guard the move off the dual bootstrap/monkeypatch loop onto one explicit
 seed, and honour a tick bound. They are the regression net for the structural
 refactor in later phases.
 """
+
 from artificial_society.simulation import Simulation
 
 SEED = 42
@@ -15,9 +16,12 @@ POP = 16
 
 def _run(seed=SEED, ticks=TICKS):
     sim = Simulation(
-        headless=True, seed=seed,
-        grid_w=GRID_W, grid_h=GRID_H,
-        initial_population=POP, load_checkpoint=False,
+        headless=True,
+        seed=seed,
+        grid_w=GRID_W,
+        grid_h=GRID_H,
+        initial_population=POP,
+        load_checkpoint=False,
     )
     trajectory = []
     for _ in range(ticks):
@@ -43,9 +47,12 @@ def test_run_is_deterministic_for_fixed_seed():
 
 def test_run_respects_max_ticks_bound():
     sim = Simulation(
-        headless=True, seed=SEED,
-        grid_w=GRID_W, grid_h=GRID_H,
-        initial_population=POP, load_checkpoint=False,
+        headless=True,
+        seed=SEED,
+        grid_w=GRID_W,
+        grid_h=GRID_H,
+        initial_population=POP,
+        load_checkpoint=False,
     )
     sim.run(max_ticks=10)
     assert sim.tick == 10
@@ -53,9 +60,12 @@ def test_run_respects_max_ticks_bound():
 
 def test_step_emits_no_per_tick_debug_noise(capsys):
     sim = Simulation(
-        headless=True, seed=7,
-        grid_w=20, grid_h=15,
-        initial_population=10, load_checkpoint=False,
+        headless=True,
+        seed=7,
+        grid_w=20,
+        grid_h=15,
+        initial_population=10,
+        load_checkpoint=False,
     )
     for _ in range(15):
         sim.step()

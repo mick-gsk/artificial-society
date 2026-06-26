@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import torch.nn.functional as F
+import torch.optim as optim
 
 from .knowledge import EpisodicMemory
 
@@ -12,8 +12,8 @@ from .knowledge import EpisodicMemory
 # Fuer Blackwell (CC 12.0) wird PyTorch Nightly benoetigt:
 #   pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128
 # ---------------------------------------------------------------------------
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-USE_FP16 = device.type == 'cuda'  # FP16 autocast nur auf GPU aktivieren
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+USE_FP16 = device.type == "cuda"  # FP16 autocast nur auf GPU aktivieren
 
 # Feature layout (57 total):
 #   0..3   body state (energy, health, hydration, age)
@@ -61,19 +61,19 @@ PPO_EPOCHS = 20
 # truth. (PLAN_CANDIDATES stays 12: it is only a def-time default arg, so the old
 # runtime override to 8 never actually took effect.)
 PLAN_CANDIDATES = 12
-PLAN_HORIZON = 2            # Survival mode (default)
-PLAN_HORIZON_RESEARCH = 6   # Research / invention mode
+PLAN_HORIZON = 2  # Survival mode (default)
+PLAN_HORIZON_RESEARCH = 6  # Research / invention mode
 NOVELTY_WEIGHT = 0.15
 VALUE_WEIGHT = 0.50
 REWARD_WEIGHT = 0.35
 
 # --- Neuronale Praedisposition durch Vererbung ---
 WEIGHT_INHERIT_STRENGTH = 0.55
-WEIGHT_MUTATION_SCALE   = 0.018
+WEIGHT_MUTATION_SCALE = 0.018
 
 # --- Imitationslernen (Spiegelneuronen-Analogie) ---
-IMITATION_STRENGTH   = 0.10
-IMITATION_MUTATION   = 0.01
+IMITATION_STRENGTH = 0.10
+IMITATION_MUTATION = 0.01
 
 # --- Episodic novelty (NGU-style) ---
 EPISODIC_MEMORY_CAPACITY = 500
@@ -105,8 +105,13 @@ class RolloutBuffer:
 
 
 class Brain(nn.Module):
-    def __init__(self, input_size=INPUT_SIZE, hidden_size=HIDDEN_SIZE,
-                 action_size=ACTION_SIZE, plasticity: float = 1.0):
+    def __init__(
+        self,
+        input_size=INPUT_SIZE,
+        hidden_size=HIDDEN_SIZE,
+        action_size=ACTION_SIZE,
+        plasticity: float = 1.0,
+    ):
         """
         plasticity-Gen (0.3..1.8) skaliert die Lernrate.
         Biologisches Vorbild: Neuronale Plastizitaet variiert zwischen Individuen.
@@ -158,9 +163,12 @@ class Brain(nn.Module):
     # ------------------------------------------------------------------
     # Gewichtsvererbung
     # ------------------------------------------------------------------
-    def inherit_weights_from(self, parent_brain: 'Brain',
-                              strength: float = WEIGHT_INHERIT_STRENGTH,
-                              mutation_scale: float = WEIGHT_MUTATION_SCALE):
+    def inherit_weights_from(
+        self,
+        parent_brain: Brain,
+        strength: float = WEIGHT_INHERIT_STRENGTH,
+        mutation_scale: float = WEIGHT_MUTATION_SCALE,
+    ):
         with torch.no_grad():
             for (_, child_param), (_, parent_param) in zip(
                 self.named_parameters(), parent_brain.named_parameters()
@@ -175,9 +183,12 @@ class Brain(nn.Module):
     # ------------------------------------------------------------------
     # Imitationslernen
     # ------------------------------------------------------------------
-    def imitate_from(self, model_brain: 'Brain',
-                     strength: float = IMITATION_STRENGTH,
-                     mutation_scale: float = IMITATION_MUTATION):
+    def imitate_from(
+        self,
+        model_brain: Brain,
+        strength: float = IMITATION_STRENGTH,
+        mutation_scale: float = IMITATION_MUTATION,
+    ):
         with torch.no_grad():
             for (_, my_param), (_, model_param) in zip(
                 self.named_parameters(), model_brain.named_parameters()
@@ -185,9 +196,7 @@ class Brain(nn.Module):
                 if my_param.shape != model_param.shape:
                     continue
                 noise = torch.randn_like(my_param) * mutation_scale
-                my_param.copy_(
-                    (1.0 - strength) * my_param + strength * model_param + noise
-                )
+                my_param.copy_((1.0 - strength) * my_param + strength * model_param + noise)
 
     def initial_hidden(self):
         return torch.zeros(self.hidden_size, dtype=torch.float32, device=device)
@@ -251,11 +260,11 @@ class Brain(nn.Module):
             # k-NN episodic novelty (vektorisiert ueber alle Kandidaten)
             if len(self.episodic_memory.buffer) >= self.episodic_memory.k:
                 stack = torch.stack(list(self.episodic_memory.buffer)).to(device)  # (N, D)
-                obs_expanded   = pred_next_obs.unsqueeze(1)   # (C, 1, D)
-                stack_expanded = stack.unsqueeze(0)           # (1, N, D)
-                dists   = torch.norm(obs_expanded - stack_expanded, dim=-1)  # (C, N)
-                k       = min(self.episodic_memory.k, dists.shape[1])
-                knn     = dists.topk(k, largest=False, dim=1).values.mean(dim=1)  # (C,)
+                obs_expanded = pred_next_obs.unsqueeze(1)  # (C, 1, D)
+                stack_expanded = stack.unsqueeze(0)  # (1, N, D)
+                dists = torch.norm(obs_expanded - stack_expanded, dim=-1)  # (C, N)
+                k = min(self.episodic_memory.k, dists.shape[1])
+                knn = dists.topk(k, largest=False, dim=1).values.mean(dim=1)  # (C,)
                 novelty = knn / (knn + self.episodic_memory.epsilon)
             else:
                 novelty = torch.ones(a.shape[0], device=device)
@@ -265,9 +274,7 @@ class Brain(nn.Module):
             next_value = self.value_head(h).squeeze(-1)
 
             step_score = (
-                REWARD_WEIGHT * pred_reward
-                + VALUE_WEIGHT * next_value
-                + NOVELTY_WEIGHT * novelty
+                REWARD_WEIGHT * pred_reward + VALUE_WEIGHT * next_value + NOVELTY_WEIGHT * novelty
             )
 
             if goal_vector is not None:
@@ -309,7 +316,7 @@ class Brain(nn.Module):
             mean, std, _, _ = self.forward(obs_tensor, hidden_tensor)
             dist = torch.distributions.Normal(mean, std)
             # (n_candidates, 1, action_size) -> squeeze -> (n_candidates, action_size)
-            raw_samples    = dist.rsample((n_candidates,)).squeeze(1)
+            raw_samples = dist.rsample((n_candidates,)).squeeze(1)
             action_samples = torch.tanh(raw_samples)  # (n_candidates, action_size)
 
             # hidden_tensor: (1, hidden_size) -> expand zu (n_candidates, hidden_size)
@@ -323,11 +330,11 @@ class Brain(nn.Module):
                 goal_vector=goal_vector,
             )
 
-            best_idx    = int(scores.argmax().item())
+            best_idx = int(scores.argmax().item())
             best_action = action_samples[best_idx]
-            clipped     = torch.clamp(best_action, -0.999, 0.999)
-            raw_best    = 0.5 * torch.log((1 + clipped) / (1 - clipped + 1e-8))
-            log_prob    = (dist.log_prob(raw_best) - torch.log(1 - clipped.pow(2) + 1e-6)).sum(dim=-1)
+            clipped = torch.clamp(best_action, -0.999, 0.999)
+            raw_best = 0.5 * torch.log((1 + clipped) / (1 - clipped + 1e-8))
+            log_prob = (dist.log_prob(raw_best) - torch.log(1 - clipped.pow(2) + 1e-6)).sum(dim=-1)
             return best_action, log_prob, scores
 
     def act(
@@ -338,24 +345,25 @@ class Brain(nn.Module):
         goal_vector: torch.Tensor | None = None,
         research_mode: bool = False,
     ):
-        obs    = torch.tensor(features, dtype=torch.float32, device=device).unsqueeze(0)
+        obs = torch.tensor(features, dtype=torch.float32, device=device).unsqueeze(0)
         hidden = hidden_state.unsqueeze(0)
         mean, std, value, next_hidden = self.forward(obs, hidden)
 
         if use_planning:
             action, log_prob, candidate_scores = self.plan_action(
-                obs, hidden,
+                obs,
+                hidden,
                 goal_vector=goal_vector,
                 research_mode=research_mode,
             )
             _, _, _, next_hidden = self.forward(obs, hidden)
         else:
-            dist       = torch.distributions.Normal(mean, std)
+            dist = torch.distributions.Normal(mean, std)
             raw_action = dist.rsample()
-            action     = torch.tanh(raw_action)
-            clipped    = torch.clamp(action, -0.999, 0.999)
-            raw_a      = 0.5 * torch.log((1 + clipped) / (1 - clipped + 1e-8))
-            log_prob   = (dist.log_prob(raw_a) - torch.log(1 - clipped.pow(2) + 1e-6)).sum(dim=-1)
+            action = torch.tanh(raw_action)
+            clipped = torch.clamp(action, -0.999, 0.999)
+            raw_a = 0.5 * torch.log((1 + clipped) / (1 - clipped + 1e-8))
+            log_prob = (dist.log_prob(raw_a) - torch.log(1 - clipped.pow(2) + 1e-6)).sum(dim=-1)
 
         entropy = torch.distributions.Normal(mean, std).entropy().sum(dim=-1)
 
@@ -364,15 +372,15 @@ class Brain(nn.Module):
         research_drive = float(action_list[6]) if len(action_list) > 6 else 0.0
 
         return {
-            'obs_tensor':     obs.detach(),
-            'hidden_in':      hidden.detach(),
-            'value':          value.detach(),
-            'next_hidden':    next_hidden.squeeze(0).detach(),
-            'action_tensor':  action.detach(),
-            'action_list':    action_list,
-            'log_prob':       log_prob.detach(),
-            'entropy':        entropy.detach(),
-            'research_drive': research_drive,  # NEU: direkt zugreifbar fuer agent.update()
+            "obs_tensor": obs.detach(),
+            "hidden_in": hidden.detach(),
+            "value": value.detach(),
+            "next_hidden": next_hidden.squeeze(0).detach(),
+            "action_tensor": action.detach(),
+            "action_list": action_list,
+            "log_prob": log_prob.detach(),
+            "entropy": entropy.detach(),
+            "research_drive": research_drive,  # NEU: direkt zugreifbar fuer agent.update()
         }
 
     def intrinsic_reward(self, hidden_in, action_tensor, next_obs):
@@ -390,8 +398,8 @@ class Brain(nn.Module):
             )
             target = torch.tensor(next_obs, dtype=torch.float32, device=device).unsqueeze(0)
 
-            obs_err  = F.mse_loss(pred_next_obs, target)
-            rew_err  = pred_reward.abs().mean()
+            obs_err = F.mse_loss(pred_next_obs, target)
+            rew_err = pred_reward.abs().mean()
             prediction_curiosity = (obs_err + 0.2 * rew_err).clamp(0.0, 2.0)
 
             episodic_novelty = self.episodic_memory.novelty(target.squeeze(0))
@@ -399,30 +407,38 @@ class Brain(nn.Module):
             combined = float(prediction_curiosity) * (0.5 + 0.5 * episodic_novelty)
             return float(combined)
 
-    def store_transition(self, obs_tensor, hidden_in, action_tensor, log_prob, value, reward, done, next_obs):
-        self.rollout.add({
-            'obs':      obs_tensor.detach().squeeze(0),
-            'hidden':   hidden_in.detach().squeeze(0),
-            'action':   action_tensor.detach().squeeze(0),
-            'log_prob': log_prob.detach().squeeze(0),
-            'value':    value.detach().squeeze(0),
-            'reward':   max(-REWARD_CLAMP, min(REWARD_CLAMP, reward)),
-            'done':     done,
-            'next_obs': torch.tensor(next_obs, dtype=torch.float32, device=device),
-        })
+    def store_transition(
+        self, obs_tensor, hidden_in, action_tensor, log_prob, value, reward, done, next_obs
+    ):
+        self.rollout.add(
+            {
+                "obs": obs_tensor.detach().squeeze(0),
+                "hidden": hidden_in.detach().squeeze(0),
+                "action": action_tensor.detach().squeeze(0),
+                "log_prob": log_prob.detach().squeeze(0),
+                "value": value.detach().squeeze(0),
+                "reward": max(-REWARD_CLAMP, min(REWARD_CLAMP, reward)),
+                "done": done,
+                "next_obs": torch.tensor(next_obs, dtype=torch.float32, device=device),
+            }
+        )
 
     def maybe_train(self):
         if len(self.rollout) < ROLLOUT_HORIZON:
             return None
-        batch         = self.rollout.storage
-        obs           = torch.stack([item['obs']      for item in batch]).to(device)
-        hid           = torch.stack([item['hidden']   for item in batch]).to(device)
-        actions       = torch.stack([item['action']   for item in batch]).to(device)
-        old_log_probs = torch.stack([item['log_prob'] for item in batch]).view(-1).to(device)
-        values        = torch.stack([item['value']    for item in batch]).view(-1).to(device)
-        rewards       = torch.tensor([item['reward']  for item in batch], dtype=torch.float32, device=device)
-        dones         = torch.tensor([1.0 if item['done'] else 0.0 for item in batch], dtype=torch.float32, device=device)
-        next_obs      = torch.stack([item['next_obs'] for item in batch]).to(device)
+        batch = self.rollout.storage
+        obs = torch.stack([item["obs"] for item in batch]).to(device)
+        hid = torch.stack([item["hidden"] for item in batch]).to(device)
+        actions = torch.stack([item["action"] for item in batch]).to(device)
+        old_log_probs = torch.stack([item["log_prob"] for item in batch]).view(-1).to(device)
+        values = torch.stack([item["value"] for item in batch]).view(-1).to(device)
+        rewards = torch.tensor(
+            [item["reward"] for item in batch], dtype=torch.float32, device=device
+        )
+        dones = torch.tensor(
+            [1.0 if item["done"] else 0.0 for item in batch], dtype=torch.float32, device=device
+        )
+        next_obs = torch.stack([item["next_obs"] for item in batch]).to(device)
 
         with torch.no_grad():
             _, _, next_values, _ = self.forward(next_obs, hid)
@@ -431,27 +447,33 @@ class Brain(nn.Module):
         advantages = torch.zeros_like(rewards)
         gae = 0.0
         for t in reversed(range(len(batch))):
-            delta       = rewards[t] + GAMMA * next_values[t] * (1.0 - dones[t]) - values[t]
-            gae         = delta + GAMMA * GAE_LAMBDA * (1.0 - dones[t]) * gae
+            delta = rewards[t] + GAMMA * next_values[t] * (1.0 - dones[t]) - values[t]
+            gae = delta + GAMMA * GAE_LAMBDA * (1.0 - dones[t]) * gae
             advantages[t] = gae
-        returns    = advantages + values
+        returns = advantages + values
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         last_loss = None
         for _ in range(PPO_EPOCHS):
-            new_log_probs, entropy, new_values, next_hidden = self.evaluate_actions(obs, hid, actions)
-            ratios      = torch.exp(new_log_probs - old_log_probs)
-            unclipped   = ratios * advantages
-            clipped_r   = torch.clamp(ratios, 1.0 - PPO_CLIP, 1.0 + PPO_CLIP) * advantages
-            actor_loss  = -torch.min(unclipped, clipped_r).mean()
+            new_log_probs, entropy, new_values, next_hidden = self.evaluate_actions(
+                obs, hid, actions
+            )
+            ratios = torch.exp(new_log_probs - old_log_probs)
+            unclipped = ratios * advantages
+            clipped_r = torch.clamp(ratios, 1.0 - PPO_CLIP, 1.0 + PPO_CLIP) * advantages
+            actor_loss = -torch.min(unclipped, clipped_r).mean()
             critic_loss = F.mse_loss(new_values.view(-1), returns)
             pred_next_obs, pred_reward = self.predict_world(next_hidden, actions)
-            world_loss  = F.mse_loss(pred_next_obs, next_obs) + F.mse_loss(pred_reward.view(-1), rewards)
+            world_loss = F.mse_loss(pred_next_obs, next_obs) + F.mse_loss(
+                pred_reward.view(-1), rewards
+            )
             entropy_bonus = entropy.mean()
-            loss = (ACTOR_COEF * actor_loss
-                    + CRITIC_COEF * critic_loss
-                    + WORLD_COEF * world_loss
-                    - ENTROPY_COEF * entropy_bonus)
+            loss = (
+                ACTOR_COEF * actor_loss
+                + CRITIC_COEF * critic_loss
+                + WORLD_COEF * world_loss
+                - ENTROPY_COEF * entropy_bonus
+            )
             self.optimizer.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(self.parameters(), GRAD_CLIP)

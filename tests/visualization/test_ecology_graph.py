@@ -3,6 +3,7 @@
 These assert the matplotlib figure renders without a display (Agg backend) and
 that the visualization is a pure read-only observer of the simulation.
 """
+
 import matplotlib
 
 matplotlib.use("Agg", force=True)

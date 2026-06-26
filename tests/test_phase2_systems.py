@@ -5,12 +5,14 @@ These assert the *intended* new behaviour. The golden trajectory
 (tests/test_regression_golden.py) is regenerated to match each activation, so it
 keeps guarding against *unintended* drift on top of the new baseline.
 """
+
 from artificial_society.simulation import Simulation
 
 
 def _fresh(**kw):
-    params = dict(headless=True, seed=1, grid_w=20, grid_h=15,
-                  initial_population=8, load_checkpoint=False)
+    params = dict(
+        headless=True, seed=1, grid_w=20, grid_h=15, initial_population=8, load_checkpoint=False
+    )
     params.update(kw)
     return Simulation(**params)
 
@@ -38,8 +40,9 @@ def test_world_regrowth_runs_each_step():
 def test_births_occur_and_grow_population():
     # Agents reach MIN_REPRODUCTION_AGE (60) then gestate 40 ticks, so births need
     # ~100+ ticks; run long enough to observe several.
-    sim = Simulation(headless=True, seed=3, grid_w=22, grid_h=16,
-                     initial_population=16, load_checkpoint=False)
+    sim = Simulation(
+        headless=True, seed=3, grid_w=22, grid_h=16, initial_population=16, load_checkpoint=False
+    )
     for _ in range(220):
         sim.step()
     alive = [a for a in sim.agents if a.alive]

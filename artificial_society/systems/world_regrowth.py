@@ -10,6 +10,7 @@ world depletes then regrows.
 The season/weather state is read defensively: if those systems are dormant the
 regrowth still runs with neutral defaults (``regrow_cell`` uses ``dict.get``).
 """
+
 from __future__ import annotations
 
 from artificial_society.systems.registry import register

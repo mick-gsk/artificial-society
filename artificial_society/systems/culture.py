@@ -6,6 +6,7 @@ They store causal sequences: (action, mat_a, mat_b) -> observed_effects.
 Successful sequences can be socially observed and imperfectly transmitted.
 This is the foundation of cumulative culture without pre-programmed recipes.
 """
+
 from __future__ import annotations
 
 import random
@@ -20,49 +21,55 @@ GRACE_PERIOD_ATTEMPTS = 3
 
 class CausalMemory:
     def __init__(self, capacity: int = 32):
-        self.capacity  = capacity
+        self.capacity = capacity
         self.sequences: dict[tuple, dict] = {}
 
-    def record(self, action: str, mat_a: str, mat_b: str | None, outcomes: list[str], reward: float):
-        key = (action, mat_a, mat_b or '')
+    def record(
+        self, action: str, mat_a: str, mat_b: str | None, outcomes: list[str], reward: float
+    ):
+        key = (action, mat_a, mat_b or "")
         if key not in self.sequences:
             if len(self.sequences) >= self.capacity:
                 # Eviktiere nur Sequenzen die KEINE Grace-Period mehr haben
                 # und am wenigsten erfolgreich sind.
                 evictable = [
-                    k for k, v in self.sequences.items()
-                    if v['attempts'] > GRACE_PERIOD_ATTEMPTS
+                    k for k, v in self.sequences.items() if v["attempts"] > GRACE_PERIOD_ATTEMPTS
                 ]
                 if evictable:
-                    worst = min(evictable, key=lambda k: self.sequences[k]['successes'])
+                    worst = min(evictable, key=lambda k: self.sequences[k]["successes"])
                     del self.sequences[worst]
                 else:
                     # Alle in Grace-Period: eviktiere aelteste (meiste Versuche)
-                    oldest = max(self.sequences, key=lambda k: self.sequences[k]['attempts'])
+                    oldest = max(self.sequences, key=lambda k: self.sequences[k]["attempts"])
                     del self.sequences[oldest]
-            self.sequences[key] = {'outcomes': outcomes, 'successes': 0, 'attempts': 0, 'reward': 0.0}
+            self.sequences[key] = {
+                "outcomes": outcomes,
+                "successes": 0,
+                "attempts": 0,
+                "reward": 0.0,
+            }
         entry = self.sequences[key]
-        entry['attempts'] += 1
-        entry['reward']    = entry['reward'] * 0.8 + reward * 0.2
+        entry["attempts"] += 1
+        entry["reward"] = entry["reward"] * 0.8 + reward * 0.2
         if reward > 0.1:
-            entry['successes'] += 1
-        entry['outcomes'] = outcomes
+            entry["successes"] += 1
+        entry["outcomes"] = outcomes
 
     def best_known(self, min_successes: int = 2) -> list[tuple]:
         return sorted(
-            [(k, v) for k, v in self.sequences.items() if v['successes'] >= min_successes],
-            key=lambda x: -x[1]['reward']
+            [(k, v) for k, v in self.sequences.items() if v["successes"] >= min_successes],
+            key=lambda x: -x[1]["reward"],
         )
 
     def sample_for_transmission(self) -> tuple | None:
         good = self.best_known(min_successes=1)
         if not good:
             return None
-        weights = [v['successes'] for _, v in good]
-        total   = sum(weights)
+        weights = [v["successes"] for _, v in good]
+        total = sum(weights)
         r = random.random() * total
         acc = 0
-        for (k, v), w in zip(good, weights):
+        for (k, _v), w in zip(good, weights):
             acc += w
             if r <= acc:
                 return k
@@ -72,10 +79,13 @@ class CausalMemory:
         action, mat_a, mat_b = sequence
         if random.random() > fidelity:
             from artificial_society.environment.materials import MATERIALS
+
             all_mats = list(MATERIALS.keys())
             choice = random.random()
             if choice < 0.33:
-                action = random.choice(['rub', 'strike', 'place_on_heat', 'bundle', 'blow', 'carry', 'eat'])
+                action = random.choice(
+                    ["rub", "strike", "place_on_heat", "bundle", "blow", "carry", "eat"]
+                )
             elif choice < 0.66:
                 mat_a = random.choice(all_mats)
             else:
@@ -84,21 +94,20 @@ class CausalMemory:
         if key not in self.sequences:
             if len(self.sequences) >= self.capacity:
                 evictable = [
-                    k for k, v in self.sequences.items()
-                    if v['attempts'] > GRACE_PERIOD_ATTEMPTS
+                    k for k, v in self.sequences.items() if v["attempts"] > GRACE_PERIOD_ATTEMPTS
                 ]
                 if evictable:
-                    worst = min(evictable, key=lambda k: self.sequences[k]['successes'])
+                    worst = min(evictable, key=lambda k: self.sequences[k]["successes"])
                     del self.sequences[worst]
                 else:
-                    oldest = max(self.sequences, key=lambda k: self.sequences[k]['attempts'])
+                    oldest = max(self.sequences, key=lambda k: self.sequences[k]["attempts"])
                     del self.sequences[oldest]
-            self.sequences[key] = {'outcomes': [], 'successes': 0, 'attempts': 0, 'reward': 0.0}
+            self.sequences[key] = {"outcomes": [], "successes": 0, "attempts": 0, "reward": 0.0}
 
     def feature_vector(self) -> list[float]:
         n = len(self.sequences)
-        successes = sum(v['successes'] for v in self.sequences.values())
-        best_r    = max((v['reward'] for v in self.sequences.values()), default=0.0)
+        successes = sum(v["successes"] for v in self.sequences.values())
+        best_r = max((v["reward"] for v in self.sequences.values()), default=0.0)
         return [
             min(1.0, n / self.capacity),
             min(1.0, successes / max(1, n * 3)),
@@ -116,7 +125,7 @@ class CultureTracker:
         for a in agents:
             if not a.alive:
                 continue
-            for seq in getattr(a, 'causal_memory', CausalMemory()).sequences:
+            for seq in getattr(a, "causal_memory", CausalMemory()).sequences:
                 counts[seq] += 1
                 if seq not in self.discovery_tick:
                     self.discovery_tick[seq] = tick
@@ -126,11 +135,13 @@ class CultureTracker:
         return float(len(self.population_sequences))
 
     def most_widespread(self, top_n: int = 5) -> list[tuple]:
-        return sorted(self.population_sequences, key=lambda k: -self.population_sequences[k])[:top_n]
+        return sorted(self.population_sequences, key=lambda k: -self.population_sequences[k])[
+            :top_n
+        ]
 
     def summary(self) -> dict:
         return {
-            'distinct_sequences':    len(self.population_sequences),
-            'total_knowledge_units': sum(self.population_sequences.values()),
-            'most_widespread':       [str(s) for s in self.most_widespread(3)],
+            "distinct_sequences": len(self.population_sequences),
+            "total_knowledge_units": sum(self.population_sequences.values()),
+            "most_widespread": [str(s) for s in self.most_widespread(3)],
         }

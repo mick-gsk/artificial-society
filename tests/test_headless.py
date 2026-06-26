@@ -4,6 +4,7 @@ These lock the two foundations the refactor depends on:
   * construct/operate without opening a pygame window, and
   * identical initial world+population for a given seed.
 """
+
 from artificial_society.simulation import Simulation
 
 

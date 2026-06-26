@@ -9,6 +9,7 @@ order). Tests that compare against a committed trajectory pin it themselves via
 a subprocess (see tests/test_regression_golden.py); within-process determinism
 tests do not need it.
 """
+
 import os
 import sys
 

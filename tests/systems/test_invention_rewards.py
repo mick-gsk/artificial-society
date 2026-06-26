@@ -8,6 +8,7 @@ outcomes — while keeping the legacy path alive for early-survival bootstrap.
 
 Fast and deterministic: asserts directly on the reward constants, no Simulation run.
 """
+
 from artificial_society.systems import invention as inv
 from artificial_society.systems import need_driven_invention as ndi
 

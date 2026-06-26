@@ -3,6 +3,7 @@
 Used by both the golden-trajectory generator and the regression test so the
 two can never drift apart.
 """
+
 from __future__ import annotations
 
 from artificial_society.simulation import Simulation
@@ -25,10 +26,12 @@ def compute_trajectory(ticks=TICKS, **overrides):
     for _ in range(ticks):
         sim.step()
         alive = [a for a in sim.agents if a.alive]
-        trajectory.append([
-            sim.tick,
-            len(alive),
-            round(sum(a.energy for a in alive), 2),
-            round(sum(a.health for a in alive), 2),
-        ])
+        trajectory.append(
+            [
+                sim.tick,
+                len(alive),
+                round(sum(a.energy for a in alive), 2),
+                round(sum(a.health for a in alive), 2),
+            ]
+        )
     return trajectory

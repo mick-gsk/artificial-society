@@ -9,6 +9,7 @@ It is fully headless: matplotlib is forced onto the non-interactive ``Agg``
 backend at import time, so no display is ever required. Figures can be returned
 to the caller or saved to a PNG file.
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence

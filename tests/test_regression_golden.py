@@ -16,6 +16,7 @@ regrowth and births), regenerate the golden::
         "import json; from tests._util import compute_trajectory; \
          json.dump(compute_trajectory(), open('tests/golden_trajectory.json','w'), indent=0)"
 """
+
 import json
 import os
 import subprocess
@@ -39,9 +40,7 @@ def _trajectory_in_pinned_subprocess():
         SDL_VIDEODRIVER="dummy",
         SDL_AUDIODRIVER="dummy",
     )
-    out = subprocess.check_output(
-        [sys.executable, "-c", _CHILD], cwd=REPO_ROOT, env=env, text=True
-    )
+    out = subprocess.check_output([sys.executable, "-c", _CHILD], cwd=REPO_ROOT, env=env, text=True)
     payload = out.split(_SENTINEL)[1]
     return json.loads(payload)
 

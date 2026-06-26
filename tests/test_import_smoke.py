@@ -11,6 +11,6 @@ def test_simulation_package_imports():
 
 
 def test_core_modules_import():
-    import artificial_society.world  # noqa: F401
     import artificial_society.agents.agent  # noqa: F401
     import artificial_society.agents.brain  # noqa: F401
+    import artificial_society.world  # noqa: F401

@@ -9,6 +9,7 @@ Hamilton, territory) that are out of scope for this lane.
 
 Deterministic and fast: small grid, few agents, short headless run.
 """
+
 from __future__ import annotations
 
 import statistics
@@ -71,9 +72,7 @@ def test_untouched_cell_equilibrium_below_capacity():
                 {},
             )
         ratio = cell["food"] / cap
-        assert ratio < 0.6, (
-            f"{biome}: untouched cell saturated to food/capacity = {ratio:.3f}"
-        )
+        assert ratio < 0.6, f"{biome}: untouched cell saturated to food/capacity = {ratio:.3f}"
 
 
 def test_depleted_cell_recovers_slowly():
@@ -91,9 +90,7 @@ def test_depleted_cell_recovers_slowly():
     cell["food"] = 0.0
     # Regrow for a modest window.
     for tick in range(30):
-        regrow_cell(
-            cell, "forest", {"food_factor": 1.0}, {"rain_map": 0.4}, 900 + tick, {}
-        )
+        regrow_cell(cell, "forest", {"food_factor": 1.0}, {"rain_map": 0.4}, 900 + tick, {})
     ratio = cell["food"] / cap
     # 30 ticks of regrowth must not refill a depleted cell to abundance.
     assert ratio < 0.15, f"depleted cell refilled too fast: ratio={ratio:.3f}"
