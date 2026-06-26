@@ -57,9 +57,12 @@ ROLLOUT_HORIZON = 128
 PPO_EPOCHS = 20
 
 # --- Model-Based Planning ---
+# Tuned values previously applied at import by emergence_runtime; now the source of
+# truth. (PLAN_CANDIDATES stays 12: it is only a def-time default arg, so the old
+# runtime override to 8 never actually took effect.)
 PLAN_CANDIDATES = 12
-PLAN_HORIZON = 3          # Survival mode (default)
-PLAN_HORIZON_RESEARCH = 30  # Research / invention mode
+PLAN_HORIZON = 2            # Survival mode (default)
+PLAN_HORIZON_RESEARCH = 6   # Research / invention mode
 NOVELTY_WEIGHT = 0.15
 VALUE_WEIGHT = 0.50
 REWARD_WEIGHT = 0.35

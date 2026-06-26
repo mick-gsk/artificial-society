@@ -566,22 +566,8 @@ def apply_emergence_integration() -> None:
         _ORIGINAL_SOCIAL_LEARNING = social_learning_mod.social_learning_step
         social_learning_mod.social_learning_step = _social_learning_step_cached  # type: ignore[assignment]
 
-    # System-level tuning for deeper emergence and lower compute load.
-    agent_mod.INVENTION_BASE_PROB = 0.08
-    agent_mod.INVENTION_CURIOSITY_MULT = 0.05
-    agent_mod.NEED_INVENTION_INTERVAL = 12
-    agent_mod.MIN_REPRODUCTION_AGE = int(CHILD_MAX * 0.5)
-    agent_mod.ELDER_AGE = ADULT_MAX
-    agent_mod.STAGE_CHILD = CHILD_MAX
-    agent_mod.STAGE_ELDER = ADULT_MAX
-    agent_mod.AGE_LIMIT = 5000
-    agent_mod.AGE_HEALTH_DECAY_START = ADULT_MAX
-    agent_mod.AGE_HEALTH_DECAY_HARD = 4500
-
-    brain_mod = __import__('artificial_society.agents.brain', fromlist=['dummy'])
-    brain_mod.PLAN_CANDIDATES = 8
-    brain_mod.PLAN_HORIZON = 2
-    brain_mod.PLAN_HORIZON_RESEARCH = 6
+    # Agent- and brain-level tuning is now baked into agents/agent.py and
+    # agents/brain.py (the source of truth) instead of mutated here at import.
 
     _PATCHED = True
 
