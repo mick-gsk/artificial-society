@@ -4,8 +4,8 @@
   import Cards from "./components/Cards.svelte";
   import World from "./components/World.svelte";
 
-  // Aggregate run status + device come from a light REST poll; the live grid and
-  // stat values come from WebSocket frames.
+  // Aggregate run status + device come from a light REST poll; the live field
+  // and stat values come from WebSocket frames.
   let snap = $state({ status: "idle", device: null, stats: {} });
   let frame = $state(null);
 
@@ -23,14 +23,20 @@
   });
 
   let stats = $derived(frame?.stats ?? snap.stats ?? {});
+  let device = $derived(snap.device?.type ?? "—");
 </script>
 
 <header>
-  <h1>Artificial Society — Live</h1>
-  <span class="status">
-    status: {snap.status}{#if snap.device}
-      &nbsp;·&nbsp;device: {snap.device.type}{/if}
-  </span>
+  <h1>Artificial <span class="tick">/</span> Society</h1>
+  <div class="station">
+    <span>Observation&nbsp;Station</span>
+    <span class="pill" class:running={snap.status === "running"}>
+      <span class="led"></span>{snap.status}
+    </span>
+    <span class="pill" class:cuda={device === "cuda"}>
+      device&nbsp;<b>{device}</b>
+    </span>
+  </div>
 </header>
 
 <Controls {snap} />

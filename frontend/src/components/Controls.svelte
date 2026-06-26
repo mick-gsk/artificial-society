@@ -31,11 +31,12 @@
 
 <form class="controls" onsubmit={start}>
   <label>seed <input type="number" bind:value={seed} /></label>
-  <label>grid_w <input type="number" bind:value={grid_w} /></label>
-  <label>grid_h <input type="number" bind:value={grid_h} /></label>
+  <label>grid w <input type="number" bind:value={grid_w} /></label>
+  <label>grid h <input type="number" bind:value={grid_h} /></label>
   <label>pop <input type="number" bind:value={pop} /></label>
-  <button type="submit" disabled={running || busy}>Start</button>
+  <span class="spacer"></span>
+  <button type="submit" disabled={running || busy}>Start run</button>
   <button type="button" class="ghost" onclick={stop} disabled={!running}>
-    Stop
+    Halt
   </button>
 </form>

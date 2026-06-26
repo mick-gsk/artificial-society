@@ -22,11 +22,16 @@
     if (typeof v === "number" && !Number.isInteger(v)) return v.toFixed(2);
     return v;
   }
+
+  // A non-zero numeric reading is "live signal" — accent it.
+  function active(v) {
+    return typeof v === "number" && v !== 0;
+  }
 </script>
 
 <div class="cards">
   {#each CARDS as [key, label] (key)}
-    <div class="card">
+    <div class="card" class:active={active(stats[key])}>
       <div class="k">{label}</div>
       <div class="v">{fmt(stats[key])}</div>
     </div>
