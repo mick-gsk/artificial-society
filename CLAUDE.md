@@ -62,5 +62,30 @@ yourself first.
 ## Conventions
 
 - `from __future__ import annotations` + `dataclasses` + `typing` are used throughout — keep new code typed.
-- Systems are loosely coupled and ticked from `Simulation`; add a new system as its own
-  module under `systems/` (or `environment/` / `agents/`) and wire it into the tick loop.
+- **Adding a system — use the registry, do not edit `simulation.py`.** Create one new
+  module under `systems/` that self-registers via `@register(...)` (see
+  `systems/registry.py`). `Simulation` builds it (`sim.<name>` + `sim.systems` bus) and,
+  if it has a `tick` hook, ticks it in ascending `order`. The legacy built-in systems are
+  registered in `systems/_builtins.py` (dormant). The `/new-system` command scaffolds this.
+
+## Parallel multi-agent development
+
+This repo is structured so several Claude Code agents work in parallel with minimal
+conflicts. Full detail in [`docs/ownership.md`](docs/ownership.md); the essentials:
+
+- **Lanes.** Each file belongs to one lane: `core` (serial only), `agents`,
+  `environment`, `systems`, `visualization`, `infra`. Take one lane; touch only its files.
+- **Hot files are a frozen contract** (`simulation.py`, `world.py`, `agents/agent.py`,
+  `agents/brain.py`, `environment/materials.py`, `systems/registry.py`). Don't edit them
+  in a domain lane — route changes through the `core-lead` (serial). `CODEOWNERS` marks them.
+- **Subagents & commands.** `.claude/agents/` defines one dev per lane plus `core-lead`
+  and `reviewer`. `.claude/commands/`: `/new-system`, `/check`, `/integrate`.
+- **Workflow.** Work in a git worktree on a lane-prefixed branch
+  (`feat/systems-<topic>`, `core/<topic>`, …): develop → `/check` → `/integrate` (rebase,
+  re-check, push, PR) → CI gate + review → merge → remove worktree.
+- **Gate.** CI (`.github/workflows/ci.yml`) runs the full pytest suite — including the
+  determinism contract (golden trajectory + headless digest) — on every PR, and lints the
+  Python files the PR changes. `scripts/check.sh` (= `/check`) mirrors it locally.
+- **Determinism is sacred.** All randomness via `artificial_society.rng.seed_all`; never
+  edit a determinism test to make it pass — a red golden trajectory means your change
+  altered behaviour.
