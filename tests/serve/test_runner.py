@@ -1,4 +1,5 @@
 """Tests for the dashboard SimulationRunner (CPU is sufficient)."""
+
 from __future__ import annotations
 
 import time
@@ -25,14 +26,16 @@ def test_bounded_run_finishes_with_stats_and_history():
 
     snap = r.snapshot()
     assert snap["tick"] == 10
-    assert snap["stats"]["tick"] == 10
+    # stats are now collected inside step() (registry 'stats' tick) with the 0-indexed
+    # in-loop tick, so after 10 ticks (0..9) the last sample is labelled 9.
+    assert snap["stats"]["tick"] == 9
     assert snap["stats"]["population"] >= 0
     assert not r.is_running
 
     hist = r.history()
     assert len(hist["population_history"]) == 10
-    # history entries are (tick, value) tuples
-    assert hist["population_history"][0][0] == 1
+    # history entries are (tick, value) tuples; first sample is the 0-indexed tick 0
+    assert hist["population_history"][0][0] == 0
 
 
 def test_stop_halts_a_running_sim():

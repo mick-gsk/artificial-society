@@ -24,10 +24,12 @@ class StatisticsTracker:
         avg_sick = sum(a.sick for a in live) / pop if pop else 0
         avg_reward = sum(a.last_reward for a in live) / pop if pop else 0
         avg_loss = sum(a.last_loss for a in live) / pop if pop else 0
-        # Life-stage counts
-        n_child = sum(1 for a in live if getattr(a, "life_stage", STAGE_ADULT) == STAGE_CHILD)
-        n_adult = sum(1 for a in live if getattr(a, "life_stage", STAGE_ADULT) == STAGE_ADULT)
-        n_elder = sum(1 for a in live if getattr(a, "life_stage", STAGE_ADULT) == STAGE_ELDER)
+        # Life-stage counts. ``life_stage`` is a *method* on the agent returning
+        # 'child'/'adult'/'elder' (== the STAGE_* constants); calling it is required —
+        # ``getattr(a, "life_stage", ...)`` returned the bound method, so every count was 0.
+        n_child = sum(1 for a in live if a.life_stage() == STAGE_CHILD)
+        n_adult = sum(1 for a in live if a.life_stage() == STAGE_ADULT)
+        n_elder = sum(1 for a in live if a.life_stage() == STAGE_ELDER)
         avg_energy = sum(a.energy for a in live) / pop if pop else 0
         world_means = world.regional_means()
         self.population_history.append((tick, pop))

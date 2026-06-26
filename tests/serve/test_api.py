@@ -1,4 +1,5 @@
 """Tests for the dashboard FastAPI app via Starlette's TestClient (CPU)."""
+
 from __future__ import annotations
 
 import time
@@ -41,7 +42,9 @@ def test_run_status_history_and_graph():
 
         snap = client.get("/api/status").json()
         assert snap["tick"] == 6
-        assert snap["stats"]["tick"] == 6
+        # stats are collected inside step() (registry 'stats' tick), labelled with the
+        # 0-indexed in-loop tick, so 6 ticks (0..5) give a last sample of 5.
+        assert snap["stats"]["tick"] == 5
 
         hist = client.get("/api/history").json()
         assert len(hist["population_history"]) == 6
