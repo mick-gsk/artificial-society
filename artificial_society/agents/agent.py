@@ -99,7 +99,28 @@ _RESOURCE_ALIASES = {
 }
 
 
-def _ensure_new_fields(agent):
+def ensure_fields(agent) -> None:
+    """Single source of truth for agent field initialisation (Phase 3 / 3c).
+
+    Collapses the historical ``_ensure_new_fields`` / ``_ensure_runtime_fields``
+    (agent.py) and ``_migrate_agent`` (simulation.py) paths into one idempotent
+    helper. Every assignment is ``hasattr``-guarded, so calling it on a
+    fully-constructed agent is a no-op that draws no RNG (preserving the golden
+    trajectory), while an agent deserialised from an old checkpoint — missing newer
+    fields — is fully reinstated.
+    """
+    # --- brain + per-agent core objects ---
+    if not hasattr(agent, "brain") or agent.brain is None:
+        agent.brain = Brain()
+        agent.hidden_state = agent.brain.initial_hidden()
+    elif agent.brain.input_size != INPUT_SIZE:
+        print(
+            f"[compat] Agent {agent.id}: brain input_size={agent.brain.input_size} != {INPUT_SIZE}, rebuilding."
+        )
+        agent.brain = Brain()
+        agent.hidden_state = agent.brain.initial_hidden()
+    if not hasattr(agent, "hidden_state") or agent.hidden_state is None:
+        agent.hidden_state = agent.brain.initial_hidden()
     if not hasattr(agent, "_brain_device"):
         agent._brain_device = next(agent.brain.parameters()).device
     if not hasattr(agent, "causal_memory") or agent.causal_memory is None:
@@ -110,15 +131,6 @@ def _ensure_new_fields(agent):
         agent.endocrine = EndocrineSystem()
     if not hasattr(agent, "is_sleeping"):
         agent.is_sleeping = False
-    if not hasattr(agent, "brain") or agent.brain is None:
-        agent.brain = Brain()
-        agent.hidden_state = agent.brain.initial_hidden()
-    elif agent.brain.input_size != INPUT_SIZE:
-        print(
-            f"[compat] Agent {agent.id}: brain input_size={agent.brain.input_size} != {INPUT_SIZE}, rebuilding."
-        )
-        agent.brain = Brain()
-        agent.hidden_state = agent.brain.initial_hidden()
     if not hasattr(agent, "tool"):
         agent.tool = None
     if agent.tool is None and getattr(agent, "material_inventory", {}).get("sharp_stone", 0) > 0.1:
@@ -133,12 +145,14 @@ def _ensure_new_fields(agent):
         agent.knowledge = KnowledgeGraph()
     if not hasattr(agent, "emotional_memory") or agent.emotional_memory is None:
         agent.emotional_memory = EmotionalMemory()
+    if not hasattr(agent, "remedy_knowledge"):
+        agent.remedy_knowledge = {}
+    if not hasattr(agent, "herbs_carried"):
+        agent.herbs_carried = {}
     # Emergenz v3: recent_action_sequence fuer Makro-Aktion-Erkennung
     if not hasattr(agent, "_recent_action_seq"):
         agent._recent_action_seq = []
-
-
-def _ensure_runtime_fields(agent) -> None:
+    # --- planning / runtime caches ---
     if not hasattr(agent, "goal_stack") or agent.goal_stack is None:
         agent.goal_stack = GoalStack()
     if not hasattr(agent, "token_memory") or agent.token_memory is None:
@@ -308,7 +322,7 @@ class Agent:
         agent.knowledge = KnowledgeGraph()
         agent.emotional_memory = EmotionalMemory()
         agent._recent_action_seq = []
-        _ensure_runtime_fields(agent)
+        ensure_fields(agent)
         return agent
 
     @classmethod
@@ -341,7 +355,7 @@ class Agent:
             random.shuffle(known_places)
             for pos, info in known_places[:50]:
                 agent.world_memory[pos] = dict(info)
-        _ensure_runtime_fields(agent)
+        ensure_fields(agent)
         return agent
 
     @property
@@ -401,7 +415,7 @@ class Agent:
         )
 
     def local_features(self, world, agents):
-        _ensure_new_fields(self)
+        ensure_fields(self)
         x, y = self.pos
         cell = world.get_cell(x, y)
         near = [
@@ -1001,7 +1015,7 @@ class Agent:
         if not self.alive:
             return None
 
-        _ensure_runtime_fields(self)
+        ensure_fields(self)
 
         self.endocrine.update(self, world)
         mods = self.endocrine.modifiers()

@@ -5,9 +5,7 @@ import random
 import pygame
 
 import artificial_society.systems._builtins  # noqa: F401  (registers built-in systems)
-from artificial_society.agents.agent import CORPSE_ENERGY, MAX_ENERGY, Agent
-from artificial_society.agents.brain import INPUT_SIZE, Brain
-from artificial_society.agents.endocrine import EndocrineSystem
+from artificial_society.agents.agent import CORPSE_ENERGY, MAX_ENERGY, Agent, ensure_fields
 from artificial_society.environment.materials import DISCOVERY_REGISTRY
 from artificial_society.environment.resources import add_carcass
 from artificial_society.environment.territory import update_territory_claims
@@ -97,32 +95,6 @@ def _restore_singletons(data: dict) -> None:
         TOKEN_WORLD.load_state_dict(data["tokens"])
     if "recipes" in data:
         RECIPE_DISCOVERY.load_state_dict(data["recipes"])
-
-
-def _migrate_agent(agent):
-    if (
-        not hasattr(agent, "brain")
-        or agent.brain is None
-        or getattr(agent.brain, "input_size", None) != INPUT_SIZE
-    ):
-        agent.brain = Brain()
-        agent.hidden_state = agent.brain.initial_hidden()
-    if not hasattr(agent, "hidden_state") or agent.hidden_state is None:
-        agent.hidden_state = agent.brain.initial_hidden()
-    if not hasattr(agent, "endocrine") or agent.endocrine is None:
-        agent.endocrine = EndocrineSystem()
-    if not hasattr(agent, "causal_memory") or agent.causal_memory is None:
-        agent.causal_memory = CausalMemory(capacity=32)
-    if not hasattr(agent, "material_inventory") or agent.material_inventory is None:
-        agent.material_inventory = {}
-    if not hasattr(agent, "is_sleeping"):
-        agent.is_sleeping = False
-    if not hasattr(agent, "remedy_knowledge"):
-        agent.remedy_knowledge = {}
-    if not hasattr(agent, "herbs_carried"):
-        agent.herbs_carried = {}
-    if not hasattr(agent, "_last_mate_id"):
-        agent._last_mate_id = None
 
 
 class Simulation:
@@ -379,7 +351,7 @@ class Simulation:
             # in which case the freshly-reset singletons are kept.
             _restore_singletons(data.get("registries", {}))
             for agent in self.agents:
-                _migrate_agent(agent)
+                ensure_fields(agent)
             print(f"[checkpoint] loaded tick={self.tick}, agents={len(self.agents)}")
         except Exception as e:
             print(f"[checkpoint] load failed: {e} — starting fresh")
