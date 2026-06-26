@@ -1,0 +1,35 @@
+# CODEOWNERS — operationalises the multi-agent lane map (see docs/ownership.md).
+#
+# Purpose here: the HOT / core files are a shared, serialized resource. Any change
+# to them must be reviewed by the human lead (@mick-gsk) so parallel domain agents
+# never mutate the simulation contract independently. Domain files have no required
+# owner — any reviewer (human or the `reviewer` subagent) may approve them.
+#
+# NOTE: GitHub only enforces this when branch protection on `main` has
+# "Require review from Code Owners" enabled. Until then it is documentation.
+
+# --- HOT / core contract — lead review required, change only serially -----------
+/artificial_society/simulation.py            @mick-gsk
+/artificial_society/world.py                 @mick-gsk
+/artificial_society/rng.py                   @mick-gsk
+/artificial_society/bootstrap.py             @mick-gsk
+/artificial_society/runtime_patches.py       @mick-gsk
+/artificial_society/agents/agent.py          @mick-gsk
+/artificial_society/agents/brain.py          @mick-gsk
+/artificial_society/environment/materials.py @mick-gsk
+/artificial_society/systems/registry.py      @mick-gsk
+/artificial_society/systems/emergence_runtime.py @mick-gsk
+
+# --- Determinism contract — never edited to "make a test pass" ------------------
+/tests/test_headless.py            @mick-gsk
+/tests/test_regression_golden.py   @mick-gsk
+/tests/_util.py                    @mick-gsk
+/tests/golden_trajectory.json      @mick-gsk
+
+# --- Integration gate & shared infra --------------------------------------------
+/.github/      @mick-gsk
+/CODEOWNERS    @mick-gsk
+/CLAUDE.md     @mick-gsk
+
+# Domain lanes (agents/ environment/ systems/ visualization/) intentionally have
+# no required owner — they are the parallel-safe surface. See docs/ownership.md.
