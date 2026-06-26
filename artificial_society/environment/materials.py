@@ -250,6 +250,15 @@ class DiscoveryRegistry:
         self.entries.clear()
         self._known_ids_cache = None
 
+    def state_dict(self) -> dict:
+        """Serialisable snapshot of all discovered materials, for checkpoints."""
+        return {"entries": self.entries}
+
+    def load_state_dict(self, data: dict) -> None:
+        """Restore discovered materials from a snapshot produced by state_dict."""
+        self.entries = list(data.get("entries", []))
+        self._known_ids_cache = None
+
     def register(
         self,
         vector: np.ndarray,

@@ -1,8 +1,14 @@
 import math
 import random
+
 from artificial_society.environment.biomes import BIOME_BASE, biome_color, generate_biome_grid
-from artificial_society.environment.resources import clamp, diffuse_step, initial_cell_state, regrow_cell
 from artificial_society.environment.herbs import regrow_herbs
+from artificial_society.environment.resources import (
+    clamp,
+    diffuse_step,
+    initial_cell_state,
+    regrow_cell,
+)
 
 
 class World:
@@ -10,11 +16,21 @@ class World:
         self.width = width
         self.height = height
         self.biomes = generate_biome_grid(width, height)
-        self.cells = [[initial_cell_state(self.biomes[y][x]) for x in range(width)] for y in range(height)]
-        self.land_positions = [(x, y) for y in range(height) for x in range(width) if self.biomes[y][x] != 'water']
+        self.cells = [
+            [initial_cell_state(self.biomes[y][x]) for x in range(width)] for y in range(height)
+        ]
+        self.land_positions = [
+            (x, y) for y in range(height) for x in range(width) if self.biomes[y][x] != "water"
+        ]
         self.active_events = []
         # Day/night state, updated each tick by simulation.step()
-        self.day_state: dict = {'phase': 'day', 'light': 1.0, 'danger_mult': 1.0, 'sleep_pressure': 0.0, 't': 0.0}
+        self.day_state: dict = {
+            "phase": "day",
+            "light": 1.0,
+            "danger_mult": 1.0,
+            "sleep_pressure": 0.0,
+            "t": 0.0,
+        }
 
     def in_bounds(self, x, y):
         return 0 <= x < self.width and 0 <= y < self.height
@@ -24,6 +40,28 @@ class World:
         y = clamp(y, 0, self.height - 1)
         return self.cells[y][x]
 
+    # -- Authoritative cell-mutation API ------------------------------------
+    # External systems should mutate cells through these instead of writing
+    # `world.cells[y][x][...]` directly, so World stays the single source of
+    # truth for cell state. Behaviour is identical to the in-place writes they
+    # replace (no implicit clamping — callers that need bounds compute them and
+    # call set_cell). World-material seeding (systems/invention.py) routes through
+    # this API. Remaining direct mutators are deferred follow-ups: agent
+    # foraging/consumption in agents/agent.py (migrated with the Phase 1b
+    # un-patching), the territory/growth/herbs writes (environment lane), and the
+    # resources.py regrowth math (the privileged intrinsic cell-update model).
+
+    def set_cell(self, x, y, key, value):
+        """Single-field cell write — replaces in-place ``cell[key] = value``."""
+        self.get_cell(x, y)[key] = value
+
+    def adjust_cell(self, x, y, **deltas):
+        """Additive cell write — for each key, ``cell[key] = cell.get(key, 0.0) + delta``
+        (missing keys default to 0.0). Replaces the ``cell.get(k, 0.0) + d`` idiom."""
+        cell = self.get_cell(x, y)
+        for key, delta in deltas.items():
+            cell[key] = cell.get(key, 0.0) + delta
+
     def get_biome(self, x, y):
         x = clamp(x, 0, self.width - 1)
         y = clamp(y, 0, self.height - 1)
@@ -31,7 +69,7 @@ class World:
 
     def biome_move_cost(self, x, y):
         biome = self.get_biome(x, y)
-        return BIOME_BASE[biome]['move_cost']
+        return BIOME_BASE[biome]["move_cost"]
 
     def random_land_position(self):
         return random.choice(self.land_positions)
@@ -41,7 +79,7 @@ class World:
         candidates = [(px + dx, py + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1) if dx or dy]
         random.shuffle(candidates)
         for x, y in candidates:
-            if self.in_bounds(x, y) and self.get_biome(x, y) != 'water':
+            if self.in_bounds(x, y) and self.get_biome(x, y) != "water":
                 return x, y
         return None, None
 
@@ -54,12 +92,12 @@ class World:
         return out
 
     def spawn_disturbance(self, tick, season_state, weather_state):
-        season_name = season_state.get('name', '').lower()
+        season_name = season_state.get("name", "").lower()
         weights = [
-            ('drought', 1.4 if season_name == 'summer' else 1.0),
-            ('storm', 1.3 + weather_state.get('storm_risk', 0.0)),
-            ('fire', 1.2 if season_name == 'summer' else 0.7),
-            ('blight', 1.0),
+            ("drought", 1.4 if season_name == "summer" else 1.0),
+            ("storm", 1.3 + weather_state.get("storm_risk", 0.0)),
+            ("fire", 1.2 if season_name == "summer" else 0.7),
+            ("blight", 1.0),
         ]
         kinds = [k for k, _ in weights]
         probs = [w for _, w in weights]
@@ -73,40 +111,42 @@ class World:
                 kind = k
                 break
         x, y = self.random_land_position()
-        self.active_events.append({
-            'kind': kind,
-            'x': x,
-            'y': y,
-            'radius': random.randint(4, 9),
-            'intensity': random.uniform(0.55, 1.1),
-            'ttl': random.randint(40, 100),
-        })
+        self.active_events.append(
+            {
+                "kind": kind,
+                "x": x,
+                "y": y,
+                "radius": random.randint(4, 9),
+                "intensity": random.uniform(0.55, 1.1),
+                "ttl": random.randint(40, 100),
+            }
+        )
 
     def update_events(self, tick, season_state, weather_state):
         if tick % 55 == 0 or (random.random() < 0.015 and len(self.active_events) < 5):
             self.spawn_disturbance(tick, season_state, weather_state)
         kept = []
         for event in self.active_events:
-            event['ttl'] -= 1
-            if event['kind'] == 'storm':
-                event['radius'] = min(max(3, event['radius'] + random.choice([-1, 0, 1])), 10)
+            event["ttl"] -= 1
+            if event["kind"] == "storm":
+                event["radius"] = min(max(3, event["radius"] + random.choice([-1, 0, 1])), 10)
             elif random.random() < 0.12:
-                event['x'] = int(clamp(event['x'] + random.choice([-1, 0, 1]), 0, self.width - 1))
-                event['y'] = int(clamp(event['y'] + random.choice([-1, 0, 1]), 0, self.height - 1))
-            event['intensity'] *= 0.992
-            if event['ttl'] > 0 and event['intensity'] > 0.15:
+                event["x"] = int(clamp(event["x"] + random.choice([-1, 0, 1]), 0, self.width - 1))
+                event["y"] = int(clamp(event["y"] + random.choice([-1, 0, 1]), 0, self.height - 1))
+            event["intensity"] *= 0.992
+            if event["ttl"] > 0 and event["intensity"] > 0.15:
                 kept.append(event)
         self.active_events = kept
 
     def event_field(self, x, y):
-        out = {'drought': 0.0, 'storm': 0.0, 'fire': 0.0, 'blight': 0.0, 'disturbance': 0.0}
+        out = {"drought": 0.0, "storm": 0.0, "fire": 0.0, "blight": 0.0, "disturbance": 0.0}
         for event in self.active_events:
-            d = math.hypot(x - event['x'], y - event['y'])
-            if d > event['radius']:
+            d = math.hypot(x - event["x"], y - event["y"])
+            if d > event["radius"]:
                 continue
-            strength = max(0.0, 1.0 - d / max(1.0, event['radius'])) * event['intensity']
-            out[event['kind']] += strength
-            out['disturbance'] += strength
+            strength = max(0.0, 1.0 - d / max(1.0, event["radius"])) * event["intensity"]
+            out[event["kind"]] += strength
+            out["disturbance"] += strength
         return out
 
     def diffuse_fields(self):
@@ -116,37 +156,39 @@ class World:
                 cells = [c for _, _, c, _ in self.neighbors(x, y, 1)]
                 n = len(cells)
                 avgs[y][x] = {
-                    'pollution': sum(c['pollution'] for c in cells) / n,
-                    'disease': sum(c['disease'] for c in cells) / n,
-                    'moisture': sum(c['moisture'] for c in cells) / n,
-                    'ash': sum(c['ash'] for c in cells) / n,
-                    'disturbance': sum(c['disturbance'] for c in cells) / n,
+                    "pollution": sum(c["pollution"] for c in cells) / n,
+                    "disease": sum(c["disease"] for c in cells) / n,
+                    "moisture": sum(c["moisture"] for c in cells) / n,
+                    "ash": sum(c["ash"] for c in cells) / n,
+                    "disturbance": sum(c["disturbance"] for c in cells) / n,
                 }
         for y in range(self.height):
             for x in range(self.width):
                 diffuse_step(self.cells[y][x], avgs[y][x])
 
     def regional_means(self):
-        total_food = total_water = total_pollution = total_fertility = total_capacity = total_disease = total_disturbance = 0.0
+        total_food = total_water = total_pollution = total_fertility = total_capacity = (
+            total_disease
+        ) = total_disturbance = 0.0
         n = self.width * self.height
         for row in self.cells:
             for cell in row:
-                total_food += cell['food']
-                total_water += cell['water']
-                total_pollution += cell['pollution']
-                total_fertility += cell['soil_fertility']
-                total_capacity += cell['carrying_capacity']
-                total_disease += cell['disease']
-                total_disturbance += cell['disturbance']
+                total_food += cell["food"]
+                total_water += cell["water"]
+                total_pollution += cell["pollution"]
+                total_fertility += cell["soil_fertility"]
+                total_capacity += cell["carrying_capacity"]
+                total_disease += cell["disease"]
+                total_disturbance += cell["disturbance"]
         return {
-            'food': total_food / n,
-            'water': total_water / n,
-            'pollution': total_pollution / n,
-            'soil_fertility': total_fertility / n,
-            'carrying_capacity': total_capacity / n,
-            'disease': total_disease / n,
-            'disturbance': total_disturbance / n,
-            'events': len(self.active_events),
+            "food": total_food / n,
+            "water": total_water / n,
+            "pollution": total_pollution / n,
+            "soil_fertility": total_fertility / n,
+            "carrying_capacity": total_capacity / n,
+            "disease": total_disease / n,
+            "disturbance": total_disturbance / n,
+            "events": len(self.active_events),
         }
 
     def hotspots(self, min_pollution=35, min_disease=30):
@@ -154,7 +196,12 @@ class World:
         for y in range(self.height):
             for x in range(self.width):
                 cell = self.cells[y][x]
-                if cell['pollution'] >= min_pollution or cell['disease'] >= min_disease or cell['disturbance'] >= 30 or any(cell['structures'].values()):
+                if (
+                    cell["pollution"] >= min_pollution
+                    or cell["disease"] >= min_disease
+                    or cell["disturbance"] >= 30
+                    or any(cell["structures"].values())
+                ):
                     out.append((x, y, cell))
         return out
 
@@ -165,7 +212,7 @@ class World:
                 biome = self.biomes[y][x]
                 cell = self.cells[y][x]
                 regrow_cell(cell, biome, season_state, weather_state, tick, self.event_field(x, y))
-                if biome != 'water':
+                if biome != "water":
                     regrow_herbs(cell, biome)
         self.diffuse_fields()
 
