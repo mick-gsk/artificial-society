@@ -71,7 +71,9 @@ yourself first.
 ## Parallel multi-agent development
 
 This repo is structured so several Claude Code agents work in parallel with minimal
-conflicts. Full detail in [`docs/ownership.md`](docs/ownership.md); the essentials:
+conflicts. **New agent? Start with [`docs/agent-quickstart.md`](docs/agent-quickstart.md),
+then claim a task from [`docs/roadmap.md`](docs/roadmap.md).** Full lane detail in
+[`docs/ownership.md`](docs/ownership.md); the essentials:
 
 - **Lanes.** Each file belongs to one lane: `core` (serial only), `agents`,
   `environment`, `systems`, `visualization`, `infra`. Take one lane; touch only its files.
