@@ -1,25 +1,20 @@
-import random
-
-
 class EconomySystem:
     def __init__(self):
         self.trade_count = 0
-        self.prices = {'wood': 1.0, 'stone': 1.0, 'fiber': 1.0}
+        self.prices = {"wood": 1.0, "stone": 1.0, "fiber": 1.0}
 
     def maybe_trade(self, agent, agents):
         # Radius 2 statt identischer Position -- auf einem 60x40-Grid mit ~36 Agenten
         # war exakt gleiche Zelle so selten dass Handel faktisch nie vorkam.
-        # Radius 2 entspricht realistischem Sichtkontakt.
-        neighbors = [
-            a for a in agents
-            if a is not agent and a.alive
-            and abs(a.pos[0] - agent.pos[0]) <= 2
-            and abs(a.pos[1] - agent.pos[1]) <= 2
-        ]
+        # Radius 2 entspricht realistischem Sichtkontakt. Der Nachbar-Cache wird
+        # einmal pro Tick auf dem Agenten gehalten (Agent._nearby_cached).
+        neighbors = agent._nearby_cached(agents, 2)
+        if not neighbors:
+            return
         for other in neighbors:
             if agent.trust.get(other.id, 0.0) < 0.1:
                 continue
-            for give_res, want_res in [('wood', 'stone'), ('stone', 'fiber'), ('fiber', 'wood')]:
+            for give_res, want_res in [("wood", "stone"), ("stone", "fiber"), ("fiber", "wood")]:
                 if agent.resources[give_res] > 1 and other.resources[want_res] > 1:
                     agent.resources[give_res] -= 1
                     other.resources[give_res] += 1
@@ -34,7 +29,7 @@ class EconomySystem:
                     break
 
     def update(self, agents, tribes):
-        totals = {'wood': 0, 'stone': 0, 'fiber': 0}
+        totals = {"wood": 0, "stone": 0, "fiber": 0}
         for a in agents:
             if a.alive:
                 for r in totals:

@@ -4,7 +4,6 @@ import random
 
 import pygame
 
-import artificial_society.runtime_patches  # noqa: F401
 import artificial_society.systems._builtins  # noqa: F401  (registers built-in systems)
 from artificial_society.agents.agent import CORPSE_ENERGY, MAX_ENERGY, Agent
 from artificial_society.agents.brain import INPUT_SIZE, Brain

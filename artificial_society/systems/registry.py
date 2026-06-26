@@ -78,13 +78,11 @@ def specs() -> list[SystemSpec]:
 
 
 # Packages auto-imported so a brand-new module's @register fires without anyone
-# editing simulation.py. emergence_runtime patches classes at import time and is
-# already imported elsewhere, so it is skipped here; the registry module itself
-# obviously is too.
+# editing simulation.py. The registry module itself is skipped (it has nothing to
+# register and importing it from within discovery would be circular).
 _DISCOVER_PACKAGES = ("artificial_society.systems",)
 _DISCOVER_SKIP = {
     "artificial_society.systems.registry",
-    "artificial_society.systems.emergence_runtime",
 }
 
 

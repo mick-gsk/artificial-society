@@ -10,7 +10,6 @@ economy, technology, evolution, culture, language, trade) produce emergent behav
   - `simulation.py` — the `Simulation` god-object: owns world, agents, all systems, the tick loop
   - `world.py`, `renderer.py`, `main.py` — world model, pygame rendering, entry point
   - `rng.py` — central RNG (`seed_all`); **all randomness must route through here** (see Determinism)
-  - `bootstrap.py`, `runtime_patches.py` — monkeypatch the `Simulation` class at import time
   - `agents/` — per-agent systems: brain, genetics, memory, endocrine, theory_of_mind, culture, …
   - `environment/` — biomes, weather, seasons, daynight, resources, territory, growth, …
   - `systems/` — society-level systems: tribes, economy, technology, evolution, language, trade, …
@@ -61,9 +60,10 @@ yourself first.
   global state seeded elsewhere, or the digest tests will fail.
 - **Headless construction must open no display.** Keep pygame window/audio creation behind
   the `headless` flag.
-- **Import-time patching.** `sitecustomize.py` and `runtime_patches.py` patch `Simulation`
-  before/at import. If construction behaves differently than the class source suggests,
-  check `bootstrap.patch_simulation_class` and `runtime_patches`.
+- **No import-time monkeypatching.** As of Phase 1b the old `runtime_patches.py` /
+  `emergence_runtime.py` layer is gone — `Agent.update`, `EconomySystem.maybe_trade`, and
+  `social_learning.social_learning_step` are now plain source methods. The class source is the
+  source of truth; nothing rewrites it at import.
 
 ## Environment
 
