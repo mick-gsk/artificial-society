@@ -97,7 +97,9 @@ MAX_RECURSIVE_INPUTS = 4
 # ---------------------------------------------------------------------------
 
 
-def agent_try_invention(agent, cell: dict, env: dict) -> float:
+def agent_try_invention(agent, world, x, y) -> float:
+    cell = world.get_cell(x, y)
+    env = cell
     slot = cell.get("materials", {})
     inv = getattr(agent, "material_inventory", {})
 
@@ -132,7 +134,7 @@ def agent_try_invention(agent, cell: dict, env: dict) -> float:
     action = _choose_action_by_need(agent, causal_mem, mat_a, mat_b, cell)
 
     legacy_outcomes = apply_interaction(action, mat_a, mat_b, env)
-    legacy_reward = _evaluate_legacy_outcomes(agent, cell, slot, legacy_outcomes, env)
+    legacy_reward = _evaluate_legacy_outcomes(agent, world, x, y, slot, legacy_outcomes, env)
 
     vec_a = get_vector(mat_a)
     vec_b = get_vector(mat_b) if mat_b else None
@@ -176,7 +178,8 @@ def agent_try_invention(agent, cell: dict, env: dict) -> float:
     return total_reward
 
 
-def agent_try_cook(agent, cell: dict) -> float:
+def agent_try_cook(agent, world, x, y) -> float:
+    cell = world.get_cell(x, y)
     slot = cell.get("materials", {})
     heat_sources = [m for m in slot if slot[m] > 0.1 and m in ("fire", "ember")]
     if not heat_sources:
@@ -202,7 +205,7 @@ def agent_try_cook(agent, cell: dict) -> float:
 
     outcomes = apply_interaction("place_on_heat", food_mat, heat_mat, env)
     causal_mem = getattr(agent, "causal_memory", None)
-    legacy_r = _evaluate_legacy_outcomes(agent, cell, slot, outcomes, env)
+    legacy_r = _evaluate_legacy_outcomes(agent, world, x, y, slot, outcomes, env)
     result_mats = [o for o in outcomes if not o.startswith("_")]
     if result_mats:
         source[food_mat] = max(0.0, source.get(food_mat, 0) - 0.5)
@@ -434,7 +437,7 @@ def _maybe_upgrade_tool(agent, mat_id: str, vec: np.ndarray):
 
 
 def _evaluate_legacy_outcomes(
-    agent, cell: dict, slot: dict, outcomes: list[str], env: dict
+    agent, world, x, y, slot: dict, outcomes: list[str], env: dict
 ) -> float:
     reward = 0.0
     for result in outcomes:
@@ -449,11 +452,11 @@ def _evaluate_legacy_outcomes(
             reward += val * 0.4
         elif result == "ember":
             slot["ember"] = slot.get("ember", 0.0) + 0.6
-            cell["materials"] = slot
+            world.set_cell(x, y, "materials", slot)
             reward += 0.10  # war 0.12
         elif result == "fire":
             slot["fire"] = slot.get("fire", 0.0) + 1.0
-            cell["materials"] = slot
+            world.set_cell(x, y, "materials", slot)
             # war 0.55 — gedämpft auf LEGACY_MAX_REWARD-Niveau, damit Feuer-Schlagen
             # nicht das dominante Skript-Outcome bleibt und Emergenz erstickt.
             reward += 0.40
@@ -480,5 +483,5 @@ def _evaluate_legacy_outcomes(
     light = material_light(slot)
     danger = material_danger(slot)
     reward += heat * WARMTH_REWARD + light * LIGHT_REWARD + danger * DANGER_PENALTY
-    cell["warmth"] = heat
+    world.set_cell(x, y, "warmth", heat)
     return reward

@@ -254,7 +254,7 @@ class Simulation:
                 survivors.append(agent)
                 continue
             self._broadcast_death_knowledge(agent)
-            add_carcass(self.world.get_cell(*agent.pos), CORPSE_ENERGY)
+            add_carcass(self.world, *agent.pos, CORPSE_ENERGY)
         self.agents = survivors
 
     def _is_immune(self, agent, disease_id):

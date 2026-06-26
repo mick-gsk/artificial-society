@@ -8,6 +8,9 @@ zero default (matching the `cell.get(key, 0.0) + delta` idiom).
 
 from __future__ import annotations
 
+import pathlib
+import re
+
 from artificial_society.world import World
 
 
@@ -42,3 +45,26 @@ def test_adjust_cell_multiple_keys_at_once():
     cell = w.get_cell(4, 2)
     assert cell["conducted_heat"] == 0.3
     assert cell["conducted_light"] == 0.6
+
+
+# Single-key direct write to a `cell` / `ncell` local, e.g. `cell["food"] = ...`
+# or `ncell['materials'] += ...`. Nested sub-dict writes (`cell["structures"]["camp"]`)
+# and variable-key writes (`cell[key] = ...`) are out of scope — the façade mediates
+# named single-field cell state.
+_DIRECT_CELL_WRITE = re.compile(r"""\b(?:cell|ncell)\[['"][a-z_]+['"]\]\s*(?:[-+*/]=|=(?!=))""")
+
+
+def test_facade_completeness_no_direct_cell_writes_outside_world():
+    """SSOT regression guard: every module except world.py routes cell mutation through
+    the World façade. A new direct `cell["x"] = ...` anywhere else re-fragments the state
+    ownership Phase 3 consolidated — this test fails until it goes through set_cell/adjust_cell."""
+    pkg = pathlib.Path(__file__).resolve().parent.parent / "artificial_society"
+    offenders = []
+    for path in sorted(pkg.rglob("*.py")):
+        if path.name == "world.py":  # World is the authoritative owner
+            continue
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            code = line.split("#", 1)[0]
+            if _DIRECT_CELL_WRITE.search(code):
+                offenders.append(f"{path.relative_to(pkg.parent)}:{lineno}: {line.strip()}")
+    assert not offenders, "Direct cell writes bypass the World façade:\n" + "\n".join(offenders)

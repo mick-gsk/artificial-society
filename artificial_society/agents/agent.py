@@ -520,7 +520,7 @@ class Agent:
             diet = self.genes.get("diet_preference", 0.0)
             if diet < 0:
                 take = min(food_available, PLANT_ENERGY * eff)
-                cell["food"] = max(0.0, food_available - take)
+                world.set_cell(x, y, "food", max(0.0, food_available - take))
                 self.energy = min(MAX_ENERGY, self.energy + take)
                 self.plant_eaten += 1
                 gain += take
@@ -530,7 +530,7 @@ class Agent:
                 carcass = cell.get("carcass", 0.0)
                 if carcass > 0:
                     take = min(carcass, MEAT_ENERGY * eff)
-                    cell["carcass"] = max(0.0, carcass - take)
+                    world.set_cell(x, y, "carcass", max(0.0, carcass - take))
                     self.energy = min(MAX_ENERGY, self.energy + take)
                     self.meat_eaten += 1
                     gain += take
@@ -538,7 +538,7 @@ class Agent:
                     self.endocrine.apply_successful_forage(take)
                 else:
                     take = min(food_available, PLANT_ENERGY * eff)
-                    cell["food"] = max(0.0, food_available - take)
+                    world.set_cell(x, y, "food", max(0.0, food_available - take))
                     self.energy = min(MAX_ENERGY, self.energy + take)
                     self.plant_eaten += 1
                     gain += take
@@ -547,7 +547,7 @@ class Agent:
         water_available = cell.get("water", 0.0)
         if water_available > 0 and self.hydration < 100.0:
             take = min(water_available, 8.0 * eff)
-            cell["water"] = max(0.0, water_available - take)
+            world.set_cell(x, y, "water", max(0.0, water_available - take))
             self.hydration = min(100.0, self.hydration + take)
             gain += take * 0.3
             self.endocrine.apply_substance("water", take / 8.0)
@@ -560,7 +560,7 @@ class Agent:
         if not herbs:
             return
         herb = random.choice(herbs)
-        if collect_herb(cell, herb):
+        if collect_herb(world, x, y, herb):
             self.herbs_carried[herb] = self.herbs_carried.get(herb, 0) + 1
             self.endocrine.apply_substance(f"herb_{herb}", 1.0)
 
@@ -1169,7 +1169,7 @@ class Agent:
 
         if self._need_inv_cooldown <= 0:
             compute_need_vector(self, current_cell)
-            inv_result = agent_invent_from_need(self, current_cell, current_cell, tick)
+            inv_result = agent_invent_from_need(self, world, *self.pos, tick)
             if inv_result:
                 reward += 0.5
                 self.endocrine.apply_discovery(1.0)
@@ -1179,13 +1179,13 @@ class Agent:
 
         inv_prob = INVENTION_BASE_PROB + INVENTION_CURIOSITY_MULT * self.genes.get("curiosity", 0.5)
         if tick % 3 == 0 and random.random() < inv_prob:
-            invented = agent_try_invention(self, current_cell, current_cell)
+            invented = agent_try_invention(self, world, *self.pos)
             if invented:
                 reward += 1.0
                 self.endocrine.apply_discovery(1.0)
 
         if tick % 4 == 0 and random.random() < 0.18:
-            cooked = agent_try_cook(self, current_cell)
+            cooked = agent_try_cook(self, world, *self.pos)
             if cooked:
                 reward += 0.3
                 self.endocrine.apply_substance("cooked_meat", 1.0)
