@@ -317,8 +317,9 @@ def _select_action_by_need(
 
 def agent_invent_from_need(
     agent,
-    cell: dict,
-    env: dict,
+    world,
+    x,
+    y,
     tick: int = 0,
 ) -> float:
     """
@@ -336,6 +337,8 @@ def agent_invent_from_need(
     Returns:
         float: Reward fuer diesen Erfindungsversuch
     """
+    cell = world.get_cell(x, y)
+    env = cell
     # Step 1: Need berechnen
     need = compute_need_vector(agent, cell)
     need_magnitude = float(np.linalg.norm(np.maximum(need, 0.0)))
@@ -363,7 +366,7 @@ def agent_invent_from_need(
     # Step 5a: Legacy-Pfad (fuer bekannte Interaktionen wie Feuer schlagen)
     legacy_outcomes = apply_interaction(action, mat_a, mat_b, env)
     legacy_reward = _evaluate_legacy_outcomes(
-        agent, cell, cell.get("materials", {}), legacy_outcomes, env
+        agent, world, x, y, cell.get("materials", {}), legacy_outcomes, env
     )
 
     # Step 5b: Emergent-Pfad (Vektorkombination -> neues Material)

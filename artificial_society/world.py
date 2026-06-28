@@ -164,7 +164,7 @@ class World:
                 }
         for y in range(self.height):
             for x in range(self.width):
-                diffuse_step(self.cells[y][x], avgs[y][x])
+                diffuse_step(self, x, y, avgs[y][x])
 
     def regional_means(self):
         total_food = total_water = total_pollution = total_fertility = total_capacity = (
@@ -211,7 +211,9 @@ class World:
             for x in range(self.width):
                 biome = self.biomes[y][x]
                 cell = self.cells[y][x]
-                regrow_cell(cell, biome, season_state, weather_state, tick, self.event_field(x, y))
+                regrow_cell(
+                    self, x, y, biome, season_state, weather_state, tick, self.event_field(x, y)
+                )
                 if biome != "water":
                     regrow_herbs(cell, biome)
         self.diffuse_fields()

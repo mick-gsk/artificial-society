@@ -22,6 +22,32 @@ from artificial_society.environment.resources import (
 from artificial_society.simulation import Simulation
 
 
+class _OneCellWorld:
+    """Minimal World stand-in holding a single cell, exposing the same
+    get_cell / set_cell mutation façade regrow_cell now routes through.
+
+    Phase 3 made World the authoritative cell-state owner, so regrow_cell takes
+    (world, x, y, ...) instead of a bare cell. These unit tests exercise the
+    regrowth math on one controlled cell, so a one-cell store is sufficient and
+    keeps them deterministic (no biome-grid randomness)."""
+
+    def __init__(self, cell):
+        self.cells = [[cell]]
+        self.width = 1
+        self.height = 1
+
+    def get_cell(self, x, y):
+        return self.cells[0][0]
+
+    def set_cell(self, x, y, key, value):
+        self.get_cell(x, y)[key] = value
+
+    def adjust_cell(self, x, y, **deltas):
+        cell = self.get_cell(x, y)
+        for key, delta in deltas.items():
+            cell[key] = cell.get(key, 0.0) + delta
+
+
 def _mean_food_ratio(world) -> float:
     """Mean of per-cell food / carrying_capacity over all land cells."""
     ratios = []
@@ -59,12 +85,15 @@ def test_untouched_cell_equilibrium_below_capacity():
     plateau below the carrying capacity for every productive biome.
     """
     for biome in ("forest", "grassland", "swamp"):
-        cell = initial_cell_state(biome)
+        world = _OneCellWorld(initial_cell_state(biome))
+        cell = world.get_cell(0, 0)
         cap = cell["carrying_capacity"]
         # Let it regrow undisturbed for a long time (no consumption).
         for tick in range(1000):
             regrow_cell(
-                cell,
+                world,
+                0,
+                0,
                 biome,
                 {"food_factor": 1.0},
                 {"rain_map": 0.4},
@@ -79,18 +108,19 @@ def test_depleted_cell_recovers_slowly():
     """Recovery must be slow relative to consumption: a cell depleted to
     zero stays nearly empty for many ticks (over-use depletes, recovery
     is slow)."""
-    cell = initial_cell_state("forest")
+    world = _OneCellWorld(initial_cell_state("forest"))
+    cell = world.get_cell(0, 0)
     cap = cell["carrying_capacity"]
     # Bring it to its natural equilibrium first.
     for tick in range(800):
-        regrow_cell(cell, "forest", {"food_factor": 1.0}, {"rain_map": 0.4}, tick, {})
+        regrow_cell(world, 0, 0, "forest", {"food_factor": 1.0}, {"rain_map": 0.4}, tick, {})
     # Forage everything.
-    cell["plant_food"] = 0.0
-    cell["meat_food"] = 0.0
-    cell["food"] = 0.0
+    world.set_cell(0, 0, "plant_food", 0.0)
+    world.set_cell(0, 0, "meat_food", 0.0)
+    world.set_cell(0, 0, "food", 0.0)
     # Regrow for a modest window.
     for tick in range(30):
-        regrow_cell(cell, "forest", {"food_factor": 1.0}, {"rain_map": 0.4}, 900 + tick, {})
+        regrow_cell(world, 0, 0, "forest", {"food_factor": 1.0}, {"rain_map": 0.4}, 900 + tick, {})
     ratio = cell["food"] / cap
     # 30 ticks of regrowth must not refill a depleted cell to abundance.
     assert ratio < 0.15, f"depleted cell refilled too fast: ratio={ratio:.3f}"

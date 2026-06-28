@@ -99,7 +99,28 @@ _RESOURCE_ALIASES = {
 }
 
 
-def _ensure_new_fields(agent):
+def ensure_fields(agent) -> None:
+    """Single source of truth for agent field initialisation (Phase 3 / 3c).
+
+    Collapses the historical ``_ensure_new_fields`` / ``_ensure_runtime_fields``
+    (agent.py) and ``_migrate_agent`` (simulation.py) paths into one idempotent
+    helper. Every assignment is ``hasattr``-guarded, so calling it on a
+    fully-constructed agent is a no-op that draws no RNG (preserving the golden
+    trajectory), while an agent deserialised from an old checkpoint — missing newer
+    fields — is fully reinstated.
+    """
+    # --- brain + per-agent core objects ---
+    if not hasattr(agent, "brain") or agent.brain is None:
+        agent.brain = Brain()
+        agent.hidden_state = agent.brain.initial_hidden()
+    elif agent.brain.input_size != INPUT_SIZE:
+        print(
+            f"[compat] Agent {agent.id}: brain input_size={agent.brain.input_size} != {INPUT_SIZE}, rebuilding."
+        )
+        agent.brain = Brain()
+        agent.hidden_state = agent.brain.initial_hidden()
+    if not hasattr(agent, "hidden_state") or agent.hidden_state is None:
+        agent.hidden_state = agent.brain.initial_hidden()
     if not hasattr(agent, "_brain_device"):
         agent._brain_device = next(agent.brain.parameters()).device
     if not hasattr(agent, "causal_memory") or agent.causal_memory is None:
@@ -110,15 +131,6 @@ def _ensure_new_fields(agent):
         agent.endocrine = EndocrineSystem()
     if not hasattr(agent, "is_sleeping"):
         agent.is_sleeping = False
-    if not hasattr(agent, "brain") or agent.brain is None:
-        agent.brain = Brain()
-        agent.hidden_state = agent.brain.initial_hidden()
-    elif agent.brain.input_size != INPUT_SIZE:
-        print(
-            f"[compat] Agent {agent.id}: brain input_size={agent.brain.input_size} != {INPUT_SIZE}, rebuilding."
-        )
-        agent.brain = Brain()
-        agent.hidden_state = agent.brain.initial_hidden()
     if not hasattr(agent, "tool"):
         agent.tool = None
     if agent.tool is None and getattr(agent, "material_inventory", {}).get("sharp_stone", 0) > 0.1:
@@ -133,12 +145,14 @@ def _ensure_new_fields(agent):
         agent.knowledge = KnowledgeGraph()
     if not hasattr(agent, "emotional_memory") or agent.emotional_memory is None:
         agent.emotional_memory = EmotionalMemory()
+    if not hasattr(agent, "remedy_knowledge"):
+        agent.remedy_knowledge = {}
+    if not hasattr(agent, "herbs_carried"):
+        agent.herbs_carried = {}
     # Emergenz v3: recent_action_sequence fuer Makro-Aktion-Erkennung
     if not hasattr(agent, "_recent_action_seq"):
         agent._recent_action_seq = []
-
-
-def _ensure_runtime_fields(agent) -> None:
+    # --- planning / runtime caches ---
     if not hasattr(agent, "goal_stack") or agent.goal_stack is None:
         agent.goal_stack = GoalStack()
     if not hasattr(agent, "token_memory") or agent.token_memory is None:
@@ -308,7 +322,7 @@ class Agent:
         agent.knowledge = KnowledgeGraph()
         agent.emotional_memory = EmotionalMemory()
         agent._recent_action_seq = []
-        _ensure_runtime_fields(agent)
+        ensure_fields(agent)
         return agent
 
     @classmethod
@@ -341,7 +355,7 @@ class Agent:
             random.shuffle(known_places)
             for pos, info in known_places[:50]:
                 agent.world_memory[pos] = dict(info)
-        _ensure_runtime_fields(agent)
+        ensure_fields(agent)
         return agent
 
     @property
@@ -401,7 +415,7 @@ class Agent:
         )
 
     def local_features(self, world, agents):
-        _ensure_new_fields(self)
+        ensure_fields(self)
         x, y = self.pos
         cell = world.get_cell(x, y)
         near = [
@@ -506,7 +520,7 @@ class Agent:
             diet = self.genes.get("diet_preference", 0.0)
             if diet < 0:
                 take = min(food_available, PLANT_ENERGY * eff)
-                cell["food"] = max(0.0, food_available - take)
+                world.set_cell(x, y, "food", max(0.0, food_available - take))
                 self.energy = min(MAX_ENERGY, self.energy + take)
                 self.plant_eaten += 1
                 gain += take
@@ -516,7 +530,7 @@ class Agent:
                 carcass = cell.get("carcass", 0.0)
                 if carcass > 0:
                     take = min(carcass, MEAT_ENERGY * eff)
-                    cell["carcass"] = max(0.0, carcass - take)
+                    world.set_cell(x, y, "carcass", max(0.0, carcass - take))
                     self.energy = min(MAX_ENERGY, self.energy + take)
                     self.meat_eaten += 1
                     gain += take
@@ -524,7 +538,7 @@ class Agent:
                     self.endocrine.apply_successful_forage(take)
                 else:
                     take = min(food_available, PLANT_ENERGY * eff)
-                    cell["food"] = max(0.0, food_available - take)
+                    world.set_cell(x, y, "food", max(0.0, food_available - take))
                     self.energy = min(MAX_ENERGY, self.energy + take)
                     self.plant_eaten += 1
                     gain += take
@@ -533,7 +547,7 @@ class Agent:
         water_available = cell.get("water", 0.0)
         if water_available > 0 and self.hydration < 100.0:
             take = min(water_available, 8.0 * eff)
-            cell["water"] = max(0.0, water_available - take)
+            world.set_cell(x, y, "water", max(0.0, water_available - take))
             self.hydration = min(100.0, self.hydration + take)
             gain += take * 0.3
             self.endocrine.apply_substance("water", take / 8.0)
@@ -546,7 +560,7 @@ class Agent:
         if not herbs:
             return
         herb = random.choice(herbs)
-        if collect_herb(cell, herb):
+        if collect_herb(world, x, y, herb):
             self.herbs_carried[herb] = self.herbs_carried.get(herb, 0) + 1
             self.endocrine.apply_substance(f"herb_{herb}", 1.0)
 
@@ -1001,7 +1015,7 @@ class Agent:
         if not self.alive:
             return None
 
-        _ensure_runtime_fields(self)
+        ensure_fields(self)
 
         self.endocrine.update(self, world)
         mods = self.endocrine.modifiers()
@@ -1155,7 +1169,7 @@ class Agent:
 
         if self._need_inv_cooldown <= 0:
             compute_need_vector(self, current_cell)
-            inv_result = agent_invent_from_need(self, current_cell, current_cell, tick)
+            inv_result = agent_invent_from_need(self, world, *self.pos, tick)
             if inv_result:
                 reward += 0.5
                 self.endocrine.apply_discovery(1.0)
@@ -1165,13 +1179,13 @@ class Agent:
 
         inv_prob = INVENTION_BASE_PROB + INVENTION_CURIOSITY_MULT * self.genes.get("curiosity", 0.5)
         if tick % 3 == 0 and random.random() < inv_prob:
-            invented = agent_try_invention(self, current_cell, current_cell)
+            invented = agent_try_invention(self, world, *self.pos)
             if invented:
                 reward += 1.0
                 self.endocrine.apply_discovery(1.0)
 
         if tick % 4 == 0 and random.random() < 0.18:
-            cooked = agent_try_cook(self, current_cell)
+            cooked = agent_try_cook(self, world, *self.pos)
             if cooked:
                 reward += 0.3
                 self.endocrine.apply_substance("cooked_meat", 1.0)
