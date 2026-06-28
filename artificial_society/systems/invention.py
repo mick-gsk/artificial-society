@@ -51,11 +51,9 @@ from artificial_society.environment.materials import (
 
 PRIMITIVE_ACTIONS = ["rub", "strike", "place_on_heat", "bundle", "blow", "carry", "eat", "bind"]
 
-# Bedürfnis-basierte Action-Cluster
-ACTIONS_FOR_HUNGER = ["eat", "place_on_heat", "bundle"]
-ACTIONS_FOR_COLD = ["rub", "strike", "blow", "carry"]
-ACTIONS_FOR_SICK = ["bundle", "bind", "eat"]
-ACTIONS_FOR_CURIOUS = PRIMITIVE_ACTIONS  # Kein Druck → maximale Exploration
+# Phase 5 de-scripting: keine hartkodierten ACTIONS_FOR_*-Cluster mehr. Die
+# need->action-Zuordnung wird pro Agent aus dem Reward-Verlauf gelernt
+# (siehe _dominant_need / _record_need_action / _choose_action_by_need).
 
 # ---------------------------------------------------------------------------
 # REWARD REBALANCE (Emergenz > Skript)
@@ -175,6 +173,10 @@ def agent_try_invention(agent, world, x, y) -> float:
     total_reward = legacy_reward + emergent_reward * 1.0
     if causal_mem is not None:
         causal_mem.record(action, mat_a, mat_b, legacy_outcomes, total_reward)
+    # Lerne die need->action-Zuordnung aus dem erzielten Reward (Phase 5).
+    _record_need_action(
+        agent, getattr(agent, "_last_invention_need", "curious"), action, total_reward
+    )
     return total_reward
 
 
@@ -365,11 +367,11 @@ def seed_world_materials(world):
 # ---------------------------------------------------------------------------
 
 
-def _choose_action_by_need(agent, causal_mem, mat_a: str, mat_b, cell: dict) -> str:
-    """
-    SCHICHT 2: Bedürfnisgetriebene Aktionswahl.
-    Agenten erfinden aus Not, nicht aus Zufall. Je nach aktuellem Zustand
-    werden bestimmte Aktions-Cluster bevorzugt — aber Exploration bleibt möglich.
+def _dominant_need(agent, cell: dict) -> str:
+    """Klassifiziert den aktuell dominanten Bedarf des Agenten.
+
+    Liest nur den Zustand (Energie/Temperatur/Krankheit/Gesundheit) — die ZUORDNUNG
+    Bedarf->Aktion ist nicht mehr hier hartkodiert, sondern wird gelernt.
     """
     from artificial_society.agents.agent import MAX_ENERGY
 
@@ -379,34 +381,74 @@ def _choose_action_by_need(agent, causal_mem, mat_a: str, mat_b, cell: dict) -> 
     temperature = cell.get("temperature", 20)
     is_sick = getattr(agent, "disease_id", None) is not None
 
-    # Bestimme dominantes Bedürfnis
     if energy_ratio < 0.25:
-        preferred = ACTIONS_FOR_HUNGER  # Hunger ist stärkstes Motiv
-    elif temperature < 5 or (
+        return "hunger"
+    if temperature < 5 or (
         hasattr(agent, "endocrine") and getattr(agent.endocrine, "cortisol", 0) > 0.7
     ):
-        preferred = ACTIONS_FOR_COLD  # Kälte/Stress → Feuer/Wärme
-    elif is_sick or health_ratio < 0.4:
-        preferred = ACTIONS_FOR_SICK  # Krank → Heilmittel
-    else:
-        preferred = ACTIONS_FOR_CURIOUS  # Keine Not → maximale Exploration
+        return "cold"
+    if is_sick or health_ratio < 0.4:
+        return "sick"
+    return "curious"
 
-    # CausalMemory-Bias: Erfolgreiche bekannte Sequenzen bevorzugen (55%)
+
+def _need_action_stats(agent) -> dict:
+    """Pro-Agent Lern-Tabelle: ``need_key -> action -> {"n", "reward"}``.
+
+    Lazily auf dem Agenten angelegt (gleiche Konvention wie trade_memory/token_memory),
+    daher kein Eingriff in die Hot-Datei agent.py.
+    """
+    stats = getattr(agent, "_need_action_stats", None)
+    if stats is None:
+        stats = {}
+        agent._need_action_stats = stats
+    return stats
+
+
+def _learned_actions_for(agent, need_key: str) -> list:
+    """Aktionen, nach durchschnittlichem Reward unter diesem Bedarf absteigend sortiert."""
+    table = _need_action_stats(agent).get(need_key, {})
+    return sorted(
+        (a for a, s in table.items() if s["n"] > 0),
+        key=lambda a: table[a]["reward"] / table[a]["n"],
+        reverse=True,
+    )
+
+
+def _record_need_action(agent, need_key: str, action: str, reward: float) -> None:
+    """Verstärkt die gelernte need->action-Zuordnung mit dem erzielten Reward."""
+    table = _need_action_stats(agent).setdefault(need_key, {})
+    slot = table.setdefault(action, {"n": 0, "reward": 0.0})
+    slot["n"] += 1
+    slot["reward"] += reward
+
+
+def _choose_action_by_need(agent, causal_mem, mat_a: str, mat_b, cell: dict) -> str:
+    """
+    SCHICHT 2: Bedürfnisgetriebene Aktionswahl — gelernt statt hartkodiert (Phase 5).
+
+    Statt fester ACTIONS_FOR_*-Cluster lernt der Agent pro Bedarf
+    (Hunger/Kälte/Krankheit/Neugier), welche Aktionen sich auszahlen — aus dem eigenen
+    Reward-Verlauf (_record_need_action). Exploration bleibt erhalten, damit neue
+    Zuordnungen überhaupt entdeckt werden.
+    """
+    need_key = _dominant_need(agent, cell)
+    agent._last_invention_need = need_key
+    learned = _learned_actions_for(agent, need_key)
+
+    # Material-spezifischer Bias aus CausalMemory (gelernte erfolgreiche Sequenzen, 55%).
     if causal_mem is not None:
         good = causal_mem.best_known(min_successes=1)
         if good and random.random() < 0.55:
             for (act, ma, mb), _ in good:
-                if (ma == mat_a or mb == (mat_b or "")) and act in preferred:
-                    return act
-            # Fallback: irgendeine bekannte gute Action
-            for (act, ma, mb), _ in good:
                 if ma == mat_a or mb == (mat_b or ""):
                     return act
 
-    # Bedürfnis-basierte Zufallswahl (mit 20% Chance auf völlig freie Exploration)
-    if random.random() < 0.20:
+    # Exploration-Floor: ohne gelerntes Bedarf-Wissen (oder mit 20% Wahrscheinlichkeit)
+    # frei über alle Primitive explorieren, damit das Mapping gelernt werden kann.
+    if not learned or random.random() < 0.20:
         return random.choice(PRIMITIVE_ACTIONS)
-    return random.choice(preferred)
+    return random.choice(learned[:3])
 
 
 # Legacy-Wrapper für alten Code der _choose_action nutzt
