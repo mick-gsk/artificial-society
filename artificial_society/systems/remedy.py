@@ -23,6 +23,10 @@ Agents must discover cures through experimentation and social sharing.
 
 import random
 
+import numpy as np
+
+from artificial_society.environment.materials import IDX, get_vector
+
 # ---------------------------------------------------------------------------
 # Master Registry
 # ---------------------------------------------------------------------------
@@ -327,19 +331,56 @@ def apply_disease_symptoms(agent, cell: dict):
 # Cure evaluation  (called from agent._try_use_herbs)
 # ---------------------------------------------------------------------------
 
+def _item_potency(tag: str) -> float:
+    """Medizinische Potenz eines konsumierten Items -- aus seinen EIGENSCHAFTEN abgeleitet.
+
+    Phase 5 de-scripting: kein disease->ingredient-Lookup. Heilwirkung emergiert aus dem,
+    WAS das Item ist -- aromatische (scent), essbare, ungiftige Stoffe lindern anhand ihres
+    Materialvektors; Kraeuter (ohne Vektor) sind generisch medizinisch; Wasser/Nahrung
+    unterstuetzen. So koennen Remedies aus Eigenschaften entdeckt werden statt fest
+    verdrahtet zu sein.
+    """
+    vec = get_vector(tag)
+    if float(np.linalg.norm(vec)) > 1e-3:
+        scent = float(vec[IDX['scent']])
+        edible = float(vec[IDX['edibility']])
+        tox = float(vec[IDX['toxicity']])
+        return max(0.0, scent * 1.0 + edible * 0.4 - tox * 1.5)
+    if tag.startswith('herb_'):
+        return 0.6
+    if tag in ('water', 'plant_food'):
+        return 0.3
+    return 0.0
+
+
+def _medicinal_dose(tags: list) -> float:
+    """Kumulierte medizinische Dosis. Wiederholung desselben Stoffs bringt weniger
+    (Vielfalt der Heilmittel wird belohnt -- emergente 'Rezeptur')."""
+    seen: dict = {}
+    total = 0.0
+    for tag in tags:
+        n = seen.get(tag, 0)
+        seen[tag] = n + 1
+        total += _item_potency(tag) * (0.7 ** n)
+    return total
+
+
 def evaluate_remedy(agent, consumed_tags: list[str]) -> float:
     """
-    Two-tier healing:
-    Tier 1 — Full cure:    all ingredients in rolling window  → major heal.
-    Tier 2 — Partial cure: single known ingredient matched    → minor relief.
+    Eigenschaftsbasierte Heilung (Phase 5 de-scripting).
+
+    Frueher musste exakt die hartkodierte Zutatenliste der Krankheit konsumiert werden.
+    Jetzt emergiert die Wirkung aus den EIGENSCHAFTEN des Konsumierten (_item_potency):
+      Tier 1 -- Vollheilung: genug kumulierte medizinische Dosis im Fenster.
+      Tier 2 -- Linderung:   proportional zur frisch konsumierten Dosis.
+    Schwierigkeit und Heilmengen kommen weiter aus der Krankheits-Definition (window,
+    cure_health, cure_sick) -- das ist kein Zutaten-Lookup.
     """
     disease_id = getattr(agent, 'disease_id', None)
     if disease_id is None:
         return 0.0
 
     rec = REMEDY_REGISTRY[disease_id]
-    required = set(rec['ingredients'])
-    partial_map: dict = rec.get('partial_ingredients', {})
 
     if not hasattr(agent, '_remedy_window'):
         agent._remedy_window = []
@@ -347,8 +388,9 @@ def evaluate_remedy(agent, consumed_tags: list[str]) -> float:
     max_per_tick = 5
     agent._remedy_window = agent._remedy_window[-(rec['window'] * max_per_tick):]
 
-    # --- Tier 1: Full cure ---
-    if required.issubset(set(agent._remedy_window)):
+    # --- Tier 1: Vollheilung bei ausreichender kumulierter Dosis ---
+    threshold = 1.5 + 0.3 * rec['window']
+    if _medicinal_dose(agent._remedy_window) >= threshold:
         agent.health = min(100.0, agent.health + rec['cure_health'])
         agent.sick = max(0.0, agent.sick - rec['cure_sick'])
         if agent.sick <= 0:
@@ -356,19 +398,17 @@ def evaluate_remedy(agent, consumed_tags: list[str]) -> float:
         agent._remedy_window = []
         return rec['cure_health'] / 25.0
 
-    # --- Tier 2: Partial cure ---
-    partial_bonus = 0.0
-    for tag in consumed_tags:
-        if tag in partial_map:
-            sick_red = partial_map[tag] * 0.22
-            health_gain = sick_red * 0.3
-            agent.sick = max(0.0, agent.sick - sick_red)
-            agent.health = min(100.0, agent.health + health_gain)
-            partial_bonus += health_gain / 25.0
-            if agent.sick <= 0:
-                agent.disease_id = None
-                break
-    return partial_bonus
+    # --- Tier 2: Partielle Linderung proportional zur frischen Dosis ---
+    fresh_dose = _medicinal_dose(consumed_tags)
+    if fresh_dose <= 0.0:
+        return 0.0
+    sick_red = min(agent.sick, fresh_dose * 7.0)
+    health_gain = sick_red * 0.3
+    agent.sick = max(0.0, agent.sick - sick_red)
+    agent.health = min(100.0, agent.health + health_gain)
+    if agent.sick <= 0:
+        agent.disease_id = None
+    return health_gain / 25.0
 
 
 # ---------------------------------------------------------------------------
