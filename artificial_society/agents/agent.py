@@ -16,6 +16,7 @@ from artificial_society.agents.life_stage import get_stage_stats
 from artificial_society.agents.memory import EpisodicMemory
 from artificial_society.agents.theory_of_mind import TheoryOfMind
 from artificial_society.environment.herbs import available_herbs, collect_herb
+from artificial_society.environment.materials import get_vector, material_reward
 from artificial_society.environment.resources import maybe_build_structure
 from artificial_society.environment.structures import (
     BUILD_ENERGY_COST,
@@ -175,6 +176,15 @@ def ensure_fields(agent) -> None:
         agent._disease_immunity = {}
 
 
+def _inventory_value_state(agent) -> dict:
+    """Minimaler homeostatischer Zustand für die Inventar-Bewertung via material_reward."""
+    return {
+        "energy": getattr(agent, "energy", MAX_ENERGY) / MAX_ENERGY,
+        "cold": False,
+        "dark": False,
+    }
+
+
 def _compact_material_inventory(agent, max_entries: int = 24) -> None:
     inv = getattr(agent, "material_inventory", None)
     if not inv:
@@ -185,34 +195,22 @@ def _compact_material_inventory(agent, max_entries: int = 24) -> None:
         agent.material_inventory = cleaned
         return
 
-    protected = {k: v for k, v in cleaned.items() if not k.startswith("mat_")}
-    discovered = sorted(
-        ((k, v) for k, v in cleaned.items() if k.startswith("mat_")),
-        key=lambda item: (-item[1], item[0]),
-    )
+    # Phase 5 de-scripting: keine privilegierte "essentials"-Liste und kein Vorrang
+    # scripted Items (wood/fire/...) vor entdeckten mat_*. Jeder Eintrag konkurriert
+    # nach seinem emergenten Wert für DIESEN Agenten (material_reward über den
+    # Eigenschaftsvektor); Menge dient als Tiebreak. Die wertvollsten max_entries bleiben.
+    state = _inventory_value_state(agent)
 
-    remaining = max_entries - len(protected)
-    kept = dict(protected)
-    if remaining > 0:
-        for mat_id, qty in discovered[:remaining]:
-            kept[mat_id] = qty
+    def _value(item):
+        mat, qty = item
+        try:
+            worth = material_reward(get_vector(mat), state)
+        except Exception:
+            worth = 0.0
+        return (worth, qty, mat)
 
-    if len(kept) > max_entries:
-        essentials = [
-            ("sharp_stone", kept.get("sharp_stone", 0.0)),
-            ("fire", kept.get("fire", 0.0)),
-            ("ember", kept.get("ember", 0.0)),
-            ("cooked_meat", kept.get("cooked_meat", 0.0)),
-            ("raw_meat", kept.get("raw_meat", 0.0)),
-            ("raw_root", kept.get("raw_root", 0.0)),
-            ("stone", kept.get("stone", 0.0)),
-            ("wood", kept.get("wood", 0.0)),
-            ("fiber", kept.get("fiber", 0.0)),
-        ]
-        essentials = [(k, v) for k, v in essentials if k in kept and v > 0]
-        kept = dict(essentials[:max_entries])
-
-    agent.material_inventory = kept
+    ranked = sorted(cleaned.items(), key=_value, reverse=True)
+    agent.material_inventory = dict(ranked[:max_entries])
 
 
 def _maybe_mark_language(agent, cell: dict, tick: int, context_vec, reward: float) -> float:
