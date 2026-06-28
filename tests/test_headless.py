@@ -23,7 +23,9 @@ def _initial_state_digest(sim):
 
 
 def test_headless_construction_opens_no_display():
-    sim = Simulation(headless=True, grid_w=20, grid_h=15, initial_population=8)
+    sim = Simulation(
+        headless=True, load_checkpoint=False, grid_w=20, grid_h=15, initial_population=8
+    )
     assert sim.tick == 0
     assert len(sim.agents) == 8
     assert sim.world.width == 20 and sim.world.height == 15
@@ -32,12 +34,20 @@ def test_headless_construction_opens_no_display():
 
 
 def test_same_seed_yields_identical_initial_state():
-    a = Simulation(headless=True, seed=42, grid_w=24, grid_h=16, initial_population=12)
-    b = Simulation(headless=True, seed=42, grid_w=24, grid_h=16, initial_population=12)
+    a = Simulation(
+        headless=True, load_checkpoint=False, seed=42, grid_w=24, grid_h=16, initial_population=12
+    )
+    b = Simulation(
+        headless=True, load_checkpoint=False, seed=42, grid_w=24, grid_h=16, initial_population=12
+    )
     assert _initial_state_digest(a) == _initial_state_digest(b)
 
 
 def test_different_seed_yields_different_initial_state():
-    a = Simulation(headless=True, seed=1, grid_w=24, grid_h=16, initial_population=12)
-    b = Simulation(headless=True, seed=2, grid_w=24, grid_h=16, initial_population=12)
+    a = Simulation(
+        headless=True, load_checkpoint=False, seed=1, grid_w=24, grid_h=16, initial_population=12
+    )
+    b = Simulation(
+        headless=True, load_checkpoint=False, seed=2, grid_w=24, grid_h=16, initial_population=12
+    )
     assert _initial_state_digest(a) != _initial_state_digest(b)
