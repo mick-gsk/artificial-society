@@ -39,8 +39,12 @@ def test_trade_swaps_non_wood_stone_fiber_materials():
     sim.economy.maybe_trade(a, sim.agents)
 
     # A material beyond wood/stone/fiber changed hands in both directions.
-    assert a.material_inventory.get("bone", 0.0) > 0.0, "agent A never received a discovered material"
-    assert b.material_inventory.get("flint", 0.0) > 0.0, "agent B never received a discovered material"
+    assert a.material_inventory.get("bone", 0.0) > 0.0, (
+        "agent A never received a discovered material"
+    )
+    assert b.material_inventory.get("flint", 0.0) > 0.0, (
+        "agent B never received a discovered material"
+    )
     assert sim.economy.trade_count >= 1
 
 
