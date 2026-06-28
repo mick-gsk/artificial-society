@@ -103,19 +103,33 @@ def _switch_is_on(world, x: int, y: int) -> bool:
     return False
 
 
+def _derive_gate_type(input_cells: list, switch_cells: list) -> str:
+    """Abgeleitetes, rein beschreibendes Label (kein Verhaltens-Schalter).
+
+    Phase 5: Der Typ folgt der erkannten Topologie statt eine feste Klassen-
+    zugehoerigkeit zu erzwingen. Mehrere serielle Switches -> AND-artig; mehrere
+    Eingaenge auf einen Ausgang -> OR-artig; ein einzelner gesteuerter Leiter -> WIRE.
+    """
+    if len(switch_cells) >= 2:
+        return 'AND'
+    if len(input_cells) >= 2:
+        return 'OR'
+    return 'WIRE'
+
+
 def detect_gates(world) -> list[Gate]:
     """
-    Analysiert das Grid auf Gate-Topologien.
-    Einfache heuristische Erkennung:
+    Generische Topologie-Erkennung (Phase 5 de-scripting).
 
-    AND:  Switch S1 und S2 beide auf demselben Pfad zum Ausgang
-    OR:   Zwei separate Pfade die zu demselben Ausgang fuehren
-    NOT:  Switch mit inverser Charakteristik (low conductivity bei Waerme)
-    LATCH: AND(in, NOT(reset)) Kombination
+    Frueher emittierte detect_gates nur AND/OR ueber ein Nachbarn-Zaehl-if/elif;
+    NOT/LATCH wurden nie erzeugt und ein simpler Switch mit genau zwei leitfaehigen
+    Anschluessen war unsichtbar. Jetzt ist JEDER Switch-Knoten mit >=2 leitfaehigen
+    Nachbarn ein Gate beliebiger Eingangs-Arity; das Verhalten wird in evaluate_gate
+    aus der physikalischen Switch-Leitung abgeleitet, gate_type ist nur noch ein Label.
     """
-    gates   = []
-    height  = world.height
-    width   = world.width
+    gates = []
+    height = world.height
+    width = world.width
     gate_ctr = getattr(world, '_gate_counter', 0)
 
     for y in range(1, height - 1):
@@ -124,46 +138,37 @@ def detect_gates(world) -> list[Gate]:
             if not _is_switch_cell(world, x, y):
                 continue
 
-            neighbours = [(x+dx, y+dy) for dx,dy in [(1,0),(-1,0),(0,1),(0,-1)]]
+            neighbours = [(x + dx, y + dy) for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]]
+            in_bounds = [
+                (nx, ny) for nx, ny in neighbours
+                if 0 <= nx < width and 0 <= ny < height
+            ]
             conductive_nb = [
-                (nx, ny) for nx, ny in neighbours
-                if 0 <= nx < width and 0 <= ny < height
-                and _cell_conductivity(world.cells[ny][nx]) >= CONDUCTIVITY_THRESHOLD
+                (nx, ny) for nx, ny in in_bounds
+                if _cell_conductivity(world.cells[ny][nx]) >= CONDUCTIVITY_THRESHOLD
             ]
-            switch_nb = [
-                (nx, ny) for nx, ny in neighbours
-                if 0 <= nx < width and 0 <= ny < height
-                and _is_switch_cell(world, nx, ny)
-            ]
-
             if len(conductive_nb) < 2:
-                continue  # Kein Gate moeglich
+                continue  # ohne >=2 leitfaehige Anschluesse kein Gate
 
-            # --- AND: zwei Switches auf einem Pfad ---
-            if len(switch_nb) >= 1 and len(conductive_nb) >= 2:
-                input_cells  = conductive_nb[:1]
-                output_cells = conductive_nb[1:2]
-                gate = Gate(
-                    gate_id      = f'gate_{gate_ctr:04d}',
-                    gate_type    = 'AND',
-                    input_cells  = input_cells,
-                    output_cells = output_cells,
-                    switch_cells = [(x, y)] + switch_nb[:1],
-                )
-                gates.append(gate)
-                gate_ctr += 1
+            switch_nb = [
+                (nx, ny) for nx, ny in in_bounds
+                if _is_switch_cell(world, nx, ny)
+            ]
 
-            # --- OR: zwei Eingaenge, ein Ausgang ---
-            elif len(conductive_nb) >= 3:
-                gate = Gate(
-                    gate_id      = f'gate_{gate_ctr:04d}',
-                    gate_type    = 'OR',
-                    input_cells  = conductive_nb[:2],
-                    output_cells = conductive_nb[2:3],
-                    switch_cells = [(x, y)],
-                )
-                gates.append(gate)
-                gate_ctr += 1
+            # Letzter leitfaehiger Anschluss = Ausgang, der Rest = Eingaenge
+            # (deterministische Reihenfolge -> reproduzierbar). Beliebige Arity.
+            output_cells = conductive_nb[-1:]
+            input_cells = conductive_nb[:-1]
+            switch_cells = [(x, y)] + switch_nb
+
+            gates.append(Gate(
+                gate_id=f'gate_{gate_ctr:04d}',
+                gate_type=_derive_gate_type(input_cells, switch_cells),
+                input_cells=input_cells,
+                output_cells=output_cells,
+                switch_cells=switch_cells,
+            ))
+            gate_ctr += 1
 
     world._gate_counter = gate_ctr
     return gates
@@ -173,39 +178,38 @@ def detect_gates(world) -> list[Gate]:
 # Gate-Zustand berechnen
 # ---------------------------------------------------------------------------
 def evaluate_gate(gate: Gate, world) -> bool:
-    """Berechnet den Ausgabe-Zustand eines Gates."""
+    """
+    Generische, physikalisch abgeleitete Auswertung (Phase 5 de-scripting).
+
+    Der Ausgang ist aktiv, wenn der Switch-Pfad leitet (ALLE Switch-Knoten des Gates
+    leiten gerade) UND mindestens ein Eingang aktiv ist. Das gilt fuer beliebige
+    Eingangs-Arity und subsumiert die frueheren AND/OR/NOT-Faelle physikalisch (NOT
+    entsteht aus invertierenden Switches via compute_switch_state). Ein als LATCH
+    gelabeltes Gate behaelt zusaetzlich seinen Zustand (Speicher).
+    """
     def cell_active(cx, cy) -> bool:
-        return _cell_conductivity(world.cells[cy][cx]) >= CONDUCTIVITY_THRESHOLD
-
-    if gate.gate_type == 'AND':
-        return all(_switch_is_on(world, sx, sy) for sx, sy in gate.switch_cells)
-
-    elif gate.gate_type == 'OR':
-        return any(cell_active(ix, iy) for ix, iy in gate.input_cells)
-
-    elif gate.gate_type == 'NOT':
-        if not gate.input_cells:
+        try:
+            return _cell_conductivity(world.cells[cy][cx]) >= CONDUCTIVITY_THRESHOLD
+        except (IndexError, KeyError):
             return False
-        ix, iy = gate.input_cells[0]
-        return not _switch_is_on(world, ix, iy)
 
-    elif gate.gate_type == 'LATCH':
-        # Einfaches SR-Latch: Set dominiert
-        if len(gate.input_cells) >= 2:
-            set_in   = cell_active(*gate.input_cells[0])
-            reset_in = cell_active(*gate.input_cells[1])
-            if set_in:
-                gate.state = True
-            elif reset_in:
-                gate.state = False
+    path_conducts = (
+        all(_switch_is_on(world, sx, sy) for sx, sy in gate.switch_cells)
+        if gate.switch_cells
+        else True
+    )
+    driven = any(cell_active(ix, iy) for ix, iy in gate.input_cells)
+    active = path_conducts and driven
+
+    if gate.gate_type == 'LATCH':
+        # Speicher: Set dominiert; expliziter Reset (2. Eingang inaktiv) loescht.
+        if active:
+            gate.state = True
+        elif len(gate.input_cells) >= 2 and not cell_active(*gate.input_cells[1]):
+            gate.state = False
         return gate.state
 
-    elif gate.gate_type == 'WIRE':
-        if not gate.input_cells:
-            return False
-        return cell_active(*gate.input_cells[0])
-
-    return False
+    return active
 
 
 # ---------------------------------------------------------------------------
