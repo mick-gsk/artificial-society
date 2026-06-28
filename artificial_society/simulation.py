@@ -300,23 +300,44 @@ class Simulation:
                     try_infect_agent(a, disease_id, biome=biome)
 
     def _apply_hamilton_rewards(self):
+        # Kin selection, made energy-conservative (Phase 4): instead of minting a
+        # per-agent reward from nothing, each tribe taxes a small fraction of every
+        # member's energy into a pool and redistributes it weighted by kin
+        # investment (tribe ties + number of children). Energy only ever moves
+        # *within* a tribe, so total energy is conserved (the MAX_ENERGY clamp can
+        # only sink energy, never create it).
         if self.tick % HAMILTON_TICK_INTERVAL != 0:
             return
         tribe_members = {}
         for a in self.agents:
             if a.alive and a.tribe_id is not None:
                 tribe_members.setdefault(a.tribe_id, []).append(a)
-        for agent in self.agents:
-            if not agent.alive:
+        for members in tribe_members.values():
+            if len(members) < 2:
                 continue
-            tribe = tribe_members.get(agent.tribe_id, [])
-            self_reward = 0.0
-            if tribe:
-                self_reward = sum(1.0 for m in tribe if m is not agent) * HAMILTON_TRIBE_R
-            child_r = getattr(agent, "children", 0) * HAMILTON_CHILD_R
-            agent.energy = min(
-                MAX_ENERGY, agent.energy + (self_reward + child_r) * HAMILTON_REWARD_SCALE
-            )
+            pool = 0.0
+            for m in members:
+                # Clamp the taxable amount to be non-negative: a member that has
+                # somehow gone negative must contribute 0, never be silently lifted
+                # to 0 (which would mint energy and break the zero-sum invariant).
+                # For energy >= 0 this is identical to the old min(...) form.
+                tax = max(0.0, m.energy) * HAMILTON_REWARD_SCALE
+                m.energy -= tax
+                pool += tax
+            if pool <= 0.0:
+                continue
+            weights = [
+                (len(members) - 1) * HAMILTON_TRIBE_R + getattr(m, "children", 0) * HAMILTON_CHILD_R
+                for m in members
+            ]
+            total_w = sum(weights)
+            if total_w <= 0.0:
+                share = pool / len(members)
+                for m in members:
+                    m.energy = min(MAX_ENERGY, m.energy + share)
+            else:
+                for m, w in zip(members, weights):
+                    m.energy = min(MAX_ENERGY, m.energy + pool * (w / total_w))
 
     def _save_checkpoint(self):
         try:

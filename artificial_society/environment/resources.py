@@ -36,6 +36,45 @@ SCARCITY_CEILING_FACTOR = 0.35
 # Analog fuer Fleischnachwuchs (Beutetiere sind ohnehin knapper).
 MEAT_CEILING_FACTOR = 0.25
 
+# Biome-specific scarcity (Phase 4): harsh biomes plateau at a lower standing
+# stock than fertile ones, so *where* an agent lives is a real selection
+# pressure. These scale the logistic plant ceiling per biome;
+# SCARCITY_CEILING_FACTOR is the fallback for any unlisted biome.
+BIOME_SCARCITY_CEILING = {
+    "forest": 0.35,
+    "grassland": 0.33,
+    "swamp": 0.32,
+    "mountain": 0.22,
+    "desert": 0.14,
+    "water": 0.0,
+}
+
+# Plant growth peaks in a temperate band and falls off when a cell runs cold
+# (winter / mountains) or scorching (desert / summer). Couples temperature ->
+# regrowth so seasons and biomes both bite. Deliberately gentle: the floor keeps
+# a temperate spring world (the equilibrium regime) almost untouched.
+PLANT_TEMP_OPTIMUM = 18.0
+PLANT_TEMP_TOLERANCE = 60.0
+PLANT_TEMP_FLOOR = 0.5
+
+# Cold cells read as more dangerous (exposure + scarce forage), so agents learn
+# to avoid and migrate out of winter zones. This is perceptual -- danger is not
+# directly lethal -- but it drives the migration that turns winter into a
+# selection event.
+COLD_DANGER_THRESHOLD = 6.0
+COLD_DANGER_COEFF = 0.9
+
+
+def biome_scarcity_ceiling(biome):
+    return BIOME_SCARCITY_CEILING.get(biome, SCARCITY_CEILING_FACTOR)
+
+
+def plant_temperature_factor(temperature):
+    """Multiplier in [PLANT_TEMP_FLOOR, 1.0] for how well plants grow at this
+    temperature; 1.0 at PLANT_TEMP_OPTIMUM, falling off linearly either side."""
+    off = abs(temperature - PLANT_TEMP_OPTIMUM) / PLANT_TEMP_TOLERANCE
+    return clamp(1.0 - off, PLANT_TEMP_FLOOR, 1.0)
+
 
 def clamp(v, lo, hi):
     return max(lo, min(hi, v))
@@ -98,7 +137,13 @@ def apply_consumption(world, x, y, plant=0.0, meat=0.0, water=0.0):
 
 def add_carcass(world, x, y, energy_value):
     cell = world.get_cell(x, y)
-    world.set_cell(x, y, "carcasses", clamp(cell["carcasses"] + energy_value, 0.0, 140.0))
+    # Energy conservation (Phase 4): a corpse is worth exactly `energy_value` of
+    # harvestable food, split across the two consumable pools a forager can reach
+    # (carcasses + meat_food). They must SUM to energy_value, not each receive it
+    # -- otherwise a death mints ~1.45x energy now that the carcass-field bug is
+    # fixed and the carcasses pool is actually edible. The meat_food share keeps a
+    # fresh carcass visible through the derived `food` aggregate.
+    world.set_cell(x, y, "carcasses", clamp(cell["carcasses"] + energy_value * 0.55, 0.0, 140.0))
     world.set_cell(x, y, "meat_food", clamp(cell["meat_food"] + energy_value * 0.45, 0.0, 110.0))
     world.set_cell(x, y, "spoilage", clamp(cell["spoilage"] + energy_value * 0.16, 0.0, 100.0))
     world.set_cell(x, y, "pollution", clamp(cell["pollution"] + energy_value * 0.12, 0.0, 100.0))
@@ -238,6 +283,10 @@ def regrow_cell(world, x, y, biome, season_state, weather_state, tick, event_str
     plant_gain += (
         0.012 * cell["structures"]["farm"]
     )  # Farm hilft, aber nicht genug um Knappheit aufzuheben
+    # Temperatur-Kopplung: kalte (Winter/Gebirge) oder gluehende (Wueste/Sommer)
+    # Zellen wachsen schlechter nach. Sanft -> temperiertes Fruehlingsgleichgewicht
+    # bleibt fast unberuehrt.
+    plant_gain *= plant_temperature_factor(cell["temperature"])
 
     # KNAPPHEIT: meat_gain (Basisrate)
     meat_gain = (
@@ -255,7 +304,8 @@ def regrow_cell(world, x, y, biome, season_state, weather_state, tick, event_str
     # leicht an. Ergebnis: eine unberuehrte Zelle waechst nur bis
     # ~SCARCITY_CEILING_FACTOR*capacity und bleibt dort knapp;
     # befressene Zellen erholen sich langsam von unten.
-    plant_target = SCARCITY_CEILING_FACTOR * capacity + farm_bonus
+    plant_ceiling = biome_scarcity_ceiling(biome)
+    plant_target = plant_ceiling * capacity + farm_bonus
     meat_target = MEAT_CEILING_FACTOR * capacity
     plant_headroom = max(0.0, 1.0 - cell["plant_food"] / max(1.0, plant_target))
     meat_headroom = max(0.0, 1.0 - cell["meat_food"] / max(1.0, meat_target))
@@ -310,7 +360,7 @@ def regrow_cell(world, x, y, biome, season_state, weather_state, tick, event_str
     # Harte Decke jetzt knapp ueber dem scarce Zielbestand (war 1.45*capacity).
     # So kann selbst ein temporaerer Ueberschuss (Carcass-Schub, Regen)
     # die Zelle nicht in Ueberfluss kippen lassen.
-    plant_hard_cap = max(20.0, SCARCITY_CEILING_FACTOR * capacity * 1.25 + farm_bonus)
+    plant_hard_cap = max(20.0, plant_ceiling * capacity * 1.25 + farm_bonus)
     world.set_cell(
         x,
         y,
@@ -386,6 +436,7 @@ def regrow_cell(world, x, y, biome, season_state, weather_state, tick, event_str
             base["danger"]
             + weather_state.get("storm_risk", 0.0) * 20
             + abs(cell["temperature"] - 20) * 0.5
+            + max(0.0, COLD_DANGER_THRESHOLD - cell["temperature"]) * COLD_DANGER_COEFF
             + cell["pollution"] * 0.16
             + cell["disease"] * 0.12
             + cell["disturbance"] * 0.18,
