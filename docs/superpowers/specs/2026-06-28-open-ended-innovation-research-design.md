@@ -322,6 +322,24 @@ Agenten-/Action-Space-Umbau, berührt Hot-Files ⇒ `core-lead`, Golden-Regen).
 
 ---
 
+## 14a. Pilot-Ergebnis (2026-06-29) — Gate erreicht
+
+**Verdikt: `PATH_B_OR_RETROFIT`** (vorab registriert). n=12 gepaarte Seeds × 1500 Ticks, CPU,
+funktionale Tiefe (func_tau 0.10/0.15/0.20, stabil). Code @ `feat/infra-research-stage0a`;
+Details + Figuren: `docs/research/stage0a-pilot-2026-06-29/`.
+
+- **Attempt-matched (das Gate):** learned 22.9 [21.0, 24.8] vs random-recombiner 32.3 [31.4, 33.3];
+  gepaarte Differenz **−9.4 [−11.3, −7.2]** → der gelernte/soziale Arm liegt *unter* dem Null.
+- **Discovery-matched (Confound-Kontrolle, append-only-Prefix):** Differenz nur noch
+  **−2.8 [−4.8, −0.6]** — ~70 % des „Vorsprungs" war ein Stichprobengrößen-Artefakt (Recombiner
+  ~28.5k vs learned ~5.4k Entdeckungen); der Rest bleibt gepaart signifikant. Rarefaction-Kurven
+  steigen beide mit #Entdeckungen.
+- **Schluss:** Das aktuelle (nicht policy-gekoppelte) System schlägt den Null **nicht** (eher knapp
+  darunter) — auch entdeckung-für-entdeckung. Bestätigt die H1-Falsifikation für den Ist-Zustand
+  **und** den Rekombinations-/Sampling-Confound (F1/F3). ⇒ **Path B** (Methodik/Null-Paper)
+  datenbasiert empfohlen; **P-A-Retrofit** optional (großes attempt-matched, kleines
+  discovery-matched Defizit ⇒ unsicherer Payoff).
+
 ## 15. (zusammengeführt in §14)
 
 ---
