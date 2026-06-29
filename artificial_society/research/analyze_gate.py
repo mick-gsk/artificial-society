@@ -148,10 +148,19 @@ def compare_dvs(outdir: str, func_tau: float | None = None, dvs=CANDIDATE_DVS) -
     if not paired:
         raise SystemExit(f"No paired learned/recombiner exports found in {outdir}")
     cache = _load_cache(paired)
-    summaries = {}
-    for dv in dvs:
-        lv, rv, _ = _dv_for_tau(cache, func_tau, dv)
-        summaries[dv] = stats.summarize_paired_dv(lv, rv)
+    # One analyze_registry per (seed, arm) — all candidate DVs come from the same call
+    # (they are just different summaries of the same functional depths). Avoids the
+    # 3x-redundant recompute of computing each DV via a separate analyze_registry pass.
+    vals = {arm: {dv: [] for dv in dvs} for arm in ("learned", "recombiner")}
+    for seed in sorted(cache):
+        for arm in ("learned", "recombiner"):
+            entries, struct = cache[seed][arm]
+            res = analyze_registry(entries, func_tau, struct=struct)
+            for dv in dvs:
+                vals[arm][dv].append(res[dv])
+    summaries = {
+        dv: stats.summarize_paired_dv(vals["learned"][dv], vals["recombiner"][dv]) for dv in dvs
+    }
     return {
         "func_tau": func_tau,
         "n_seeds": len(paired),

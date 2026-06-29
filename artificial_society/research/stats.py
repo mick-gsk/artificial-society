@@ -191,11 +191,21 @@ def summarize_paired_dv(learned_vals, recomb_vals, confidence: float = 0.95) -> 
 
 
 def rank_dvs(summaries: dict) -> list:
-    """Rank candidate DVs by decisiveness (largest standardised effect ``dz`` first)."""
+    """Rank candidate DVs by decisiveness — largest effect *magnitude* ``|dz|`` first.
+
+    Magnitude, not signed dz: the most decisive DV is the one that best separates the
+    arms regardless of *which* arm wins (the recombiner out-performing the learned arm
+    is the very confound this study tests, so negative dz must rank by |dz| too). ``inf``
+    (zero-variance perfect separation) ranks first; ``nan`` (undefined, n<2) ranks last.
+    """
 
     def key(name):
         dz = summaries[name]["dz"]
-        return dz if np.isfinite(dz) else (float("inf") if dz > 0 else float("-inf"))
+        if np.isnan(dz):
+            return float("-inf")
+        if np.isinf(dz):
+            return float("inf")
+        return abs(dz)
 
     return sorted(summaries, key=key, reverse=True)
 

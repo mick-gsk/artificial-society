@@ -149,6 +149,8 @@ def _functional_depths_kdtree(
     float32 ``norm <= func_tau`` test to those candidates, so the depths selected
     — and thus their min — are identical to the brute-force scan.
     """
+    if len(ids) == 0:
+        return {}
     V64 = V.astype(np.float64)
     tree = _cKDTree(V64)
     neighbours = tree.query_ball_point(V64, func_tau + _KDTREE_RADIUS_MARGIN)
@@ -182,16 +184,57 @@ def functional_depths(
     return _functional_depths_bruteforce(V, sd, ids, func_tau)
 
 
-def n_functional_clusters(entries: list[dict], func_tau: float = FUNC_TAU) -> int:
-    """Greedy count of functionally distinct artifacts (vector clustering)."""
-    if not entries:
-        return 0
+def _n_functional_clusters_bruteforce(entries: list[dict], func_tau: float) -> int:
+    """O(n^2) greedy leader-clustering: count points not within func_tau of an earlier rep."""
     V = np.array([e["vector"] for e in entries], dtype=np.float32)
     reps: list[np.ndarray] = []
     for i in range(len(V)):
         if not any(np.linalg.norm(V[i] - r) <= func_tau for r in reps):
             reps.append(V[i])
     return len(reps)
+
+
+def _n_functional_clusters_kdtree(entries: list[dict], func_tau: float) -> int:
+    """O(n log n) leader-clustering — bit-identical to the brute-force greedy.
+
+    Same index-order leader rule: point ``i`` is a new cluster rep iff no earlier rep
+    lies within ``func_tau``. When ``i`` becomes a rep we mark every point within
+    ``func_tau`` of it as covered (cKDTree candidate query at radius
+    ``func_tau+_KDTREE_RADIUS_MARGIN``, then the exact float32 ``norm<=func_tau``
+    re-filter), so a later point is skipped iff some earlier rep already covers it —
+    identical to the brute-force condition.
+    """
+    if not entries:
+        return 0
+    V = np.array([e["vector"] for e in entries], dtype=np.float32)
+    n = len(V)
+    V64 = V.astype(np.float64)
+    tree = _cKDTree(V64)
+    covered = np.zeros(n, dtype=bool)
+    count = 0
+    for i in range(n):
+        if covered[i]:
+            continue
+        count += 1
+        cand = np.asarray(
+            tree.query_ball_point(V64[i], func_tau + _KDTREE_RADIUS_MARGIN), dtype=np.int64
+        )
+        dist = np.linalg.norm(V[cand] - V[i], axis=1)
+        covered[cand[dist <= func_tau]] = True
+    return count
+
+
+def n_functional_clusters(entries: list[dict], func_tau: float = FUNC_TAU) -> int:
+    """Greedy count of functionally distinct artifacts (vector clustering).
+
+    cKDTree-accelerated when scipy is available (A2), else brute-force O(n^2).
+    Both paths return the identical count (see the bit-identity tests).
+    """
+    if not entries:
+        return 0
+    if _HAS_SCIPY:
+        return _n_functional_clusters_kdtree(entries, func_tau)
+    return _n_functional_clusters_bruteforce(entries, func_tau)
 
 
 def mean_active_dims(entries: list[dict], threshold: float = ACTIVE_DIM_THRESHOLD) -> float:

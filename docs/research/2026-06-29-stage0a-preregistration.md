@@ -48,9 +48,10 @@ the noisiest summary. On the n=12 pilot, compute for each candidate the between-
 SD of the paired differences and the standardised paired effect
 `dz = mean(d_s) / sd(d_s)` at `func_tau = 0.15`
 (`analyze_gate.compare_dvs` / `python -m artificial_society.research.analyze_gate --compare-dvs`).
-**Pre-register the candidate with the largest `dz` (most decisive / lowest relative
-between-seed variance) as the confirmatory primary DV.** The other two are reported
-as **sensitivity** DVs only. (Prediction from the handoff: `p95_functional_depth`.)
+**Pre-register the candidate with the largest `|dz|` (effect *magnitude* — most
+decisive separation, regardless of which arm wins) as the confirmatory primary DV.**
+The other two are reported as **sensitivity** DVs only. (Handoff prediction:
+`p95`/`mean` beat the noisy `max` order statistic.)
 
 **Pilot results (locked from the n=12 pilot — filled before the confirmatory run):**
 

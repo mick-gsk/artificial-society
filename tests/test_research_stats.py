@@ -122,6 +122,19 @@ def test_compare_dvs_picks_most_decisive():
     assert ranking[0] == "tight"  # higher dz (more decisive) ranks first
 
 
+def test_rank_dvs_uses_effect_magnitude_not_sign():
+    """When the recombiner WINS (negative dz), the largest-|dz| DV must still rank first."""
+    tight = stats.summarize_paired_dv(
+        [1, 1, 1, 1, 1], [3, 3, 4, 3, 4]
+    )  # diff very negative, low SD
+    noisy = stats.summarize_paired_dv(
+        [1, 1, 1, 1, 1], [2, 5, 1, 6, 3]
+    )  # diff less negative, high SD
+    assert tight["dz"] < 0 and noisy["dz"] < 0
+    assert abs(tight["dz"]) > abs(noisy["dz"])
+    assert stats.rank_dvs({"noisy": noisy, "tight": tight})[0] == "tight"
+
+
 # --- B1: required-n for a target CI half-width / power --------------------------
 
 

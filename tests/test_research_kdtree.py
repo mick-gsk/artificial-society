@@ -79,6 +79,26 @@ def test_kdtree_boundary_stress():
     assert kd[ids[0]] < 9
 
 
+@pytest.mark.parametrize("n", [0, 1, 5, 80, 300])
+@pytest.mark.parametrize("func_tau", [0.05, 0.15, 0.30])
+def test_n_functional_clusters_kdtree_matches_bruteforce(n, func_tau):
+    """A2: the KDTree leader-clustering count must equal the O(n^2) greedy exactly."""
+    rng = np.random.default_rng(2024 + n)
+    entries = _random_registry(n, rng)
+    kd = metrics._n_functional_clusters_kdtree(entries, func_tau)
+    brute = metrics._n_functional_clusters_bruteforce(entries, func_tau)
+    assert kd == brute
+
+
+def test_n_functional_clusters_public_identical_with_and_without_scipy(monkeypatch):
+    rng = np.random.default_rng(11)
+    entries = _random_registry(200, rng)
+    fast = metrics.n_functional_clusters(entries, 0.15)
+    monkeypatch.setattr(metrics, "_HAS_SCIPY", False)
+    slow = metrics.n_functional_clusters(entries, 0.15)
+    assert fast == slow
+
+
 def test_analyze_registry_dvs_identical_with_and_without_scipy(monkeypatch):
     """The gate DVs must not depend on whether the KDTree fast path is taken."""
     rng = np.random.default_rng(99)
