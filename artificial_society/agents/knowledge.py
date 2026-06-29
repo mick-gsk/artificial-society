@@ -97,6 +97,28 @@ class EpisodicMemory:
         self.buffer.clear()
         self._version += 1
 
+    # ------------------------------------------------------------------
+    # Pickle support (checkpoints serialize whole Agent/Brain graphs)
+    # ------------------------------------------------------------------
+    def __getstate__(self) -> dict:
+        # The stacked cache is a derived tensor (and may live on GPU); never
+        # persist it -- it bloats checkpoints and breaks cross-device loads.
+        state = self.__dict__.copy()
+        state["_cache"] = None
+        state["_cache_version"] = -1
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        # pickle restores objects WITHOUT calling __init__, so back-fill the
+        # cache attributes. Checkpoints written before the cache existed have
+        # none of them; restore safe defaults so _remember()/stacked() never
+        # AttributeError on the first call after load.
+        self.__dict__.update(state)
+        if not hasattr(self, "_version"):
+            self._version = 0
+        self._cache = None
+        self._cache_version = -1
+
 
 # ---------------------------------------------------------------------------
 # CompositeAction – dynamisch entdeckte Makro-Aktionen (NEU)
