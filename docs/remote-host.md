@@ -42,6 +42,12 @@ Provisioned: 2026-06-29.
 - Password auth is still enabled as a fallback. Once key login is confirmed, harden by setting
   `PasswordAuthentication no` in `sshd_config` and `Restart-Service sshd` (as admin).
 
+## Performance
+
+Measured baseline + a prioritized, determinism-aware optimization plan:
+[`performance-notes.md`](performance-notes.md). Key surprise: the world environment update (not the
+brains) dominates runtime, and for these tiny nets the **CPU is 7-11× faster than the GPU**.
+
 ## Known issues (state at provisioning)
 
 1. **GPU runs currently crash.** [`agents/brain.py`](../artificial_society/agents/brain.py)
