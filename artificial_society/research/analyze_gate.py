@@ -25,10 +25,16 @@ import os
 
 import numpy as np
 
+from artificial_society.research import stats
 from artificial_society.research.export import load_run
-from artificial_society.research.metrics import analyze_registry
+from artificial_society.research.metrics import analyze_registry, structural_depths
+
+# B3: pre-registered significance threshold for the exact paired permutation test.
+ALPHA = 0.05
 
 PRIMARY_DV = "max_functional_depth"
+# B2: candidate primary DVs whose between-seed variance is compared on the pilot.
+CANDIDATE_DVS = ("max_functional_depth", "p95_functional_depth", "mean_functional_depth")
 FUNC_TAU_SWEEP = (0.10, 0.15, 0.20)
 N_BOOTSTRAP = 10000
 
@@ -53,14 +59,37 @@ def _collect(outdir: str) -> dict[int, dict]:
     return {s: v for s, v in paired.items() if "learned" in v and "recombiner" in v}
 
 
-def _dv_for_tau(paired: dict[int, dict], func_tau: float, dv: str) -> tuple[list, list, list]:
-    """Return (learned_vals, recombiner_vals, seeds) for one func_tau."""
-    learned_vals, recomb_vals, seeds = [], [], []
+def _load_cache(paired: dict[int, dict]) -> dict[int, dict]:
+    """Load each run's entries + structural depths ONCE (A2 caching).
+
+    ``structural_depths`` is tau-independent, so we compute it a single time per
+    ``(seed, arm)`` and reuse it across the whole func_tau sweep instead of
+    reloading the JSON and recomputing it once per tau. Returns
+    ``{seed: {arm: (entries, struct)}}``.
+    """
+    cache: dict[int, dict] = {}
     for seed in sorted(paired):
-        le = load_run(paired[seed]["learned"])["entries"]
-        re = load_run(paired[seed]["recombiner"])["entries"]
-        learned_vals.append(analyze_registry(le, func_tau)[dv])
-        recomb_vals.append(analyze_registry(re, func_tau)[dv])
+        per_arm = {}
+        for arm in ("learned", "recombiner"):
+            entries = load_run(paired[seed][arm])["entries"]
+            per_arm[arm] = (entries, structural_depths(entries))
+        cache[seed] = per_arm
+    return cache
+
+
+def _dv_for_tau(cache: dict[int, dict], func_tau: float, dv: str) -> tuple[list, list, list]:
+    """Return (learned_vals, recombiner_vals, seeds) for one func_tau.
+
+    Reuses the cached ``(entries, struct)`` so the only per-tau work is the
+    func_tau-dependent neighbourhood scan. DVs are bit-identical to recomputing
+    structural depths from scratch each tau.
+    """
+    learned_vals, recomb_vals, seeds = [], [], []
+    for seed in sorted(cache):
+        le, ls = cache[seed]["learned"]
+        re, rs = cache[seed]["recombiner"]
+        learned_vals.append(analyze_registry(le, func_tau, struct=ls)[dv])
+        recomb_vals.append(analyze_registry(re, func_tau, struct=rs)[dv])
         seeds.append(seed)
     return learned_vals, recomb_vals, seeds
 
@@ -80,13 +109,54 @@ def _verdict(learned_vals, recomb_vals) -> dict:
     else:
         verdict = "PATH_B_OR_RETROFIT"
 
+    # B3: exact paired permutation test + standardised effect size + BCa CIs.
+    perm = stats.exact_sign_flip_test(diff)
+    dz = stats.cohens_dz(diff)
+    wilcox_p = stats.wilcoxon_p(diff)
+    l_bca = stats.bca_mean_ci(learned_vals, seed=11)
+    r_bca = stats.bca_mean_ci(recomb_vals, seed=12)
+    d_bca = stats.bca_mean_ci(diff, seed=13)
+    perm_sig = bool(np.isfinite(perm["p_value"]) and perm["p_value"] < ALPHA)
+
     return {
         "verdict": verdict,
-        "learned": {"mean": l_mean, "ci": [l_lo, l_hi]},
-        "recombiner": {"mean": r_mean, "ci": [r_lo, r_hi]},
-        "paired_diff": {"mean": d_mean, "ci": [d_lo, d_hi]},
+        "learned": {"mean": l_mean, "ci": [l_lo, l_hi], "bca_ci": [l_bca[1], l_bca[2]]},
+        "recombiner": {"mean": r_mean, "ci": [r_lo, r_hi], "bca_ci": [r_bca[1], r_bca[2]]},
+        "paired_diff": {"mean": d_mean, "ci": [d_lo, d_hi], "bca_ci": [d_bca[1], d_bca[2]]},
         "ci_separated": bool(separated),
         "paired_ci_positive": bool(paired_positive),
+        # B3 additions (pre-registered) — reported alongside the bootstrap-CI rule.
+        "paired_permutation": {"p_value": perm["p_value"], "method": perm["method"]},
+        "permutation_significant": perm_sig,
+        "cohens_dz": dz,
+        "wilcoxon_p": wilcox_p,
+        # Pre-registered confirmatory rule: CI-separation AND paired-CI>0 AND exact
+        # permutation test significant at ALPHA (see the Stage-0a pre-registration).
+        "confirmatory_path_a": bool(separated and paired_positive and perm_sig),
+    }
+
+
+def compare_dvs(outdir: str, func_tau: float | None = None, dvs=CANDIDATE_DVS) -> dict:
+    """B2: between-seed variance of each candidate DV on the pilot, ranked by decisiveness.
+
+    Run this on the pilot to choose the lowest-variance / most-decisive primary DV
+    and pre-register it for the confirmatory run. The others are reported as
+    sensitivity DVs.
+    """
+    func_tau = FUNC_TAU_SWEEP[1] if func_tau is None else func_tau
+    paired = _collect(outdir)
+    if not paired:
+        raise SystemExit(f"No paired learned/recombiner exports found in {outdir}")
+    cache = _load_cache(paired)
+    summaries = {}
+    for dv in dvs:
+        lv, rv, _ = _dv_for_tau(cache, func_tau, dv)
+        summaries[dv] = stats.summarize_paired_dv(lv, rv)
+    return {
+        "func_tau": func_tau,
+        "n_seeds": len(paired),
+        "summaries": summaries,
+        "ranking": stats.rank_dvs(summaries),
     }
 
 
@@ -95,9 +165,10 @@ def analyze(outdir: str, dv: str = PRIMARY_DV, plot: bool = True) -> dict:
     if not paired:
         raise SystemExit(f"No paired learned/recombiner exports found in {outdir}")
 
+    cache = _load_cache(paired)  # A2: load entries + structural depths once, reuse across taus
     sweep = {}
     for tau in FUNC_TAU_SWEEP:
-        lv, rv, seeds = _dv_for_tau(paired, tau, dv)
+        lv, rv, seeds = _dv_for_tau(cache, tau, dv)
         sweep[tau] = {"result": _verdict(lv, rv), "learned": lv, "recombiner": rv, "seeds": seeds}
 
     primary = sweep[FUNC_TAU_SWEEP[1]]  # func_tau = 0.15
@@ -168,6 +239,14 @@ def _print(report: dict) -> None:
         f"  paired diff mean={p['paired_diff']['mean']:.2f}  CI={np.round(p['paired_diff']['ci'], 2)}"
     )
     print(f"  CI separated={p['ci_separated']}  paired CI>0={p['paired_ci_positive']}")
+    perm = p["paired_permutation"]
+    dz = p["cohens_dz"]
+    print(
+        f"  exact perm p={perm['p_value']:.4g} ({perm['method']})  Wilcoxon p={p['wilcoxon_p']:.4g}"
+    )
+    print(f"  Cohen's dz={dz['dz']:.2f}  CI={np.round(dz['ci'], 2)}")
+    print(f"  paired diff BCa CI={np.round(p['paired_diff']['bca_ci'], 2)}")
+    print(f"  CONFIRMATORY Path A (sep & paired>0 & perm sig)={p['confirmatory_path_a']}")
     print(f"  func_tau sensitivity: {report['sensitivity']}")
     if report.get("figure"):
         print(f"  figure -> {report['figure']}")
@@ -179,7 +258,23 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--outdir", type=str, required=True)
     p.add_argument("--dv", type=str, default=PRIMARY_DV)
     p.add_argument("--no-plot", action="store_true")
+    p.add_argument(
+        "--compare-dvs",
+        action="store_true",
+        help="B2: report between-seed variance of each candidate DV and exit (no gate)",
+    )
     args = p.parse_args(argv)
+    if args.compare_dvs:
+        rep = compare_dvs(args.outdir)
+        print(f"DV variance comparison (func_tau={rep['func_tau']}, n={rep['n_seeds']} seeds)")
+        for dv in rep["ranking"]:
+            s = rep["summaries"][dv]
+            print(
+                f"  {dv:24s} mean_diff={s['mean_diff']:.3f} sd_diff={s['sd_diff']:.3f} "
+                f"dz={s['dz']:.2f} ci_halfwidth={s['ci_halfwidth']:.3f}"
+            )
+        print(f"  recommended primary DV (most decisive): {rep['ranking'][0]}")
+        return
     report = analyze(args.outdir, dv=args.dv, plot=not args.no_plot)
     _print(report)
 

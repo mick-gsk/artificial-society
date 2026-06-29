@@ -17,6 +17,9 @@ serve = [
     "fastapi>=0.110,<1",
     "uvicorn[standard]>=0.27,<1",
 ]
+research = [
+    "scipy>=1.13,<2",  # cKDTree (gate A2) + exact paired stats / BCa bootstrap (B3)
+]
 dev = [
     "pytest>=8.4,<9",
     "ruff>=0.6",

@@ -20,6 +20,14 @@ logs/
 *.log
 output/
 
+# Research pilot artifacts (run exports, heartbeats, figures) — never commit
+artificial_society/research/out/
+
+# Packaging
+*.egg-info/
+build/
+dist/
+
 # OS
 .DS_Store
 Thumbs.db

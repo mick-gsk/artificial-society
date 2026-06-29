@@ -41,9 +41,26 @@ import numpy as np
 
 from artificial_society.environment.materials import MATERIALS, combine_vectors
 
+# A2: a cKDTree radius query turns the func_tau neighbourhood scan from O(n^2)
+# into ~O(n log n). scipy is optional — without it we fall back to the
+# brute-force scan, which is bit-identical (just slower).
+try:
+    from scipy.spatial import cKDTree as _cKDTree
+
+    _HAS_SCIPY = True
+except ImportError:  # pragma: no cover - only hit in a scipy-less environment
+    _cKDTree = None
+    _HAS_SCIPY = False
+
 DEDUP_TAU = 0.08
 FUNC_TAU = 0.15
 ACTIVE_DIM_THRESHOLD = 0.1
+# Radius inflation for the KDTree candidate query. cKDTree measures distances in
+# float64 on the float32 vectors, while the exact filter compares a float32 norm
+# to func_tau; this margin (>> the ~1e-7 float32/float64 gap, << the 0.08 dedup
+# spacing) guarantees the candidate set is a superset of the true float32-norm
+# neighbourhood, so the exact re-filter is bit-identical to brute force.
+_KDTREE_RADIUS_MARGIN = 1e-4
 DETERMINISTIC_ACTIONS = (
     "strike",
     "bind",
@@ -111,23 +128,58 @@ def structural_depths(entries: list[dict]) -> dict[str, int]:
     return depth
 
 
+def _functional_depths_bruteforce(
+    V: np.ndarray, sd: np.ndarray, ids: list[str], func_tau: float
+) -> dict[str, int]:
+    """O(n^2) reference: for each entry, the min struct depth over its func_tau ball."""
+    fd: dict[str, int] = {}
+    for i in range(len(ids)):
+        dist = np.linalg.norm(V - V[i], axis=1)
+        fd[ids[i]] = int(sd[dist <= func_tau].min())
+    return fd
+
+
+def _functional_depths_kdtree(
+    V: np.ndarray, sd: np.ndarray, ids: list[str], func_tau: float
+) -> dict[str, int]:
+    """O(n log n) cKDTree path — bit-identical to :func:`_functional_depths_bruteforce`.
+
+    The tree query returns a *superset* of each entry's func_tau neighbourhood
+    (radius inflated by ``_KDTREE_RADIUS_MARGIN``); we then re-apply the *exact*
+    float32 ``norm <= func_tau`` test to those candidates, so the depths selected
+    — and thus their min — are identical to the brute-force scan.
+    """
+    V64 = V.astype(np.float64)
+    tree = _cKDTree(V64)
+    neighbours = tree.query_ball_point(V64, func_tau + _KDTREE_RADIUS_MARGIN)
+    fd: dict[str, int] = {}
+    for i in range(len(ids)):
+        cand = np.asarray(neighbours[i], dtype=np.int64)
+        dist = np.linalg.norm(V[cand] - V[i], axis=1)
+        fd[ids[i]] = int(sd[cand][dist <= func_tau].min())
+    return fd
+
+
 def functional_depths(
     entries: list[dict],
     struct: dict[str, int] | None = None,
     func_tau: float = FUNC_TAU,
 ) -> dict[str, int]:
-    """Min structural depth over the func_tau-neighbourhood of each entry's vector."""
+    """Min structural depth over the func_tau-neighbourhood of each entry's vector.
+
+    Uses the cKDTree radius query when scipy is available (A2), else a brute-force
+    O(n^2) scan. Both paths return identical values (see the bit-identity tests).
+    """
     if not entries:
         return {}
     if struct is None:
         struct = structural_depths(entries)
     V = np.array([e["vector"] for e in entries], dtype=np.float32)
     sd = np.array([struct[e["id"]] for e in entries], dtype=np.int64)
-    fd: dict[str, int] = {}
-    for i in range(len(entries)):
-        dist = np.linalg.norm(V - V[i], axis=1)
-        fd[entries[i]["id"]] = int(sd[dist <= func_tau].min())
-    return fd
+    ids = [e["id"] for e in entries]
+    if _HAS_SCIPY:
+        return _functional_depths_kdtree(V, sd, ids, func_tau)
+    return _functional_depths_bruteforce(V, sd, ids, func_tau)
 
 
 def n_functional_clusters(entries: list[dict], func_tau: float = FUNC_TAU) -> int:
@@ -204,9 +256,19 @@ def knockout_validate(
     }
 
 
-def analyze_registry(entries: list[dict], func_tau: float = FUNC_TAU) -> dict:
-    """One run -> the scalar DVs used by the gate."""
-    struct = structural_depths(entries)
+def analyze_registry(
+    entries: list[dict],
+    func_tau: float = FUNC_TAU,
+    struct: dict[str, int] | None = None,
+) -> dict:
+    """One run -> the scalar DVs used by the gate.
+
+    ``struct`` (structural depths) is tau-independent; callers sweeping several
+    ``func_tau`` values should compute it once and pass it in to avoid recomputing
+    it per tau (A2 caching). Passing it in does not change any returned value.
+    """
+    if struct is None:
+        struct = structural_depths(entries)
     fd = functional_depths(entries, struct, func_tau)
     sd_vals = np.array(list(struct.values()), dtype=float) if struct else np.zeros(1)
     fd_vals = np.array(list(fd.values()), dtype=float) if fd else np.zeros(1)
