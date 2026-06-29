@@ -26,7 +26,7 @@ import os
 import numpy as np
 
 from artificial_society.research.export import load_run
-from artificial_society.research.metrics import analyze_registry
+from artificial_society.research.metrics import functional_depths
 
 PRIMARY_DV = "max_functional_depth"
 FUNC_TAU_SWEEP = (0.10, 0.15, 0.20)
@@ -53,14 +53,23 @@ def _collect(outdir: str) -> dict[int, dict]:
     return {s: v for s, v in paired.items() if "learned" in v and "recombiner" in v}
 
 
+def _max_functional_depth(entries: list[dict], func_tau: float) -> int:
+    """Gate DV: deepest functional/irreducible chain (0 if no discoveries)."""
+    if not entries:
+        return 0
+    return max(functional_depths(entries, func_tau=func_tau).values())
+
+
 def _dv_for_tau(paired: dict[int, dict], func_tau: float, dv: str) -> tuple[list, list, list]:
-    """Return (learned_vals, recombiner_vals, seeds) for one func_tau."""
+    """Return (learned_vals, recombiner_vals, seeds) of max functional depth for one func_tau."""
     learned_vals, recomb_vals, seeds = [], [], []
     for seed in sorted(paired):
-        le = load_run(paired[seed]["learned"])["entries"]
-        re = load_run(paired[seed]["recombiner"])["entries"]
-        learned_vals.append(analyze_registry(le, func_tau)[dv])
-        recomb_vals.append(analyze_registry(re, func_tau)[dv])
+        learned_vals.append(
+            _max_functional_depth(load_run(paired[seed]["learned"])["entries"], func_tau)
+        )
+        recomb_vals.append(
+            _max_functional_depth(load_run(paired[seed]["recombiner"])["entries"], func_tau)
+        )
         seeds.append(seed)
     return learned_vals, recomb_vals, seeds
 

@@ -122,12 +122,22 @@ def functional_depths(
     if struct is None:
         struct = structural_depths(entries)
     V = np.array([e["vector"] for e in entries], dtype=np.float32)
-    sd = np.array([struct[e["id"]] for e in entries], dtype=np.int64)
-    fd: dict[str, int] = {}
-    for i in range(len(entries)):
-        dist = np.linalg.norm(V - V[i], axis=1)
-        fd[entries[i]["id"]] = int(sd[dist <= func_tau].min())
-    return fd
+    sd = np.array([struct[e["id"]] for e in entries], dtype=np.int32)
+    n = len(entries)
+    # Chunked min-structural-depth over the func_tau ball of each vector.
+    # ||a-b||^2 = |a|^2 + |b|^2 - 2 a.b keeps memory at O(chunk * n), not O(n^2 * dims),
+    # so this scales to the ~30k-entry recombiner registries.
+    Vn2 = (V * V).sum(axis=1)
+    big = np.int32(np.iinfo(np.int32).max)
+    out = np.empty(n, dtype=np.int32)
+    tau2 = float(func_tau) ** 2
+    chunk = 256
+    for s in range(0, n, chunk):
+        b = V[s : s + chunk]
+        d2 = (b * b).sum(axis=1)[:, None] + Vn2[None, :] - 2.0 * (b @ V.T)
+        masked = np.where(d2 <= tau2 + 1e-6, sd[None, :], big)
+        out[s : s + chunk] = masked.min(axis=1)
+    return {entries[i]["id"]: int(out[i]) for i in range(n)}
 
 
 def n_functional_clusters(entries: list[dict], func_tau: float = FUNC_TAU) -> int:
