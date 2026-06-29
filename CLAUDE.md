@@ -41,6 +41,7 @@ PYTHONHASHSEED=0 python -m artificial_society.serve   # or scripts/run-dashboard
 remotely from the MacBook. `runner.SimulationRunner` steps the sim in a thread and calls
 `sim.stats.update(...)` after each tick (`step` does not collect stats itself); `app` exposes
 `/api/{run,stop,status,history,graph.png,health}`. Full setup: `docs/serve-setup.md`.
+Concrete provisioned GPU host + remote-access details (for the MacBook): `docs/remote-host.md`.
 
 ## Tests
 

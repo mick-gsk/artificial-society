@@ -9,6 +9,9 @@ __pycache__/
 venv/
 env/
 
+# Packaging artifacts
+*.egg-info/
+
 # Checkpoints & saved states
 checkpoint.pkl
 *.pkl
