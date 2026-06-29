@@ -163,7 +163,8 @@ def main(argv: list[str] | None = None) -> None:
 
     from artificial_society.research.export import dump_run
 
-    heartbeat_path = os.path.join(os.path.dirname(os.path.abspath(args.out)), "heartbeat.jsonl")
+    # Per-(arm,seed) heartbeat file so parallel workers never write the same file.
+    heartbeat_path = os.path.abspath(args.out) + ".hb.jsonl"
 
     if args.arm == "learned":
         meta, series, entries = run_learned(
