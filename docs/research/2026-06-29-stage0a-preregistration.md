@@ -53,15 +53,19 @@ decisive separation, regardless of which arm wins) as the confirmatory primary D
 The other two are reported as **sensitivity** DVs only. (Handoff prediction:
 `p95`/`mean` beat the noisy `max` order statistic.)
 
-**Pilot results (locked from the n=12 pilot — filled before the confirmatory run):**
+**Pilot results (locked from the n=12 pilot, 1500 ticks, func_tau=0.15 — 2026-06-29):**
 
-| DV | mean_diff | sd_diff | dz | CI half-width (n=12) |
+| DV | mean_diff (learned−recomb) | sd_diff | \|dz\| | CI half-width (n=12) |
 |---|---|---|---|---|
-| max_functional_depth | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
-| p95_functional_depth | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
-| mean_functional_depth | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
+| **mean_functional_depth** | −8.501 | **1.323** | **6.43** | 0.841 |
+| p95_functional_depth | −9.167 | 1.528 | 6.00 | 0.971 |
+| max_functional_depth | −8.250 | 3.793 | 2.18 | 2.410 |
 
-→ **Pre-registered primary DV: _TBD_ (largest dz).** Sensitivity DVs: the other two.
+→ **Pre-registered primary DV: `mean_functional_depth`** (largest |dz| = lowest relative
+between-seed variance). Sensitivity DVs: `p95_functional_depth`, `max_functional_depth`.
+As predicted, the extreme `max` order statistic is by far the noisiest (sd_diff 3.79 vs
+1.32; |dz| 2.18 vs 6.43). *(All `mean_diff` are negative — the recombiner null
+out-scores the learned arm; see the gate result below.)*
 
 ---
 
@@ -81,12 +85,12 @@ two pre-registered criteria, then floored:
 **Confirmatory `n = max(criterion 1, criterion 2, 30)`.** Seeds: a contiguous block
 `1001 … 1000+n` (extends the pilot's `1001–1012`).
 
-**Pilot results (locked — filled before the confirmatory run):**
+**Pilot results (locked from the n=12 pilot — 2026-06-29):**
 
-- `sd_diff` (primary DV, func_tau 0.15) = _TBD_ ; `dz` = _TBD_
-- criterion 1 (CI half-width ≤ 0.5) → n = _TBD_
-- criterion 2 (power ≥ 0.90 at dz) → n = _TBD_
-- **Pre-registered confirmatory n = _TBD_** ; seeds = `1001 … _TBD_`
+- `sd_diff` (primary DV `mean_functional_depth`, func_tau 0.15) = **1.323** ; `|dz|` = **6.43**
+- criterion 1 (CI half-width ≤ 0.5) → n = **27**
+- criterion 2 (power ≥ 0.90 at |dz|=6.43) → n = **3** (the effect is large, so power is not binding)
+- **Pre-registered confirmatory n = max(27, 3, 30) = 30** ; seeds = `1001 … 1030`
 
 ---
 
@@ -122,11 +126,41 @@ vs sensitivity analyses are kept explicitly separate (design §9 garden-of-forki
 
 ---
 
+## Pilot gate result (exploratory — n=12, 1500 ticks, 2026-06-29)
+
+Applying the gate to the pilot itself (primary DV `mean_functional_depth`, func_tau 0.15):
+
+- learned mean **7.40** [7.06, 7.75] vs random-recombiner **15.90** [15.13, 16.80]
+- paired diff **−8.50** [−9.24, −7.82] (BCa [−9.32, −7.87]); per-arm CIs **not** separated
+- exact sign-flip permutation **p = 0.00049** (== Wilcoxon exact); Cohen's `dz = −6.43`
+- **Verdict: `PATH_B_OR_RETROFIT`**, stable across func_tau {0.10, 0.15, 0.20}.
+
+The difference is large and highly significant but **in the null's favour**: the
+disembodied random recombiner produces *deeper* functional complexity than the current
+(non-policy-coupled) learned/social agents at equal compute. This reproduces the
+adversarial-review confound (design §3) and matches the prior 1500-tick pilot
+(`max`: learned 22.9 vs recombiner 32.3). `confirmatory_path_a = False` (the permutation
+test is significant but the effect is negative, so Path A is correctly **not** declared).
+
+**Implication (design §11):** unless P-A (policy-coupling) is retrofitted and the pilot
+repeated, the data support **Path B** (the methodology / null-result paper). The
+confirmatory n=30 run would re-test at the pre-registered DV/rule; given the decisive
+pilot deficit it is expected to reconfirm Path B. *Decision is the user's call.*
+
+---
+
 ## Frozen parameters
 
-- World/sim: `grid_w=30, grid_h=20, pop=24`, learned-arm `ticks = 8000` (confirmed
-  Stage-0a scope); recombiner compute-matched per seed; recombiner `moisture = 0.5`
-  (B4 samples the empirical learned-arm distribution as a sensitivity arm).
+- World/sim: `grid_w=30, grid_h=20, pop=24` (initial; population grows), learned-arm
+  `ticks = 1500`. **Regime note:** the original §14 scope said ~8000 ticks, but the
+  per-tick cost rises sharply as the population grows into the hundreds (a full 8000-
+  tick × 12-seed run is ~9 h CPU even at 8 parallel workers). The prior Stage-0a pilot
+  established **1500 ticks** as the practical regime — by then the random-recombiner
+  null has run ~30k attempts and shown its functional-depth plateau. Pilot **and**
+  confirmatory run use the same 1500-tick regime, so the pilot's `sd_diff` is
+  regime-matched to the confirmatory run. Recombiner compute-matched per seed;
+  recombiner `moisture = 0.5` (B4 replays the empirical learned-arm distribution as a
+  sensitivity arm).
 - Dedup radius 0.08; `func_tau ∈ {0.10, 0.15, 0.20}`, primary 0.15.
 - `PYTHONHASHSEED=0`; `CUDA_VISIBLE_DEVICES=-1` (CPU); per-worker single-thread BLAS
   for the confirmatory run.
