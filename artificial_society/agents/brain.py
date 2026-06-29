@@ -259,7 +259,10 @@ class Brain(nn.Module):
 
             # k-NN episodic novelty (vektorisiert ueber alle Kandidaten)
             if len(self.episodic_memory.buffer) >= self.episodic_memory.k:
-                stack = torch.stack(list(self.episodic_memory.buffer)).to(device)  # (N, D)
+                # Cached stack: the buffer is stable across this rollout, so the
+                # (N, D) tensor is built/uploaded once per buffer change instead of
+                # once per horizon step. Identical to torch.stack(list(buffer)).to(device).
+                stack = self.episodic_memory.stacked(device)  # (N, D)
                 obs_expanded = pred_next_obs.unsqueeze(1)  # (C, 1, D)
                 stack_expanded = stack.unsqueeze(0)  # (1, N, D)
                 dists = torch.norm(obs_expanded - stack_expanded, dim=-1)  # (C, N)
@@ -301,6 +304,7 @@ class Brain(nn.Module):
         n_candidates: int = PLAN_CANDIDATES,
         goal_vector: torch.Tensor | None = None,
         research_mode: bool = False,
+        policy: tuple[torch.Tensor, torch.Tensor] | None = None,
     ):
         """
         Vektorisiertes Planning: alle Kandidaten parallel auf GPU statt
@@ -309,11 +313,19 @@ class Brain(nn.Module):
         research_mode : bool
             When True, planner uses PLAN_HORIZON_RESEARCH (30) instead of
             PLAN_HORIZON (3). Wird automatisch aktiviert wenn research_drive > Threshold.
+        policy : optional (mean, std)
+            Precomputed policy head from the caller's forward(obs, hidden). When
+            given, the redundant internal forward is skipped. Numerically
+            identical: same obs/hidden -> same deterministic forward. forward()
+            draws no RNG, so the candidate sampling sequence is unchanged.
         """
         horizon = PLAN_HORIZON_RESEARCH if research_mode else PLAN_HORIZON
 
         with torch.no_grad():
-            mean, std, _, _ = self.forward(obs_tensor, hidden_tensor)
+            if policy is None:
+                mean, std, _, _ = self.forward(obs_tensor, hidden_tensor)
+            else:
+                mean, std = policy
             dist = torch.distributions.Normal(mean, std)
             # (n_candidates, 1, action_size) -> squeeze -> (n_candidates, action_size)
             raw_samples = dist.rsample((n_candidates,)).squeeze(1)
@@ -330,8 +342,9 @@ class Brain(nn.Module):
                 goal_vector=goal_vector,
             )
 
-            best_idx = int(scores.argmax().item())
-            best_action = action_samples[best_idx]
+            # Index with the 0-d argmax tensor directly: identical row, no host
+            # sync (.item() forced a GPU->CPU transfer every plan step).
+            best_action = action_samples[scores.argmax()]
             clipped = torch.clamp(best_action, -0.999, 0.999)
             raw_best = 0.5 * torch.log((1 + clipped) / (1 - clipped + 1e-8))
             log_prob = (dist.log_prob(raw_best) - torch.log(1 - clipped.pow(2) + 1e-6)).sum(dim=-1)
@@ -345,43 +358,50 @@ class Brain(nn.Module):
         goal_vector: torch.Tensor | None = None,
         research_mode: bool = False,
     ):
-        obs = torch.tensor(features, dtype=torch.float32, device=device).unsqueeze(0)
-        hidden = hidden_state.unsqueeze(0)
-        mean, std, value, next_hidden = self.forward(obs, hidden)
+        # Action selection builds no autograd graph: every output is detached and
+        # stored; gradients are recomputed later in maybe_train via evaluate_actions.
+        # no_grad (not inference_mode) so the stored obs/hidden/action tensors can be
+        # re-fed into the grad-enabled PPO forward without "inference tensor" errors.
+        with torch.no_grad():
+            obs = torch.tensor(features, dtype=torch.float32, device=device).unsqueeze(0)
+            hidden = hidden_state.unsqueeze(0)
+            mean, std, value, next_hidden = self.forward(obs, hidden)
 
-        if use_planning:
-            action, log_prob, candidate_scores = self.plan_action(
-                obs,
-                hidden,
-                goal_vector=goal_vector,
-                research_mode=research_mode,
-            )
-            _, _, _, next_hidden = self.forward(obs, hidden)
-        else:
-            dist = torch.distributions.Normal(mean, std)
-            raw_action = dist.rsample()
-            action = torch.tanh(raw_action)
-            clipped = torch.clamp(action, -0.999, 0.999)
-            raw_a = 0.5 * torch.log((1 + clipped) / (1 - clipped + 1e-8))
-            log_prob = (dist.log_prob(raw_a) - torch.log(1 - clipped.pow(2) + 1e-6)).sum(dim=-1)
+            if use_planning:
+                # Reuse this forward's policy head; next_hidden here is identical to
+                # the old post-plan re-forward (same obs/hidden, deterministic forward).
+                action, log_prob, candidate_scores = self.plan_action(
+                    obs,
+                    hidden,
+                    goal_vector=goal_vector,
+                    research_mode=research_mode,
+                    policy=(mean, std),
+                )
+            else:
+                dist = torch.distributions.Normal(mean, std)
+                raw_action = dist.rsample()
+                action = torch.tanh(raw_action)
+                clipped = torch.clamp(action, -0.999, 0.999)
+                raw_a = 0.5 * torch.log((1 + clipped) / (1 - clipped + 1e-8))
+                log_prob = (dist.log_prob(raw_a) - torch.log(1 - clipped.pow(2) + 1e-6)).sum(dim=-1)
 
-        entropy = torch.distributions.Normal(mean, std).entropy().sum(dim=-1)
+            entropy = torch.distributions.Normal(mean, std).entropy().sum(dim=-1)
 
-        # Emergenz v3: research_drive aus Dimension 6 extrahieren
-        action_list = action.squeeze(0).detach().tolist()
-        research_drive = float(action_list[6]) if len(action_list) > 6 else 0.0
+            # Emergenz v3: research_drive aus Dimension 6 extrahieren
+            action_list = action.squeeze(0).detach().tolist()
+            research_drive = float(action_list[6]) if len(action_list) > 6 else 0.0
 
-        return {
-            "obs_tensor": obs.detach(),
-            "hidden_in": hidden.detach(),
-            "value": value.detach(),
-            "next_hidden": next_hidden.squeeze(0).detach(),
-            "action_tensor": action.detach(),
-            "action_list": action_list,
-            "log_prob": log_prob.detach(),
-            "entropy": entropy.detach(),
-            "research_drive": research_drive,  # NEU: direkt zugreifbar fuer agent.update()
-        }
+            return {
+                "obs_tensor": obs.detach(),
+                "hidden_in": hidden.detach(),
+                "value": value.detach(),
+                "next_hidden": next_hidden.squeeze(0).detach(),
+                "action_tensor": action.detach(),
+                "action_list": action_list,
+                "log_prob": log_prob.detach(),
+                "entropy": entropy.detach(),
+                "research_drive": research_drive,  # NEU: direkt zugreifbar fuer agent.update()
+            }
 
     def intrinsic_reward(self, hidden_in, action_tensor, next_obs):
         """

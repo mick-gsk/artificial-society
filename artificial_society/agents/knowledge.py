@@ -42,6 +42,36 @@ class EpisodicMemory:
         self.k = k
         self.epsilon = epsilon
         self.buffer: Deque[torch.Tensor] = deque(maxlen=capacity)
+        # --- Tier-3 perf: cache the stacked buffer; rebuild only when it changes.
+        # `_version` bumps on every mutation; `stacked()` rebuilds lazily on a miss,
+        # so the per-rollout re-stack (and, on GPU, the host->device upload) happens
+        # at most once per buffer change instead of on every read.
+        self._version: int = 0
+        self._cache: torch.Tensor | None = None
+        self._cache_version: int = -1
+
+    def _remember(self, obs: torch.Tensor) -> None:
+        """Append to the rolling buffer and invalidate the stack cache."""
+        self.buffer.append(obs)
+        self._version += 1
+
+    def stacked(self, device: torch.device | None = None) -> torch.Tensor | None:
+        """Buffer stacked into one ``(N, D)`` tensor, cached across reads.
+
+        Identical to ``torch.stack(list(self.buffer))`` (optionally moved to
+        ``device``); rebuilt only when the buffer mutates. Returns ``None`` for
+        an empty buffer. When the cache already lives on ``device`` the ``.to``
+        is a no-op, which is what removes the repeated GPU re-upload.
+        """
+        if not self.buffer:
+            return None
+        if self._cache is None or self._cache_version != self._version:
+            self._cache = torch.stack(list(self.buffer))
+            self._cache_version = self._version
+        stack = self._cache
+        if device is not None:
+            stack = stack.to(device)
+        return stack
 
     def novelty(self, obs: torch.Tensor) -> float:
         """
@@ -51,20 +81,43 @@ class EpisodicMemory:
         """
         obs = obs.detach().float()
         if len(self.buffer) < self.k:
-            self.buffer.append(obs)
+            self._remember(obs)
             return 1.0
 
-        stack = torch.stack(list(self.buffer))          # (N, D)
+        stack = self.stacked(obs.device)                # (N, D)
         dists = torch.norm(stack - obs.unsqueeze(0), dim=-1)  # (N,)
         k_actual = min(self.k, len(dists))
         knn_dist = dists.topk(k_actual, largest=False).values.mean()
         score = float(knn_dist / (knn_dist + self.epsilon))
 
-        self.buffer.append(obs)
+        self._remember(obs)
         return score
 
     def reset(self) -> None:
         self.buffer.clear()
+        self._version += 1
+
+    # ------------------------------------------------------------------
+    # Pickle support (checkpoints serialize whole Agent/Brain graphs)
+    # ------------------------------------------------------------------
+    def __getstate__(self) -> dict:
+        # The stacked cache is a derived tensor (and may live on GPU); never
+        # persist it -- it bloats checkpoints and breaks cross-device loads.
+        state = self.__dict__.copy()
+        state["_cache"] = None
+        state["_cache_version"] = -1
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        # pickle restores objects WITHOUT calling __init__, so back-fill the
+        # cache attributes. Checkpoints written before the cache existed have
+        # none of them; restore safe defaults so _remember()/stacked() never
+        # AttributeError on the first call after load.
+        self.__dict__.update(state)
+        if not hasattr(self, "_version"):
+            self._version = 0
+        self._cache = None
+        self._cache_version = -1
 
 
 # ---------------------------------------------------------------------------
