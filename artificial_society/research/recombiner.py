@@ -43,19 +43,37 @@ def run_recombiner(
     moisture: float = 0.5,
     checkpoint_every: int | None = None,
     quiet: bool = True,  # kept for signature compat; no prints to suppress here
+    seed_pool: list[str] | None = None,
+    moisture_samples=None,
 ) -> tuple[list[dict], list[dict]]:
     """Run the standalone recombiner for ``n_attempts`` combinations.
 
     Returns ``(entries, series)`` where ``entries`` is the append-only discovery
     list (``{id, recipe, vector, discovered_by, tick, uses}``) and ``series`` is
     per-checkpoint ``{attempt, n_discoveries}`` snapshots.
+
+    Sensitivity-null knobs (both keep the *identical* recombination machinery):
+    * ``seed_pool`` (B5, matched ingredient) — restrict the starting base materials
+      to this subset (intersected with ``MATERIALS``, order preserved) instead of
+      all 24. Discovered materials are still added as they appear.
+    * ``moisture_samples`` (B4, matched moisture) — if given, each attempt draws its
+      ``env["moisture"]`` from this empirical sample (one seeded draw per attempt)
+      instead of the fixed ``moisture`` scalar.
     """
     env = {"moisture": moisture}
+    use_msamples = moisture_samples is not None and len(moisture_samples) > 0
+    msamples = [float(x) for x in moisture_samples] if use_msamples else None
     saved_state = random.getstate()
     random.seed(seed)
     try:
         # Parallel lists: index i -> (id/name, vector). Base materials first.
-        pool_ids: list[str] = list(MATERIALS.keys())
+        if seed_pool is not None:
+            wanted = set(seed_pool)
+            pool_ids: list[str] = [m for m in MATERIALS if m in wanted]
+            if not pool_ids:
+                raise ValueError("seed_pool does not overlap MATERIALS")
+        else:
+            pool_ids = list(MATERIALS.keys())
         pool_vecs: list[np.ndarray] = [MATERIALS[m].astype(np.float32) for m in pool_ids]
 
         # Vectorised dedup store for DISCOVERED materials only (growable, preallocated).
@@ -76,6 +94,8 @@ def run_recombiner(
             mat_a, va = pool_ids[ai], pool_vecs[ai]
             mat_b, vb = (pool_ids[bi], pool_vecs[bi]) if bi != ai else (None, None)
             action = random.choice(PRIMITIVE_ACTIONS)
+            if use_msamples:
+                env["moisture"] = msamples[random.randrange(len(msamples))]
 
             new_vec = combine_vectors(va, vb, action, env)
             if new_vec is not None and float(new_vec.sum()) > 0.1:

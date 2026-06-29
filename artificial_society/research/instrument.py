@@ -30,25 +30,40 @@ import artificial_society.environment.materials as _materials
 class CombineCounter:
     """Mutable counter handed back by :func:`count_combine_calls`."""
 
-    __slots__ = ("n",)
+    __slots__ = ("n", "moisture")
 
     def __init__(self) -> None:
         self.n = 0
+        self.moisture: list[float] = []  # populated only when record_moisture=True
+
+
+def _call_env(args, kwargs) -> dict | None:
+    """Resolve the ``env`` argument of ``combine_vectors(vec_a, vec_b, action, env)``."""
+    if "env" in kwargs:
+        return kwargs["env"]
+    return args[3] if len(args) > 3 else None
 
 
 @contextlib.contextmanager
-def count_combine_calls():
+def count_combine_calls(record_moisture: bool = False):
     """Count every ``combine_vectors`` invocation across all importing modules.
 
     Yields a :class:`CombineCounter` whose ``.n`` holds the live attempt count.
-    Patching is by function identity, so it catches every module that imported the
-    function under any name, then is fully reverted on exit.
+    With ``record_moisture=True`` it also appends each call's ``env["moisture"]`` to
+    ``.moisture`` (for the B4 matched-moisture null) — a pure read, so it never
+    consumes RNG and cannot perturb the simulation's determinism. Patching is by
+    function identity, so it catches every module that imported the function under
+    any name, then is fully reverted on exit.
     """
     counter = CombineCounter()
     orig = _materials.combine_vectors
 
     def wrapped(*args, **kwargs):
         counter.n += 1
+        if record_moisture:
+            env = _call_env(args, kwargs)
+            if env is not None and "moisture" in env:
+                counter.moisture.append(float(env["moisture"]))
         return orig(*args, **kwargs)
 
     patched = []

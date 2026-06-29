@@ -23,4 +23,5 @@ __all__ = [
     "metrics",
     "recombiner",
     "stats",
+    "sensitivity",
 ]
