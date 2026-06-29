@@ -46,10 +46,11 @@ percentile bootstrap; CPU determinism (`PYTHONHASHSEED=0`). See `stage0a-pilot-2
 
 ## What the paper still needs (gap list, cheap → expensive)
 
-1. **Learning-signal analysis (cheap, have the data).** Show the learned arm does *not* improve its
-   invention beyond sampling over training — e.g. discovery efficiency (discoveries/attempt) and
-   rediscovery rate over ticks, and functional-depth-per-discovery vs its early phase. Expected flat
-   ⇒ direct "no learning effect" evidence. *(Per-tick `series` is already exported.)*
+1. **Learning-signal analysis — partially done** (`analyze_learning.py`, Result 3). Inventive
+   efficiency (learned **5.2× below** the random operator, persistent) and no energy-adaptation are
+   shown from the exported series. A direct **reward/return curve** (does PPO return rise with
+   training?) would sharpen the "no learning" claim but needs a small export add + one short re-run —
+   optional for the workshop MVP.
 2. **Fairer-null sensitivity (cheap).** Re-run the recombiner restricted to the materials agents
    actually encounter (ingredient-matched), and with env-sampled `moisture`; confirm the sign holds.
 3. **The other two nulls (medium, Stage 0b, hot files).** frozen-brain + random-action strengthen the

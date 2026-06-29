@@ -50,6 +50,22 @@ structure than the learned/social agents. `rarefaction_figure.png` shows both cu
 #discoveries (the confound) with the recombiner consistently a few units above the learned arm over
 the common range.
 
+## Result 3 — Inventive efficiency & demography (no learned advantage)
+
+Same exported data; see `learning_figure.png` (`analyze_learning.py`).
+
+- **Inventive efficiency** (new discoveries per combination attempt, common range): learned **0.135**
+  vs recombiner **0.702** — the embodied learned/social agents are **5.2× less efficient inventors**
+  than uniform random recombination, throughout the run. Their invention is dominated by
+  re-discovery of locally-available materials; there is no learned novelty-seeking that would
+  approach, let alone beat, the operator.
+- **Demography:** population boom-busts (24 → ~310 → ~110 over 1500 ticks); **energy/agent** peaks
+  early (~tick 100) then declines and plateaus — **no upward adaptation trend**. The innovation
+  unfolds amid strong ecological dynamics, not a learning ramp.
+
+*Caveat:* a declining per-attempt efficiency is expected in any saturating discovery process; the
+informative quantity is the **learned-vs-operator gap** (5.2×) and its persistence, not the decline.
+
 ## Interpretation
 
 1. **No open-ended-learning advantage in the current system.** The learned/social machinery provides
