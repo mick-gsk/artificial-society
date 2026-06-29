@@ -87,32 +87,38 @@ def exact_sign_flip_test(diffs, max_exact: int = 20, n_mc: int = 20000, seed: in
 def cohens_dz(diffs, n_boot: int = 10000, seed: int = 0, confidence: float = 0.95) -> dict:
     """Standardised paired effect size ``dz = mean(d) / sd(d)`` with a bootstrap CI.
 
-    The CI is a seeded percentile bootstrap that discards degenerate resamples
-    (zero within-resample SD), so it stays well-defined even at small n.
+    The CI is a seeded percentile bootstrap that discards degenerate resamples (zero
+    within-resample SD → ``±inf`` dz). Those infinities carry the sign of the mean, so
+    dropping them very slightly narrows the CI on the mean's side — anti-conservative,
+    but only material at tiny n (P(all-identical resample) ``= n**(1-n)``: ~1.6% at
+    n=4, ~1.5e-12 at n=12). ``n_dropped`` is reported so the effect is visible. The dz
+    CI is descriptive only; the gate verdict never depends on it.
     """
     d = np.asarray(diffs, dtype=float).ravel()
     n = d.size
     if n == 0:
-        return {"dz": float("nan"), "ci": [float("nan"), float("nan")], "n": 0}
+        return {"dz": float("nan"), "ci": [float("nan"), float("nan")], "n": 0, "n_dropped": 0}
     mean = float(d.mean())
     sd = float(d.std(ddof=1)) if n > 1 else 0.0
     if sd == 0.0:
         dz = 0.0 if mean == 0.0 else float("inf") * (1.0 if mean > 0 else -1.0)
-        return {"dz": float(dz), "ci": [float(dz), float(dz)], "n": n}
+        return {"dz": float(dz), "ci": [float(dz), float(dz)], "n": n, "n_dropped": 0}
 
     dz = mean / sd
     rng = np.random.default_rng(seed)
     samp = d[rng.integers(0, n, size=(n_boot, n))]
     with np.errstate(divide="ignore", invalid="ignore"):
         bz = samp.mean(axis=1) / samp.std(axis=1, ddof=1)
-    bz = bz[np.isfinite(bz)]
+    finite = np.isfinite(bz)
+    n_dropped = int((~finite).sum())
+    bz = bz[finite]
     alpha = (1.0 - confidence) / 2.0 * 100.0
     lo, hi = (
         (float(np.percentile(bz, alpha)), float(np.percentile(bz, 100 - alpha)))
         if bz.size
         else (float("nan"), float("nan"))
     )
-    return {"dz": float(dz), "ci": [lo, hi], "n": n}
+    return {"dz": float(dz), "ci": [lo, hi], "n": n, "n_dropped": n_dropped}
 
 
 def bca_mean_ci(vals, seed: int = 0, confidence: float = 0.95, n_boot: int = 10000):

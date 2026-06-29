@@ -57,6 +57,7 @@ def run_learned(
 ) -> tuple[dict, list, list]:
     from artificial_society.environment.materials import DISCOVERY_REGISTRY
     from artificial_society.research.instrument import count_combine_calls, quiet_stdout
+    from artificial_society.research.sensitivity import thin_distribution
     from artificial_society.simulation import Simulation
 
     with quiet_stdout():
@@ -70,7 +71,10 @@ def run_learned(
         )
 
     series: list[dict] = []
-    with count_combine_calls() as cc, quiet_stdout():
+    # record_moisture captures each combine_vectors env["moisture"] (a pure read — no
+    # RNG, determinism-safe) so the B4 matched-moisture null can replay the empirical
+    # distribution the learned agents actually experienced.
+    with count_combine_calls(record_moisture=True) as cc, quiet_stdout():
         for t in range(ticks):
             sim.step()
             alive = [a for a in sim.agents if a.alive]
@@ -108,6 +112,8 @@ def run_learned(
         "pop": pop,
         "n_attempts": cc.n,
         "n_discoveries": len(entries),
+        # B4: thinned empirical moisture distribution seen at combine_vectors call sites.
+        "moisture_samples": [round(x, 4) for x in thin_distribution(cc.moisture, 2000)],
     }
     return meta, series, entries
 

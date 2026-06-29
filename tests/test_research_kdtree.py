@@ -53,21 +53,30 @@ def test_kdtree_matches_bruteforce_exactly(n, func_tau):
 
 
 def test_kdtree_boundary_stress():
-    """Points placed at exactly +/- epsilon of func_tau must classify identically."""
+    """Neighbours straddling func_tau, with DISTINCT depths so in/out changes the min.
+
+    Built on raw (V, sd, ids) arrays so the structural depths are non-trivial: id0 is
+    deep (9) and is surrounded by shallow neighbours at distances bracketing func_tau
+    (including exactly ==func_tau and ±1e-6). Whatever side of the tie the exact
+    float32 filter lands on, the KDTree path must select the *same* neighbour set as
+    brute force — and the result must be non-trivial (id0's depth is pulled below 9).
+    """
     func_tau = 0.15
-    base = [0.5] * 12
-    entries = [{"id": "mat_0000", "recipe": None, "vector": base}]
-    # neighbours at distances straddling func_tau along axis 0
-    for k, delta in enumerate(
-        [func_tau - 1e-6, func_tau, func_tau + 1e-6, func_tau - 1e-3, func_tau + 1e-3]
-    ):
-        v = list(base)
-        v[0] = 0.5 + delta
-        entries.append({"id": f"mat_{k + 1:04d}", "recipe": None, "vector": v})
-    V, sd, ids = _arrays(entries, func_tau)
-    assert metrics._functional_depths_kdtree(
-        V, sd, ids, func_tau
-    ) == metrics._functional_depths_bruteforce(V, sd, ids, func_tau)
+    base = np.full(12, 0.5, dtype=np.float32)
+    rows = [base.copy()]  # id0: deep point whose func_tau neighbourhood we probe
+    for delta in [func_tau - 1e-3, func_tau, func_tau + 1e-3, func_tau - 1e-6, func_tau + 1e-6]:
+        v = base.copy()
+        v[0] = np.float32(0.5 + delta)
+        rows.append(v)
+    V = np.array(rows, dtype=np.float32)
+    ids = [f"mat_{i:04d}" for i in range(len(rows))]
+    sd = np.array([9, 1, 2, 3, 4, 5], dtype=np.int64)  # id0 deep; neighbours shallow & distinct
+
+    kd = metrics._functional_depths_kdtree(V, sd, ids, func_tau)
+    brute = metrics._functional_depths_bruteforce(V, sd, ids, func_tau)
+    assert kd == brute
+    # non-trivial: an in-tau shallow neighbour pulled id0 below its own depth 9
+    assert kd[ids[0]] < 9
 
 
 def test_analyze_registry_dvs_identical_with_and_without_scipy(monkeypatch):

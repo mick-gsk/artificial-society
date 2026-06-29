@@ -9,6 +9,13 @@ nondeterminism.
 
 from __future__ import annotations
 
+import pytest
+
+# This test spawns real run_single subprocesses (full sim). Skip cleanly rather than
+# fail with an opaque FileNotFoundError when the sim's heavy deps are unavailable.
+pytest.importorskip("torch")
+pytest.importorskip("pygame")
+
 from artificial_society.research.run_pilot import run_pilot
 
 # tiny, fast config; threads pinned equal in both runs so the only difference is

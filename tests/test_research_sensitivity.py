@@ -9,6 +9,9 @@ replays the moisture distribution the learned arm experienced. Both reuse the
 
 from __future__ import annotations
 
+import hashlib
+import random
+
 import numpy as np
 
 from artificial_society.environment.materials import MATERIALS, combine_vectors
@@ -94,3 +97,29 @@ def test_thin_distribution_is_deterministic_subsample():
     assert len(thin) == 100
     assert thin == sensitivity.thin_distribution(vals, max_n=100)  # deterministic
     assert sensitivity.thin_distribution(vals, max_n=5000) == vals  # no-op when small enough
+
+
+# --- HARD req 4: default path byte-identity + instrument RNG-neutrality ---------
+
+
+def test_recombiner_default_path_is_byte_identical_golden():
+    """No-knob default path must stay byte-identical to the pre-change (d304700) baseline.
+
+    Pins recipes against a golden hash so a future accidental RNG draw in the default
+    branch (which self-reproducibility tests would NOT catch) fails loudly.
+    """
+    entries, _ = run_recombiner(seed=7, n_attempts=2000)
+    digest = hashlib.sha256(repr([e["recipe"] for e in entries]).encode()).hexdigest()
+    assert digest == "c561ac81745a637ce6fea3933dc8091d133827020203a8c2428cf83cbfacd4cd"
+
+
+def test_record_moisture_consumes_no_rng():
+    """The B4 moisture capture must be a pure read — identical RNG state to unwrapped."""
+    va, vb = MATERIALS["stone"], MATERIALS["flint"]
+    random.seed(99)
+    combine_vectors(va, vb, "strike", {"moisture": 0.4})
+    plain = random.getstate()
+    random.seed(99)
+    with count_combine_calls(record_moisture=True):
+        combine_vectors(va, vb, "strike", {"moisture": 0.4})
+    assert random.getstate() == plain
