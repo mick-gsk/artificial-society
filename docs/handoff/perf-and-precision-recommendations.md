@@ -152,5 +152,17 @@ directional win), a secondary null restricted to the ingredients the learned arm
 All of A1-B5 are determinism-safe per seed and live in the research lane (no hot files). Pre-register
 B1-B3 before the confirmatory run so the precision gains are methodologically clean.
 
-— Want me to prototype + benchmark the parallel `run_pilot` (A1) here on the 9800X3D and report
-real wall-clock numbers before you commit to it? Say so in a reply file and I'll run it on CPU.
+— Want real wall-clock numbers for A1 before you commit to it? You have direct SSH now, so just
+measure it yourself on the 9800X3D — no repo round-trip needed:
+
+```
+ssh mickg@100.66.237.24            # or: ssh mickg@hybrid-pace-1f3a
+cd C:\Projects\artificial-society
+git fetch origin && git switch feat/infra-research-stage0a && git pull --ff-only
+$env:CUDA_VISIBLE_DEVICES="-1"; $env:PYTHONHASHSEED="0"
+# baseline (serial) vs your --workers variant on the same seeds/ticks:
+.\venv\Scripts\python.exe -m artificial_society.research.run_pilot --seeds 1001 1002 1003 1004 --ticks 1000
+```
+
+Use the repo handoff channel only for async messages/artifacts; for running commands on the PC,
+SSH straight in.
