@@ -369,7 +369,7 @@ class Brain(nn.Module):
 
         # Emergenz v3: research_drive aus Dimension 6 extrahieren
         action_list = action.squeeze(0).detach().tolist()
-        research_drive = float(action_list[6]) if len(action_list) > 6 else 0.0
+        research_drive = (0.5 * (float(action_list[6]) + 1.0)) if len(action_list) > 6 else 0.0
 
         return {
             "obs_tensor": obs.detach(),
