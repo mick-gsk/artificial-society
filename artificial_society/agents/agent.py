@@ -1169,25 +1169,19 @@ class Agent:
 
         if self._need_inv_cooldown <= 0:
             compute_need_vector(self, current_cell)
-            inv_result = agent_invent_from_need(self, world, *self.pos, tick)
-            if inv_result:
-                reward += 0.5
-                self.endocrine.apply_discovery(1.0)
+            reward += agent_invent_from_need(self, world, *self.pos, tick)
             self._need_inv_cooldown = NEED_INVENTION_INTERVAL
         else:
             self._need_inv_cooldown -= 1
 
         inv_prob = INVENTION_BASE_PROB + INVENTION_CURIOSITY_MULT * self.genes.get("curiosity", 0.5)
         if tick % 3 == 0 and random.random() < inv_prob:
-            invented = agent_try_invention(self, world, *self.pos)
-            if invented:
-                reward += 1.0
-                self.endocrine.apply_discovery(1.0)
+            reward += agent_try_invention(self, world, *self.pos)
 
         if tick % 4 == 0 and random.random() < 0.18:
             cooked = agent_try_cook(self, world, *self.pos)
-            if cooked:
-                reward += 0.3
+            reward += cooked
+            if cooked > 0:
                 self.endocrine.apply_substance("cooked_meat", 1.0)
 
         if economy is not None:
