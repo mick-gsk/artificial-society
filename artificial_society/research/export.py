@@ -30,6 +30,7 @@ def entry_to_json(e: dict) -> dict:
         "discovered_by": int(e.get("discovered_by", -1)),
         "tick": int(e.get("tick", 0)),
         "uses": int(e.get("uses", 0)),
+        "adopters": sorted(e.get("adopters", [])),
     }
 
 

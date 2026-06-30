@@ -364,7 +364,7 @@ def agent_invent_from_need(
     action = _select_action_by_need(need, vec_a, vec_b, causal_mem)
 
     # Step 5a: Legacy-Pfad (fuer bekannte Interaktionen wie Feuer schlagen)
-    legacy_outcomes = apply_interaction(action, mat_a, mat_b, env)
+    legacy_outcomes = apply_interaction(action, mat_a, mat_b, env, discoverer_id=agent.id, tick=tick)
     legacy_reward = _evaluate_legacy_outcomes(
         agent, world, x, y, cell.get("materials", {}), legacy_outcomes, env
     )

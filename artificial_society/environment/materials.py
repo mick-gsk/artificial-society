@@ -494,7 +494,7 @@ def combine_vectors(
     return result
 
 
-def apply_interaction(action: str, mat_a: str, mat_b: str | None, env: dict) -> list[str]:
+def apply_interaction(action: str, mat_a: str, mat_b: str | None, env: dict, discoverer_id: int = -1, tick: int = 0) -> list[str]:
     results = []
     vec_a = get_vector(mat_a)
     vec_b = get_vector(mat_b) if mat_b else None
@@ -560,7 +560,7 @@ def apply_interaction(action: str, mat_a: str, mat_b: str | None, env: dict) -> 
     new_vec = combine_vectors(vec_a, vec_b, action, env)
     if new_vec is not None and float(new_vec.sum()) > 0.1:
         mat_id = DISCOVERY_REGISTRY.register(
-            new_vec, discoverer_id=-1, tick=0, recipe=(action, mat_a, mat_b)
+            new_vec, discoverer_id=discoverer_id, tick=tick, recipe=(action, mat_a, mat_b)
         )
         named_equiv = _find_named_equivalent(new_vec)
         if named_equiv is None:

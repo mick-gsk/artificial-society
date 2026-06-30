@@ -133,7 +133,7 @@ def agent_try_invention(agent, world, x, y) -> float:
     # --- SCHICHT 2: Bedürfnisgetriebene Aktionswahl ---
     action = _choose_action_by_need(agent, causal_mem, mat_a, mat_b, cell)
 
-    legacy_outcomes = apply_interaction(action, mat_a, mat_b, env)
+    legacy_outcomes = apply_interaction(action, mat_a, mat_b, env, discoverer_id=agent.id, tick=getattr(agent, "age", 0))
     legacy_reward = _evaluate_legacy_outcomes(agent, world, x, y, slot, legacy_outcomes, env)
 
     vec_a = get_vector(mat_a)
@@ -203,7 +203,7 @@ def agent_try_cook(agent, world, x, y) -> float:
         "temperature": cell.get("temperature", 20),
     }
 
-    outcomes = apply_interaction("place_on_heat", food_mat, heat_mat, env)
+    outcomes = apply_interaction("place_on_heat", food_mat, heat_mat, env, discoverer_id=agent.id, tick=getattr(agent, "age", 0))
     causal_mem = getattr(agent, "causal_memory", None)
     legacy_r = _evaluate_legacy_outcomes(agent, world, x, y, slot, outcomes, env)
     result_mats = [o for o in outcomes if not o.startswith("_")]
