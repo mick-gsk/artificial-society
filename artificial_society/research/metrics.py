@@ -343,6 +343,71 @@ def accumulated_useful_depth(
     }
 
 
+def graded_useful_advance(
+    entries: list[dict],
+    struct: dict[str, int] | None = None,
+    task_basis: dict = TASK_BASIS,
+    margin: float = ADVANCE_MARGIN,
+    base_vectors=None,
+    depth_weight: bool = False,
+) -> dict:
+    """M5(a) — non-floored, arm-symmetric, churn-immune functional score.
+
+    Like :func:`accumulated_useful_depth` it walks structural layers shallow->deep
+    and only credits an artifact that pushes a task-frontier no shallower artifact
+    (or base material) reached. But instead of recording the *depth* at which the
+    last advance happened — which saturates (with ``len(task_basis)`` tasks the score
+    is capped, and empirically pins at 2 for the embodied arm in both arms) — it sums
+    the **margin-normalised magnitude** of every frontier advance over all layers::
+
+        sum_layers sum_tasks  (layer_best - frontier) / margin   for advances > margin
+
+    This has unbounded headroom above the floor yet stays churn-immune (a structurally
+    deep but non-advancing artifact contributes 0) and arm-symmetric (a pure function of
+    vectors + recipes + task basis; it ignores ``uses``/``discovered_by``), so the
+    disembodied recombiner can be neither flattered nor floored by instrumentation.
+
+    ``depth_weight=True`` multiplies each layer's advance by its structural depth ``d``,
+    so cumulative ("standing on shoulders") advances dominate. The unweighted form is
+    deliberately depth-blind — the E0 embodiment experiment showed it saturates near a
+    task-ceiling magnitude regardless of fragmentation, so use ``depth_weight=True`` as
+    the discriminating gate DV and the unweighted form only as a saturation diagnostic.
+    """
+    names = list(task_basis)
+    if not entries:
+        return {"graded_useful_advance": 0.0, "per_task": {t: 0.0 for t in names}, "n_advancing_layers": 0}
+    if struct is None:
+        struct = structural_depths(entries)
+    V = np.array([e["vector"] for e in entries], dtype=np.float32)
+    U = _task_matrix(V, task_basis)
+    frontier = _base_frontier(task_basis, base_vectors)
+    sd = np.array([struct[e["id"]] for e in entries], dtype=int)
+
+    m = float(margin) if margin else 1.0
+    per_task = {t: 0.0 for t in names}
+    n_layers = 0
+    for d in sorted(set(sd.tolist())):
+        rows = np.where(sd == d)[0]
+        if not rows.size:
+            continue
+        layer_best = U[rows].max(axis=0)  # (T,) best task-utility on this structural layer
+        advance = layer_best - frontier  # vs the strictly-shallower frontier
+        w = float(d) if depth_weight else 1.0  # reward advances made at deeper layers
+        gained = False
+        for ti, t in enumerate(names):
+            if advance[ti] > margin:
+                per_task[t] += (float(advance[ti]) / m) * w
+                gained = True
+        if gained:
+            n_layers += 1
+        frontier = np.maximum(frontier, layer_best)  # fold this layer in AFTER scoring it
+    return {
+        "graded_useful_advance": float(sum(per_task.values())),
+        "per_task": per_task,
+        "n_advancing_layers": n_layers,
+    }
+
+
 def population_functional_value(
     entries: list[dict],
     func_tau: float = FUNC_TAU,

@@ -30,6 +30,7 @@ Das System funktioniert vollstaendig ohne hardcodierte Rezepte:
      Der Agent lernt das selbst durch Reward-Signal.
 """
 
+import os
 import random
 from typing import Optional
 
@@ -47,6 +48,7 @@ from artificial_society.environment.materials import (
 )
 from artificial_society.systems.invention import (
     NEW_DISCOVERY_BONUS,
+    PRIMITIVE_ACTIONS,
     REDISCOVERY_REWARD,
     _agent_homeostatic_state,
     _evaluate_legacy_outcomes,
@@ -66,6 +68,17 @@ NEED_FULFILLMENT_BONUS = 1.2
 # Legacy-Pfad systematisch benachteiligt. Auf 1.0 angehoben (gleichberechtigt),
 # passend zum Rebalance in invention.py.
 EMERGENT_WEIGHT = 1.0
+
+# --- M1 (Path-A): policy-coupled selective generation (flag-gated AS_PATHA_M1) ---
+# Uncounted twin of combine_vectors. It is a DIFFERENT module attribute name, so the
+# research.instrument identity-patch (which replaces only the symbol named
+# ``combine_vectors``) never wraps it -> the imagined means-ends search is free w.r.t.
+# the recombiner's counted-attempt match. Bound at import to the original function.
+_combine_pure = combine_vectors
+M1_TOP_K = 4  # rank materials by need-score, imagine combos among the top K
+M1_MAX_IMAGINED = 48  # hard cap on imagined (a, b, action) candidates per attempt
+M1_VOI_WEIGHT = 0.5  # weight of value-of-information (novelty) vs need-value
+M1_TEMP = 1.0  # softmax temperature for the seeded (NON-argmax) pick
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +324,96 @@ def _select_action_by_need(
 
 
 # ---------------------------------------------------------------------------
+# M1 (Path-A): seeded-softmax + value-of-information imagined means-ends search
+# ---------------------------------------------------------------------------
+
+
+def _m1_enabled() -> bool:
+    """M1 is active only when ``AS_PATHA_M1`` is set to a truthy value.
+
+    OFF (default) leaves WHAT/ACTION selection byte-identical to the live system, so the
+    determinism golden trajectory + headless digest stay green.
+    """
+    return os.environ.get("AS_PATHA_M1", "") not in ("", "0", "false", "False")
+
+
+def _available_materials(agent, cell: dict) -> list[str]:
+    """Distinct materials the agent can combine from (cell + inventory), order-stable."""
+    slot = cell.get("materials", {})
+    inv = getattr(agent, "material_inventory", {})
+    out: list[str] = []
+    seen: set[str] = set()
+    for mat, qty in slot.items():
+        if qty > 0.05 and mat not in seen:
+            seen.add(mat)
+            out.append(mat)
+    for mat, qty in inv.items():
+        if qty > 0.1 and not mat.startswith("_") and mat not in seen:
+            seen.add(mat)
+            out.append(mat)
+    return out
+
+
+def _select_combination_m1(agent, cell: dict, need: np.ndarray, causal_mem, env: dict):
+    """M1: seeded-softmax + value-of-information imagined means-ends search.
+
+    Ranks available materials by need-score, imagines every ``(mat_a, mat_b, action)``
+    combo among the top ``M1_TOP_K`` (capped at ``M1_MAX_IMAGINED``) with the UNCOUNTED
+    ``_combine_pure`` twin, scores each by ``need-value + M1_VOI_WEIGHT * novelty`` and
+    samples via a SEEDED softmax — deliberately NOT argmax (greedy argmax collapses
+    diversity, the C+D go/no-go failure mode). The imagined loop is wrapped in an RNG
+    save/restore so look-ahead never perturbs the world's RNG stream; only the final
+    softmax pick (and the single real combine downstream) consumes RNG.
+
+    Returns ``(mat_a, mat_b, action)`` or ``(None, None, None)``.
+    """
+    mats = _available_materials(agent, cell)
+    if not mats:
+        return None, None, None
+    mats.sort(key=lambda m: -_need_score(get_vector(m), need))
+    top = mats[:M1_TOP_K]
+    vecs = {m: get_vector(m) for m in top}
+
+    cands: list[tuple] = []
+    for i, ma in enumerate(top):
+        partners = [top[j] for j in range(len(top)) if j != i]
+        partners.append(None)
+        for mb in partners:
+            for action in PRIMITIVE_ACTIONS:
+                cands.append((ma, mb, action))
+    if len(cands) > M1_MAX_IMAGINED:
+        cands = cands[:M1_MAX_IMAGINED]
+
+    # imagined scoring — RNG-isolated so look-ahead is side-effect-free
+    rnd_state = random.getstate()
+    np_state = np.random.get_state()
+    scores = np.full(len(cands), -1e9, dtype=np.float32)
+    try:
+        for k, (ma, mb, action) in enumerate(cands):
+            va = vecs[ma]
+            vb = vecs[mb] if mb is not None else None
+            prod = _combine_pure(va, vb, action, env)
+            if prod is None or float(prod.sum()) <= 0.1:
+                continue
+            value = _need_score(prod, need)
+            novelty = float(np.linalg.norm(prod - va))  # transformation magnitude ~ VoI
+            scores[k] = value + M1_VOI_WEIGHT * novelty
+    finally:
+        random.setstate(rnd_state)
+        np.random.set_state(np_state)
+
+    valid = scores > -1e8
+    if not valid.any():
+        return None, None, None
+    s = np.where(valid, scores, -np.inf)
+    s = s - np.max(s[valid])
+    expv = np.where(valid, np.exp(s / M1_TEMP), 0.0)
+    probs = expv / expv.sum()
+    idx = int(np.random.choice(len(cands), p=probs))
+    return cands[idx]
+
+
+# ---------------------------------------------------------------------------
 # Haupt-API: Need-Driven Invention
 # ---------------------------------------------------------------------------
 
@@ -351,17 +454,24 @@ def agent_invent_from_need(
     if need_magnitude < eff_threshold:
         return 0.0
 
-    # Step 3: Materialien nach Need auswaehlen
-    mat_a, mat_b = _select_materials_by_need(agent, cell, need)
-    if mat_a is None:
-        return 0.0
-
     causal_mem = getattr(agent, "causal_memory", None)
-    vec_a = get_vector(mat_a)
-    vec_b = get_vector(mat_b) if mat_b else None
 
-    # Step 4: Action basierend auf Materialvektoren + Need
-    action = _select_action_by_need(need, vec_a, vec_b, causal_mem)
+    # Step 3+4: WHAT (materials) + ACTION selection.
+    if _m1_enabled():
+        # M1 (Path-A): seeded-softmax + VoI imagined means-ends search (uncounted twin).
+        mat_a, mat_b, action = _select_combination_m1(agent, cell, need, causal_mem, env)
+        if mat_a is None:
+            return 0.0
+        vec_a = get_vector(mat_a)
+        vec_b = get_vector(mat_b) if mat_b else None
+    else:
+        # Live system (OFF): byte-identical RNG path — material softmax, then action softmax.
+        mat_a, mat_b = _select_materials_by_need(agent, cell, need)
+        if mat_a is None:
+            return 0.0
+        vec_a = get_vector(mat_a)
+        vec_b = get_vector(mat_b) if mat_b else None
+        action = _select_action_by_need(need, vec_a, vec_b, causal_mem)
 
     # Step 5a: Legacy-Pfad (fuer bekannte Interaktionen wie Feuer schlagen)
     legacy_outcomes = apply_interaction(action, mat_a, mat_b, env)

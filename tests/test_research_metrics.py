@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import random
 
+import pytest
+
 from artificial_society.environment.materials import MATERIALS, N_PROPS, combine_vectors
 from artificial_society.research import metrics
 from artificial_society.research.recombiner import run_recombiner
@@ -203,3 +205,150 @@ def test_transmitted_frontier_advances_counts_when_attributed():
     )
     assert out["computable"] is True
     assert out["transmitted_frontier_advances"] == 1
+
+
+# --------------------------------------------------------------------------
+# M5(a) — graded_useful_advance: a NON-FLOORED, arm-symmetric, churn-immune
+# functional metric. Replaces the per-layer-max DV2 (which empirically pins at
+# DV2=2 for the embodied arm in both arms) with the margin-normalised MAGNITUDE
+# of frontier advances summed over structural layers, so the score has headroom
+# above the floor without becoming hackable by blind volume/churn.
+# --------------------------------------------------------------------------
+
+
+def test_graded_useful_advance_lifts_off_floor():
+    # single-task chain advancing 0.3 -> 0.6 -> 0.9 across structural depths 1/2/3.
+    # margin-normalised advance per layer = 0.3 / 0.02 = 15  ->  total 45, far above
+    # the empirical DV2 floor (=2). This is the M5(a) acceptance gate.
+    entries = [
+        {"id": "m0", "recipe": ["bundle", "stone", "flint"], "vector": _byidx({0: 0.3})},
+        {"id": "m1", "recipe": ["bundle", "m0", "stone"], "vector": _byidx({0: 0.6})},
+        {"id": "m2", "recipe": ["bundle", "m1", "stone"], "vector": _byidx({0: 0.9})},
+    ]
+    struct = {"m0": 1, "m1": 2, "m2": 3}
+    out = metrics.graded_useful_advance(
+        entries, struct=struct, task_basis=_T0, base_vectors=_ZERO_BASE, margin=0.02
+    )
+    assert out["graded_useful_advance"] == pytest.approx(45.0)
+    assert out["graded_useful_advance"] > 2  # lifts off the empirical DV2 floor
+    assert out["per_task"]["t0"] == pytest.approx(45.0)
+
+
+def test_graded_useful_advance_depth_weight_rewards_deep_advances():
+    # Two single-task sets with EQUAL total advance magnitude (0.6) but different
+    # structural depth. Unweighted graded is equal (it is depth-blind by construction);
+    # depth-weighted graded rewards the deep, cumulative chain ("standing on shoulders").
+    shallow = [{"id": "m0", "recipe": ["bundle", "stone", "flint"], "vector": _byidx({0: 0.6})}]
+    deep = [
+        {"id": "m0", "recipe": ["bundle", "stone", "flint"], "vector": _byidx({0: 0.2})},
+        {"id": "m1", "recipe": ["bundle", "m0", "stone"], "vector": _byidx({0: 0.4})},
+        {"id": "m2", "recipe": ["bundle", "m1", "stone"], "vector": _byidx({0: 0.6})},
+    ]
+    kw = dict(task_basis=_T0, base_vectors=_ZERO_BASE, margin=0.02)
+    s_unw = metrics.graded_useful_advance(shallow, struct={"m0": 1}, **kw)["graded_useful_advance"]
+    d_unw = metrics.graded_useful_advance(
+        deep, struct={"m0": 1, "m1": 2, "m2": 3}, **kw
+    )["graded_useful_advance"]
+    assert s_unw == pytest.approx(d_unw)  # equal total magnitude -> unweighted is blind to depth
+    s_w = metrics.graded_useful_advance(
+        shallow, struct={"m0": 1}, depth_weight=True, **kw
+    )["graded_useful_advance"]
+    d_w = metrics.graded_useful_advance(
+        deep, struct={"m0": 1, "m1": 2, "m2": 3}, depth_weight=True, **kw
+    )["graded_useful_advance"]
+    assert d_w > s_w  # depth-weighting discriminates the cumulative (deep) chain
+    assert s_w == pytest.approx(30.0)
+    assert d_w == pytest.approx(60.0)  # 10*1 + 10*2 + 10*3
+
+
+def test_graded_useful_advance_is_churn_immune():
+    # m0 (d1) advances to 0.5; m1 (d2, 0.3) and m2 (d3, 0.4) sit BELOW the running
+    # frontier and earn ZERO graded credit despite being structurally deeper.
+    entries = [
+        {"id": "m0", "recipe": ["bundle", "stone", "flint"], "vector": _byidx({0: 0.5})},
+        {"id": "m1", "recipe": ["bundle", "m0", "stone"], "vector": _byidx({0: 0.3})},
+        {"id": "m2", "recipe": ["bundle", "m1", "stone"], "vector": _byidx({0: 0.4})},
+    ]
+    struct = {"m0": 1, "m1": 2, "m2": 3}
+    out = metrics.graded_useful_advance(
+        entries, struct=struct, task_basis=_T0, base_vectors=_ZERO_BASE, margin=0.02
+    )
+    assert out["graded_useful_advance"] == pytest.approx(25.0)  # only m0: 0.5 / 0.02
+
+
+def test_graded_useful_advance_is_arm_symmetric():
+    # identical geometry; differ ONLY in uses/discovered_by (the instrumentation fields
+    # the disembodied recombiner structurally lacks). A hack-resistant functional metric
+    # must ignore them -> the recombiner cannot be flattered or floored by instrumentation.
+    base = [
+        {"id": "m0", "recipe": ["bundle", "stone", "flint"], "vector": _byidx({0: 0.4})},
+        {"id": "m1", "recipe": ["bundle", "m0", "stone"], "vector": _byidx({0: 0.8})},
+    ]
+    learned = [{**e, "uses": 10, "discovered_by": 3} for e in base]
+    recombiner = [{**e, "uses": 0, "discovered_by": -1} for e in base]
+    struct = {"m0": 1, "m1": 2}
+    kw = dict(struct=struct, task_basis=_T0, base_vectors=_ZERO_BASE, margin=0.02)
+    a = metrics.graded_useful_advance(learned, **kw)["graded_useful_advance"]
+    b = metrics.graded_useful_advance(recombiner, **kw)["graded_useful_advance"]
+    assert a == b
+
+
+# --------------------------------------------------------------------------
+# E0 / M2 — embodiment-matched recombiner null. Same blind uniform combine
+# machinery as run_recombiner, but the budget is split over N agents each with
+# their OWN local pool (fragmentation) sharing discoveries only at share_fidelity.
+# Isolates the disembodied recombiner's structural advantage (one perfect-memory
+# monopolist pool) from learning, to test whether the -9.4 gap is an embodiment
+# confound rather than a learning failure.
+# --------------------------------------------------------------------------
+
+
+def _is_discovered(mat) -> bool:
+    return isinstance(mat, str) and mat.startswith("mat_")
+
+
+def test_embodied_recombiner_produces_attributed_discoveries():
+    from artificial_society.research.recombiner import run_embodied_recombiner
+
+    entries, series = run_embodied_recombiner(seed=1, n_attempts=2000, n_agents=4)
+    assert len(entries) > 0
+    assert series[-1]["attempt"] == 2000
+    assert series[-1]["n_discoveries"] == len(entries)
+    # every discovery is attributed to a real agent in [0, n_agents)
+    assert all(0 <= e["discovered_by"] < 4 for e in entries)
+
+
+def test_embodied_recombiner_is_reproducible():
+    from artificial_society.research.recombiner import run_embodied_recombiner
+
+    e1, _ = run_embodied_recombiner(seed=7, n_attempts=600, n_agents=4, share_fidelity=0.5)
+    e2, _ = run_embodied_recombiner(seed=7, n_attempts=600, n_agents=4, share_fidelity=0.5)
+    assert [x["recipe"] for x in e1] == [x["recipe"] for x in e2]
+    assert [x["discovered_by"] for x in e1] == [x["discovered_by"] for x in e2]
+
+
+def test_embodied_recombiner_isolates_pools_without_sharing():
+    # With share_fidelity=0 an agent can only build on base materials and its OWN
+    # discoveries -> no recipe input may be a material discovered by another agent.
+    from artificial_society.research.recombiner import run_embodied_recombiner
+
+    entries, _ = run_embodied_recombiner(
+        seed=2, n_attempts=1500, n_agents=3, share_fidelity=0.0
+    )
+    owner = {e["id"]: e["discovered_by"] for e in entries}
+    for e in entries:
+        a = e["discovered_by"]
+        for inp in (e["recipe"][1], e["recipe"][2]):
+            if _is_discovered(inp):
+                assert owner[inp] == a  # never builds on another agent's discovery
+
+
+def test_embodied_recombiner_does_not_perturb_global_rng():
+    from artificial_society.research.recombiner import run_embodied_recombiner
+
+    random.seed(123)
+    before = [random.random() for _ in range(3)]
+    random.seed(123)
+    run_embodied_recombiner(seed=7, n_attempts=50, n_agents=4)
+    after = [random.random() for _ in range(3)]
+    assert before == after
