@@ -262,7 +262,7 @@ def _get_growth_vector(mat_id: str) -> Optional[np.ndarray]:
     if mat_id in GROWTH_SEEDS:
         return GROWTH_SEEDS[mat_id]
     # Discovered materials: check if close to a seed
-    vec = DISCOVERY_REGISTRY.get_vector(mat_id)
+    vec = DISCOVERY_REGISTRY.peek_vector(mat_id)
     # Kleine Partikel (masse < 0.2, edibility > 0) könnten Samen sein
     if (
         vec is not None

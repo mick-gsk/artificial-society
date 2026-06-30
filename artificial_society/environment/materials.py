@@ -231,9 +231,15 @@ def get_material(name: str) -> dict:
 
 
 def get_vector(name_or_id: str) -> np.ndarray:
+    """Convenience wrapper: pure lookup, no use-count side-effect.
+
+    All module-level callers are reads-for-computation (combine inputs,
+    heat/light/toxicity sensing, valuation, rendering).  Genuine consumption
+    must call ``DISCOVERY_REGISTRY.record_use(mat_id)`` explicitly.
+    """
     if name_or_id in MATERIALS:
         return MATERIALS[name_or_id].copy()
-    return DISCOVERY_REGISTRY.get_vector(name_or_id)
+    return DISCOVERY_REGISTRY.peek_vector(name_or_id)
 
 
 # ---------------------------------------------------------------------------
@@ -291,12 +297,24 @@ class DiscoveryRegistry:
         self._known_ids_cache = None
         return new_id
 
-    def get_vector(self, mat_id: str) -> np.ndarray:
+    def peek_vector(self, mat_id: str) -> np.ndarray:
+        """Side-effect-free vector lookup (does NOT count as a use)."""
+        for entry in self.entries:
+            if entry["id"] == mat_id:
+                return entry["vector"].copy()
+        return np.zeros(N_PROPS, dtype=np.float32)
+
+    def record_use(self, mat_id: str) -> None:
+        """Mark a material as genuinely used (homeostatic relief / consumption)."""
         for entry in self.entries:
             if entry["id"] == mat_id:
                 entry["uses"] += 1
-                return entry["vector"].copy()
-        return np.zeros(N_PROPS, dtype=np.float32)
+                return
+
+    def get_vector(self, mat_id: str) -> np.ndarray:
+        """Backward-compat: lookup + count as a use (legacy consumers)."""
+        self.record_use(mat_id)
+        return self.peek_vector(mat_id)
 
     def known_ids(self) -> list[str]:
         cached = getattr(self, "_known_ids_cache", None)

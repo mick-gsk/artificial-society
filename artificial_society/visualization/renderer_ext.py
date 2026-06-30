@@ -137,7 +137,7 @@ def _draw_emergent_materials(self, screen, world):
                 if not mat_id.startswith('mat_'):
                     continue
 
-                vec = DISCOVERY_REGISTRY.get_vector(mat_id)
+                vec = DISCOVERY_REGISTRY.peek_vector(mat_id)
                 if vec is None or float(vec.sum()) < 0.05:
                     continue
 
