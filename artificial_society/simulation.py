@@ -12,6 +12,7 @@ from artificial_society.environment.territory import update_territory_claims
 from artificial_society.renderer import Renderer
 from artificial_society.rng import seed_all
 from artificial_society.systems import registry
+from artificial_society.systems._lineage_frontier import reset_frontiers
 from artificial_society.systems.culture import CausalMemory
 from artificial_society.systems.goal_stack_ext import RECIPE_DISCOVERY, SEQUENCE_LIBRARY
 from artificial_society.systems.invention import (
@@ -62,6 +63,7 @@ def _reset_accumulating_singletons() -> None:
     ``__init__``.
     """
     DISCOVERY_REGISTRY.reset()
+    reset_frontiers()
     TOKEN_WORLD.reset()
     SEQUENCE_LIBRARY.reset()
     RECIPE_DISCOVERY.reset()
