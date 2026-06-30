@@ -39,11 +39,12 @@ import random
 
 import numpy as np
 
-from artificial_society.environment.materials import MATERIALS, combine_vectors
+from artificial_society.environment.materials import IDX, MATERIALS, combine_vectors
 
 DEDUP_TAU = 0.08
 FUNC_TAU = 0.15
 ACTIVE_DIM_THRESHOLD = 0.1
+ADVANCE_MARGIN = 0.02  # task-utility a deeper artifact must beat to count as a genuine advance
 DETERMINISTIC_ACTIONS = (
     "strike",
     "bind",
@@ -212,6 +213,238 @@ def knockout_validate(
         "required": required,
         "required_frac": (required / tested) if tested else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Value-based DVs (Path-A retrofit, Schritt A)
+# ---------------------------------------------------------------------------
+# Why these exist: the original gate DV (``max_functional_depth``) reads only the
+# *geometry* of the global discovery registry. It is blind to reward, adoption
+# (``uses``), agent attribution (``discovered_by``) and transmission — so four of
+# the five retrofit mechanisms cannot move it *by construction*. The adversarial
+# review forced a measurement reform: DVs that score the **realised, rebuilt
+# frontier** — function-advancing, adopted, transmitted value — not artifact count.
+#
+# The task basis B operationalises the design's pre-registered goal set
+# {edibility-given-hunger, heat, light, sharpness, low-toxicity, scent}. Each task
+# maps the (n,12) property matrix to an (n,) scalar utility in [0,1]; conjunctive
+# goals fold "low-toxicity" in as a ``(1 - toxicity)`` safety factor and reduce the
+# single-dimension base-saturation of this world's rich seed set (fire already
+# saturates heat/light, cooked_* saturate edibility). ``func_tau``/``k``/the basis
+# are observer parameters — sweep + pre-register before any unblinded re-pilot.
+
+
+def _u_edible_safe(V):
+    return V[:, IDX["edibility"]] * (1.0 - V[:, IDX["toxicity"]])
+
+
+def _u_warm_meal(V):
+    return V[:, IDX["edibility"]] * V[:, IDX["heat_emission"]] * (1.0 - V[:, IDX["toxicity"]])
+
+
+def _u_portable_light(V):
+    return V[:, IDX["light_emission"]] * (1.0 - V[:, IDX["mass"]])
+
+
+def _u_cutting_tool(V):
+    return V[:, IDX["sharpness"]] * V[:, IDX["hardness"]]
+
+
+def _u_fragrant(V):
+    return V[:, IDX["scent"]]
+
+
+def _u_heat(V):
+    return V[:, IDX["heat_emission"]]
+
+
+TASK_BASIS = {
+    "edible_safe": _u_edible_safe,
+    "warm_meal": _u_warm_meal,
+    "portable_light": _u_portable_light,
+    "cutting_tool": _u_cutting_tool,
+    "fragrant": _u_fragrant,
+    "heat": _u_heat,
+}
+
+
+def _task_matrix(V: np.ndarray, task_basis: dict) -> np.ndarray:
+    """(n,12) property matrix -> (n,T) task-utility matrix in basis order."""
+    names = list(task_basis)
+    if V.shape[0] == 0 or not names:
+        return np.zeros((V.shape[0], len(names)), dtype=float)
+    return np.column_stack([np.asarray(task_basis[t](V), dtype=float) for t in names])
+
+
+def _base_frontier(task_basis: dict, base_vectors) -> np.ndarray:
+    """Per-task ceiling reachable from base materials (depth 0)."""
+    base = (
+        np.array(list(MATERIALS.values()), dtype=np.float32)
+        if base_vectors is None
+        else np.array(base_vectors, dtype=np.float32)
+    )
+    Ub = _task_matrix(base, task_basis)
+    return Ub.max(axis=0) if Ub.shape[0] else np.zeros(len(task_basis))
+
+
+def accumulated_useful_depth(
+    entries: list[dict],
+    struct: dict[str, int] | None = None,
+    task_basis: dict = TASK_BASIS,
+    margin: float = ADVANCE_MARGIN,
+    base_vectors=None,
+) -> dict:
+    """DV2 — cumulative *useful* depth: an artifact earns depth credit only if it
+    advances a task-frontier no shallower artifact (or base material) reached.
+
+    Churn-immune (redundant deep artifacts that don't beat the frontier score 0)
+    and arm-symmetric (pure function of vectors + recipes + task basis), so it is
+    the DV that can be validated on the existing pilot data without instrumentation.
+    """
+    names = list(task_basis)
+    empty = {
+        "accumulated_useful_depth": 0,
+        "n_useful_advances": 0,
+        "useful_depth_max": 0,
+        "per_task": {t: 0 for t in names},
+        "advancing_ids": [],
+    }
+    if not entries:
+        return empty
+    if struct is None:
+        struct = structural_depths(entries)
+    V = np.array([e["vector"] for e in entries], dtype=np.float32)
+    U = _task_matrix(V, task_basis)
+    frontier = _base_frontier(task_basis, base_vectors)
+    sd = np.array([struct[e["id"]] for e in entries], dtype=int)
+
+    per_task_maxdepth = {t: 0 for t in names}
+    advancing_ids: list[str] = []
+    for d in sorted(set(sd.tolist())):
+        rows = np.where(sd == d)[0]
+        layer_adv = U[rows] > (frontier[None, :] + margin)  # (k,T) vs strictly-shallower frontier
+        for ti, t in enumerate(names):
+            if layer_adv[:, ti].any():
+                per_task_maxdepth[t] = d
+        advancing_ids.extend(entries[int(r)]["id"] for r in rows[layer_adv.any(axis=1)])
+        if rows.size:  # fold this layer in only after scoring it
+            frontier = np.maximum(frontier, U[rows].max(axis=0))
+
+    advancing = set(advancing_ids)
+    useful_depth_max = max(
+        (int(struct[e["id"]]) for e in entries if e["id"] in advancing), default=0
+    )
+    return {
+        "accumulated_useful_depth": int(sum(per_task_maxdepth.values())),
+        "n_useful_advances": len(advancing_ids),
+        "useful_depth_max": useful_depth_max,
+        "per_task": per_task_maxdepth,
+        "advancing_ids": advancing_ids,
+    }
+
+
+def population_functional_value(
+    entries: list[dict],
+    func_tau: float = FUNC_TAU,
+    task_basis: dict = TASK_BASIS,
+    weight: str = "uses",
+) -> dict:
+    """DV1 — Σ over functional clusters of (adoption weight · best task-utility).
+
+    On the *current* pilot export the adoption weight ``uses`` is polluted
+    (incremented on every ``get_vector`` lookup, not on real homeostatic use) and
+    is structurally 0 for the disembodied recombiner. So this DV is returned with
+    ``provisional=True``: it floors the recombiner for an *instrumentation* reason,
+    not a behavioural one, and must NOT be used for the fairness proof until ``uses``
+    is replaced by a clean ``record_use`` signal (Step-1 instrumentation).
+    """
+    if not entries:
+        return {
+            "population_functional_value": 0.0,
+            "weight_source": weight,
+            "provisional": weight == "uses",
+            "n_clusters": 0,
+            "total_weight": 0.0,
+        }
+    w = np.array([float(e.get("uses", 0)) for e in entries], dtype=float)
+    total_w = float(w.sum())
+    if total_w == 0.0:  # recombiner / un-instrumented: value collapses, skip O(n^2) clustering
+        return {
+            "population_functional_value": 0.0,
+            "weight_source": weight,
+            "provisional": weight == "uses",
+            "n_clusters": 0,
+            "total_weight": 0.0,
+        }
+    V = np.array([e["vector"] for e in entries], dtype=np.float32)
+    U = _task_matrix(V, task_basis)
+    util = (U.max(axis=1) if U.shape[1] else np.zeros(len(entries))).astype(np.float32)
+
+    # Greedy func_tau clustering with a preallocated, vectorised nearest-rep search
+    # (assign each artifact to its closest existing cluster within func_tau, else
+    # open a new one) — O(n · n_clusters) in numpy, not an O(n^2) Python loop.
+    cap = len(V)
+    reps = np.empty((cap, V.shape[1]), dtype=np.float32)
+    cl_w = np.zeros(cap, dtype=np.float64)
+    cl_u = np.zeros(cap, dtype=np.float64)
+    nrep = 0
+    tau2 = float(func_tau) ** 2
+    for i in range(cap):
+        if nrep:
+            d2 = ((reps[:nrep] - V[i]) ** 2).sum(axis=1)
+            j = int(d2.argmin())
+            if d2[j] <= tau2:
+                cl_w[j] += w[i]
+                cl_u[j] = max(cl_u[j], float(util[i]))
+                continue
+        reps[nrep] = V[i]
+        cl_w[nrep] = w[i]
+        cl_u[nrep] = float(util[i])
+        nrep += 1
+
+    value = float((cl_w[:nrep] * cl_u[:nrep]).sum())
+    return {
+        "population_functional_value": value,
+        "weight_source": weight,
+        "provisional": weight == "uses",
+        "n_clusters": nrep,
+        "total_weight": total_w,
+    }
+
+
+def transmitted_frontier_advances(
+    entries: list[dict],
+    struct: dict[str, int] | None = None,
+    task_basis: dict = TASK_BASIS,
+    margin: float = ADVANCE_MARGIN,
+    base_vectors=None,
+    k: int = 2,
+) -> dict:
+    """DV3 — frontier-advancing artifacts that were *also* adopted/transmitted.
+
+    Requires per-agent attribution (``discovered_by``) which the current export
+    does not carry (all -1). Returns ``computable=False`` in that case so the gate
+    treats it as instrumentation-blocked rather than a real zero. When attribution
+    exists, an advance counts if it was created by a real agent and adopted ≥ k
+    times (``uses`` as the best available adoption proxy).
+    """
+    computable = any(int(e.get("discovered_by", -1)) >= 0 for e in entries)
+    if not computable:
+        return {
+            "transmitted_frontier_advances": 0,
+            "computable": False,
+            "reason": "no per-agent discovered_by/adopter attribution in export",
+        }
+    aud = accumulated_useful_depth(
+        entries, struct=struct, task_basis=task_basis, margin=margin, base_vectors=base_vectors
+    )
+    idx = _index(entries)
+    count = 0
+    for mid in aud["advancing_ids"]:
+        e = idx[mid]
+        if int(e.get("discovered_by", -1)) >= 0 and int(e.get("uses", 0)) >= k:
+            count += 1
+    return {"transmitted_frontier_advances": count, "computable": True, "k": k}
 
 
 def analyze_registry(entries: list[dict], func_tau: float = FUNC_TAU) -> dict:

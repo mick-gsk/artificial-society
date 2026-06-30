@@ -26,7 +26,12 @@ import os
 import numpy as np
 
 from artificial_society.research.export import load_run
-from artificial_society.research.metrics import functional_depths
+from artificial_society.research.metrics import (
+    accumulated_useful_depth,
+    functional_depths,
+    population_functional_value,
+    transmitted_frontier_advances,
+)
 
 PRIMARY_DV = "max_functional_depth"
 FUNC_TAU_SWEEP = (0.10, 0.15, 0.20)
@@ -97,6 +102,147 @@ def _verdict(learned_vals, recomb_vals) -> dict:
         "ci_separated": bool(separated),
         "paired_ci_positive": bool(paired_positive),
     }
+
+
+# ---------------------------------------------------------------------------
+# DV comparison (Path-A retrofit, Schritt A): rank candidate DVs by how cleanly
+# they separate the arms (Cohen's dz) and how low-variance the paired diff is.
+# Each DV maps (entries, func_tau) -> scalar; NaN => instrumentation-blocked.
+# ---------------------------------------------------------------------------
+
+
+def _dv_max_functional_depth(entries, func_tau):
+    return float(_max_functional_depth(entries, func_tau))
+
+
+def _dv_mean_functional_depth(entries, func_tau):
+    fds = functional_depths(entries, func_tau=func_tau)
+    return float(np.mean(list(fds.values()))) if fds else 0.0
+
+
+def _dv_accumulated_useful_depth(entries, func_tau):
+    return float(accumulated_useful_depth(entries)["accumulated_useful_depth"])
+
+
+def _dv_useful_depth_max(entries, func_tau):
+    return float(accumulated_useful_depth(entries)["useful_depth_max"])
+
+
+def _dv_population_functional_value(entries, func_tau):
+    return float(population_functional_value(entries, func_tau=func_tau)["population_functional_value"])
+
+
+def _dv_transmitted_frontier_advances(entries, func_tau):
+    r = transmitted_frontier_advances(entries)
+    return float(r["transmitted_frontier_advances"]) if r["computable"] else float("nan")
+
+
+DV_FUNCS = {
+    "max_functional_depth": _dv_max_functional_depth,
+    "mean_functional_depth": _dv_mean_functional_depth,
+    "accumulated_useful_depth": _dv_accumulated_useful_depth,
+    "useful_depth_max": _dv_useful_depth_max,
+    "population_functional_value": _dv_population_functional_value,
+    "transmitted_frontier_advances": _dv_transmitted_frontier_advances,
+}
+
+# DVs whose validity depends on the value/transmission instrumentation the current
+# pilot export lacks (polluted `uses`, all `discovered_by` = -1). Flagged so the
+# fairness proof never silently rests on an instrumentation artefact.
+PROVISIONAL_DVS = {"population_functional_value", "transmitted_frontier_advances"}
+
+
+def _dz(diff: np.ndarray) -> float:
+    """Cohen's dz = mean(diff)/sd(diff); sign + = learned beats recombiner."""
+    sd = float(diff.std(ddof=1)) if len(diff) > 1 else 0.0
+    if sd == 0.0:
+        return float("inf") if diff.mean() > 0 else (float("-inf") if diff.mean() < 0 else 0.0)
+    return float(diff.mean() / sd)
+
+
+def _compare_row(name: str, lv: list, rv: list) -> dict:
+    lv = np.asarray(lv, dtype=float)
+    rv = np.asarray(rv, dtype=float)
+    computable = not (np.isnan(lv).any() or np.isnan(rv).any())
+    if not computable:
+        return {
+            "dv": name,
+            "computable": False,
+            "provisional": name in PROVISIONAL_DVS,
+            "reason": "instrumentation-blocked (no per-agent attribution in export)",
+        }
+    diff = lv - rv
+    res = _verdict(lv.tolist(), rv.tolist())
+    return {
+        "dv": name,
+        "computable": True,
+        "provisional": name in PROVISIONAL_DVS,
+        "learned_mean": float(lv.mean()),
+        "recombiner_mean": float(rv.mean()),
+        "paired_diff_mean": float(diff.mean()),
+        "sd_diff": float(diff.std(ddof=1)) if len(diff) > 1 else 0.0,
+        "dz": _dz(diff),
+        "verdict": res["verdict"],
+    }
+
+
+def compare_dvs(outdir: str, func_tau: float = FUNC_TAU_SWEEP[1], dv_names=None) -> dict:
+    """Run every candidate DV on the same paired runs; rank by effect size.
+
+    Loads each run once (recombiner exports are large), applies all DVs, and
+    returns rows sorted by signed dz (most pro-learned first); instrumentation-
+    blocked DVs are listed separately.
+    """
+    paired = _collect(outdir)
+    if not paired:
+        raise SystemExit(f"No paired learned/recombiner exports found in {outdir}")
+    dv_names = dv_names or list(DV_FUNCS)
+    seeds = sorted(paired)
+
+    runs: dict[tuple, list] = {}
+    for s in seeds:
+        for arm in ("learned", "recombiner"):
+            runs[(s, arm)] = load_run(paired[s][arm])["entries"]
+
+    rows = []
+    for name in dv_names:
+        fn = DV_FUNCS[name]
+        lv = [fn(runs[(s, "learned")], func_tau) for s in seeds]
+        rv = [fn(runs[(s, "recombiner")], func_tau) for s in seeds]
+        rows.append(_compare_row(name, lv, rv))
+
+    computable = [r for r in rows if r["computable"]]
+    blocked = [r for r in rows if not r["computable"]]
+    computable.sort(key=lambda r: r["dz"], reverse=True)  # +dz (pro-learned) first
+    return {
+        "n_seeds": len(seeds),
+        "func_tau": func_tau,
+        "ranked": computable,
+        "blocked": blocked,
+    }
+
+
+def _print_compare(report: dict) -> None:
+    print("=" * 92)
+    print(f"DV COMPARISON  (n={report['n_seeds']} seeds, func_tau={report['func_tau']})")
+    print("-" * 92)
+    print(
+        f"  {'DV':32s} {'learned':>9s} {'recomb':>9s} {'diff':>8s} {'sd_diff':>8s}"
+        f" {'dz':>7s}  verdict"
+    )
+    for r in report["ranked"]:
+        tag = " *prov" if r["provisional"] else ""
+        print(
+            f"  {r['dv']:32s} {r['learned_mean']:9.3f} {r['recombiner_mean']:9.3f}"
+            f" {r['paired_diff_mean']:8.3f} {r['sd_diff']:8.3f} {r['dz']:7.2f}"
+            f"  {r['verdict']}{tag}"
+        )
+    for r in report["blocked"]:
+        print(f"  {r['dv']:32s} {'—':>9s} {'—':>9s} {'—':>8s} {'—':>8s} {'—':>7s}  {r['reason']}")
+    print("-" * 92)
+    print("  *prov = provisional: validity depends on value/transmission instrumentation")
+    print("          the current export lacks (polluted `uses`, `discovered_by` = -1).")
+    print("=" * 92)
 
 
 def analyze(outdir: str, dv: str = PRIMARY_DV, plot: bool = True) -> dict:
@@ -188,7 +334,17 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--outdir", type=str, required=True)
     p.add_argument("--dv", type=str, default=PRIMARY_DV)
     p.add_argument("--no-plot", action="store_true")
+    p.add_argument(
+        "--compare-dvs",
+        action="store_true",
+        help="Rank all candidate DVs by effect size (Schritt-A fairness proof) instead of "
+        "running the single-DV gate.",
+    )
+    p.add_argument("--func-tau", type=float, default=FUNC_TAU_SWEEP[1])
     args = p.parse_args(argv)
+    if args.compare_dvs:
+        _print_compare(compare_dvs(args.outdir, func_tau=args.func_tau))
+        return
     report = analyze(args.outdir, dv=args.dv, plot=not args.no_plot)
     _print(report)
 

@@ -107,3 +107,99 @@ def test_recombiner_produces_discoveries():
     assert len(entries) > 0
     assert series[-1]["attempt"] == 2000
     assert series[-1]["n_discoveries"] == len(entries)
+
+
+# --------------------------------------------------------------------------
+# Value-based DVs (Path-A retrofit, Schritt A) — reward/transmission-aware,
+# replacing artifact-geometry max depth as the sole primary DV.
+# --------------------------------------------------------------------------
+
+# single-task basis on dim 0; base ceiling forced to 0 so any positive vec advances
+_T0 = {"t0": (lambda V: V[:, 0])}
+_ZERO_BASE = [[0.0] * N_PROPS]
+
+
+def _byidx(d: dict[int, float]) -> list[float]:
+    """Build a 12-dim vector from {index: value} pairs, zeros elsewhere."""
+    v = [0.0] * N_PROPS
+    for i, val in d.items():
+        v[i] = val
+    return v
+
+
+def test_accumulated_useful_depth_counts_only_genuine_advances():
+    # m0 (d1, t0=0.3) advances; m1 (d2, t0=0.2) does NOT (below frontier 0.3);
+    # m2 (d3, t0=0.5) advances. Churn (m1) earns no depth credit.
+    entries = [
+        {"id": "m0", "recipe": ["bundle", "stone", "flint"], "vector": _byidx({0: 0.3})},
+        {"id": "m1", "recipe": ["bundle", "m0", "stone"], "vector": _byidx({0: 0.2})},
+        {"id": "m2", "recipe": ["bundle", "m1", "stone"], "vector": _byidx({0: 0.5})},
+    ]
+    struct = {"m0": 1, "m1": 2, "m2": 3}
+    out = metrics.accumulated_useful_depth(
+        entries, struct=struct, task_basis=_T0, base_vectors=_ZERO_BASE
+    )
+    assert out["n_useful_advances"] == 2  # m0 and m2 only
+    assert out["useful_depth_max"] == 3  # deepest genuine advance
+    assert out["accumulated_useful_depth"] == 3  # max advance depth for the single task
+    assert out["per_task"]["t0"] == 3
+
+
+def test_accumulated_useful_depth_base_ceiling_blocks_saturated_task():
+    # base already reaches t0=0.6, so an artifact at 0.5 cannot advance the frontier
+    entries = [
+        {"id": "m0", "recipe": ["bundle", "stone", "flint"], "vector": _byidx({0: 0.5})},
+    ]
+    out = metrics.accumulated_useful_depth(
+        entries, struct={"m0": 1}, task_basis=_T0, base_vectors=[[0.6] + [0.0] * (N_PROPS - 1)]
+    )
+    assert out["n_useful_advances"] == 0
+    assert out["accumulated_useful_depth"] == 0
+
+
+def test_population_functional_value_weights_by_adoption():
+    # two functionally distinct artifacts; value scales with `uses`
+    entries = [
+        {"id": "m0", "recipe": ["bundle", "stone", "flint"], "vector": _byidx({0: 1.0}), "uses": 10},
+        {"id": "m1", "recipe": ["bundle", "stone", "flint"], "vector": _byidx({5: 1.0}), "uses": 0},
+    ]
+    out = metrics.population_functional_value(entries, task_basis=_T0)
+    # only m0 has positive t0 utility AND positive uses
+    assert out["population_functional_value"] == 10.0
+    assert out["weight_source"] == "uses"
+    assert out["provisional"] is True
+
+
+def test_transmitted_frontier_advances_blocked_without_attribution():
+    # current export has discovered_by = -1 everywhere -> DV3 is not computable
+    entries = [
+        {
+            "id": "m0",
+            "recipe": ["bundle", "stone", "flint"],
+            "vector": _byidx({0: 0.9}),
+            "uses": 5,
+            "discovered_by": -1,
+        },
+    ]
+    out = metrics.transmitted_frontier_advances(
+        entries, struct={"m0": 1}, task_basis=_T0, base_vectors=_ZERO_BASE
+    )
+    assert out["computable"] is False
+    assert out["transmitted_frontier_advances"] == 0
+
+
+def test_transmitted_frontier_advances_counts_when_attributed():
+    entries = [
+        {
+            "id": "m0",
+            "recipe": ["bundle", "stone", "flint"],
+            "vector": _byidx({0: 0.9}),
+            "uses": 5,
+            "discovered_by": 3,
+        },
+    ]
+    out = metrics.transmitted_frontier_advances(
+        entries, struct={"m0": 1}, task_basis=_T0, base_vectors=_ZERO_BASE, k=2
+    )
+    assert out["computable"] is True
+    assert out["transmitted_frontier_advances"] == 1
