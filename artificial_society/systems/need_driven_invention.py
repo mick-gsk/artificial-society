@@ -45,9 +45,9 @@ from artificial_society.environment.materials import (
     get_vector,
     material_reward,
 )
+from artificial_society.systems._lineage_frontier import update_frontier
 from artificial_society.systems.invention import (
-    NEW_DISCOVERY_BONUS,
-    REDISCOVERY_REWARD,
+    RATCHET_GAIN,
     _agent_homeostatic_state,
     _evaluate_legacy_outcomes,
     _maybe_upgrade_tool,
@@ -382,30 +382,17 @@ def agent_invent_from_need(
         fulfillment = _need_score(new_vec, need)
         fulfillment_normalized = min(1.0, max(0.0, fulfillment / max(0.1, need_magnitude)))
 
-        # Emergent Reward = base reward + Need-Fulfillment Bonus
-        emergent_reward = base_reward + fulfillment_normalized * NEED_FULFILLMENT_BONUS
-
-        # Prüfen ob die Kombination wirklich neu ist, BEVOR sie registriert wird.
-        existing_ids = (
-            set(DISCOVERY_REGISTRY.known_ids())
-            if hasattr(DISCOVERY_REGISTRY, "known_ids")
-            else set()
-        )
+        # Value-gated marginal reward: homeostatic base + need-fulfillment + ratchet gain
+        value = base_reward + fulfillment_normalized * NEED_FULFILLMENT_BONUS
         mat_id = DISCOVERY_REGISTRY.register(
             new_vec,
             discoverer_id=agent.id,
             tick=tick,
             recipe=(action, mat_a, mat_b),
         )
-
-        # Rebalance: genuine Neu-Entdeckung erhält den vollen Discovery-Bonus
-        # (wie im klassischen invention.py-Pfad), Re-Entdeckung mindestens den
-        # Legacy-konkurrenzfähigen Re-Discovery-Reward. So ist need-getriebene
-        # Emergenz nie schwächer als ein Skript-Rezept.
-        if mat_id not in existing_ids:
-            emergent_reward += NEW_DISCOVERY_BONUS
-        else:
-            emergent_reward = max(emergent_reward, REDISCOVERY_REWARD)
+        tribe_id = getattr(agent, "tribe_id", None) if getattr(agent, "tribe_id", None) is not None else agent.id
+        marginal = update_frontier(tribe_id, value)
+        emergent_reward = value + RATCHET_GAIN * marginal
 
         inv = getattr(agent, "material_inventory", {})
         inv[mat_id] = inv.get(mat_id, 0.0) + 0.5
@@ -413,9 +400,9 @@ def agent_invent_from_need(
 
         _maybe_upgrade_tool(agent, mat_id, new_vec)
 
-        # Starker Dopamin-Kick wenn Erfindung echten Need loest
-        if emergent_reward > 0.5 and hasattr(agent, "endocrine"):
-            agent.endocrine.apply_discovery(min(1.0, emergent_reward * 0.7))
+        # Dopamine for genuine progress (marginal > 0 means tribe frontier advanced)
+        if marginal > 0 and hasattr(agent, "endocrine"):
+            agent.endocrine.apply_discovery(min(1.0, RATCHET_GAIN * marginal))
 
     total_reward = legacy_reward + emergent_reward * EMERGENT_WEIGHT
 

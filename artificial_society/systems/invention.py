@@ -48,6 +48,7 @@ from artificial_society.environment.materials import (
     material_light,
     material_reward,
 )
+from artificial_society.systems._lineage_frontier import update_frontier
 
 PRIMITIVE_ACTIONS = ["rub", "strike", "place_on_heat", "bundle", "blow", "carry", "eat", "bind"]
 
@@ -79,14 +80,10 @@ DANGER_PENALTY = -0.12
 # Dient als Referenz, gegen die emergente Rewards kalibriert werden.
 LEGACY_MAX_REWARD = max(COOK_REWARD, SHARP_REWARD, 0.40)  # ~0.40 (fire gedämpft, s.u.)
 
-# Bonus für echte Neu-Entdeckung (noch nie registriert).
-# Deutlich über jedem Legacy-Outcome: eine genuin neue Erfindung ist das
-# wertvollste Ereignis im System.
-NEW_DISCOVERY_BONUS = 4.5  # war 3.0
-# Reward für Re-Entdeckung (Wiederholen einer bekannten emergenten Kombination).
-# Mindestens so hoch wie das stärkste Legacy-Outcome, damit das Wiederholen einer
-# selbst-entdeckten Vektor-Kombination nie schlechter ist als ein Skript-Rezept.
-REDISCOVERY_REWARD = LEGACY_MAX_REWARD * 1.2  # war 0.1  → ~0.54
+# Scales marginal functional gain over the tribe frontier (Path-A ratchet).
+# Replaces the flat NEW_DISCOVERY_BONUS: reward = material_reward + RATCHET_GAIN * marginal.
+# Re-discoveries earn their realized value + 0 marginal (no floor inflation).
+RATCHET_GAIN = 4.5  # scales marginal functional gain over the tribe frontier
 
 # Maximale Anzahl entdeckter Materialien die als rekursive Inputs berücksichtigt werden
 MAX_RECURSIVE_INPUTS = 4
@@ -142,15 +139,6 @@ def agent_try_invention(agent, world, x, y) -> float:
     emergent_reward = 0.0
     if new_vec is not None and float(new_vec.sum()) > 0.1:
         agent_state = _agent_homeostatic_state(agent, cell)
-        emergent_reward = material_reward(new_vec, agent_state)
-
-        # Prüfe ob die resultierende Kombination bereits bekannt ist (vor der Registrierung)
-        existing_ids = (
-            set(DISCOVERY_REGISTRY.known_ids())
-            if hasattr(DISCOVERY_REGISTRY, "known_ids")
-            else set()
-        )
-
         mat_id = DISCOVERY_REGISTRY.register(
             new_vec,
             discoverer_id=agent.id,
@@ -158,18 +146,17 @@ def agent_try_invention(agent, world, x, y) -> float:
             recipe=(action, mat_a, mat_b),
         )
         inv = getattr(agent, "material_inventory", {})
-        # FIX: Echter Neu-Entdeckungs-Bonus vs. kleiner Re-Entdeckungs-Reward
-        is_new_discovery = mat_id not in existing_ids
-        if is_new_discovery:
-            emergent_reward += NEW_DISCOVERY_BONUS
-        else:
-            emergent_reward = max(emergent_reward, REDISCOVERY_REWARD)
+        # Value-gated marginal reward: realized homeostatic value + ratchet gain
+        value = material_reward(new_vec, agent_state)
+        tribe_id = getattr(agent, "tribe_id", None) if getattr(agent, "tribe_id", None) is not None else agent.id
+        marginal = update_frontier(tribe_id, value)
+        emergent_reward = value + RATCHET_GAIN * marginal
 
         inv[mat_id] = inv.get(mat_id, 0.0) + 0.5
         agent.material_inventory = inv
         _maybe_upgrade_tool(agent, mat_id, new_vec)
-        if emergent_reward > 0.3 and hasattr(agent, "endocrine"):
-            agent.endocrine.apply_discovery(min(1.0, emergent_reward))
+        if marginal > 0 and hasattr(agent, "endocrine"):
+            agent.endocrine.apply_discovery(min(1.0, RATCHET_GAIN * marginal))
 
     # FIX: emergent_reward-Gewichtung von 0.6 auf 1.0 erhöht
     total_reward = legacy_reward + emergent_reward * 1.0
@@ -216,27 +203,19 @@ def agent_try_cook(agent, world, x, y) -> float:
     emergent_r = 0.0
     if new_vec is not None and float(new_vec.sum()) > 0.1:
         agent_state = _agent_homeostatic_state(agent, cell)
-        emergent_r = material_reward(new_vec, agent_state)
-
-        existing_ids = (
-            set(DISCOVERY_REGISTRY.known_ids())
-            if hasattr(DISCOVERY_REGISTRY, "known_ids")
-            else set()
-        )
         mat_id = DISCOVERY_REGISTRY.register(
             new_vec,
             discoverer_id=agent.id,
             tick=getattr(agent, "age", 0),
             recipe=("place_on_heat", food_mat, heat_mat),
         )
-        is_new = mat_id not in existing_ids
-        if is_new:
-            emergent_r += NEW_DISCOVERY_BONUS
-            print(
-                f"[cook] NEW mat_id={mat_id} by agent={agent.id} recipe=(place_on_heat,{food_mat},{heat_mat})"
-            )
-        else:
-            emergent_r = max(emergent_r, REDISCOVERY_REWARD)
+        # Value-gated marginal reward: realized homeostatic value + ratchet gain
+        value = material_reward(new_vec, agent_state)
+        tribe_id = getattr(agent, "tribe_id", None) if getattr(agent, "tribe_id", None) is not None else agent.id
+        marginal = update_frontier(tribe_id, value)
+        emergent_r = value + RATCHET_GAIN * marginal
+        if marginal > 0 and hasattr(agent, "endocrine"):
+            agent.endocrine.apply_discovery(min(1.0, RATCHET_GAIN * marginal))
 
         inv[mat_id] = inv.get(mat_id, 0.0) + 0.6
 
