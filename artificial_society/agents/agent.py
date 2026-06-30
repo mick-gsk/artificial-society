@@ -16,7 +16,7 @@ from artificial_society.agents.life_stage import get_stage_stats
 from artificial_society.agents.memory import EpisodicMemory
 from artificial_society.agents.theory_of_mind import TheoryOfMind
 from artificial_society.environment.herbs import available_herbs, collect_herb
-from artificial_society.environment.resources import maybe_build_structure
+from artificial_society.environment.resources import apply_consumption, clamp, maybe_build_structure
 from artificial_society.environment.structures import (
     BUILD_ENERGY_COST,
     apply_structure_effects,
@@ -515,35 +515,55 @@ class Agent:
         tool_bonus = SHARP_STONE_FORAGE_BONUS if self.tool == "sharp_stone" else 0.0
         home_bonus = get_home_forage_bonus(self, world)
         eff = mods.get("forage_eff", 1.0) * (1.0 + tool_bonus + home_bonus)
-        food_available = cell.get("food", 0.0)
-        if food_available > 0:
-            diet = self.genes.get("diet_preference", 0.0)
-            if diet < 0:
-                take = min(food_available, PLANT_ENERGY * eff)
-                world.set_cell(x, y, "food", max(0.0, food_available - take))
+        diet = self.genes.get("diet_preference", 0.0)
+        # Energy conservation (Phase 4): consumption debits the cell's *source*
+        # pools (plant_food / meat_food / carcasses) through apply_consumption /
+        # the World façade, not the derived `food` aggregate, which regrow_cell
+        # recomputes from the sources every tick -- so debiting `food` directly was
+        # wiped out next tick and effectively minted energy. The energy gained now
+        # equals the food removed (1:1), a genuine transfer from the world.
+        if diet < 0:
+            # Herbivore: plant-food only.
+            plant_available = cell.get("plant_food", 0.0)
+            if plant_available > 0:
+                take = min(plant_available, PLANT_ENERGY * eff)
+                apply_consumption(world, x, y, plant=take)
                 self.energy = min(MAX_ENERGY, self.energy + take)
                 self.plant_eaten += 1
                 gain += take
                 self.endocrine.apply_substance("plant_food", take / PLANT_ENERGY)
                 self.endocrine.apply_successful_forage(take)
-            else:
-                carcass = cell.get("carcass", 0.0)
-                if carcass > 0:
-                    take = min(carcass, MEAT_ENERGY * eff)
-                    world.set_cell(x, y, "carcass", max(0.0, carcass - take))
-                    self.energy = min(MAX_ENERGY, self.energy + take)
-                    self.meat_eaten += 1
-                    gain += take
-                    self.endocrine.apply_substance("raw_meat", take / MEAT_ENERGY)
-                    self.endocrine.apply_successful_forage(take)
-                else:
-                    take = min(food_available, PLANT_ENERGY * eff)
-                    world.set_cell(x, y, "food", max(0.0, food_available - take))
-                    self.energy = min(MAX_ENERGY, self.energy + take)
-                    self.plant_eaten += 1
-                    gain += take
-                    self.endocrine.apply_substance("plant_food", take / PLANT_ENERGY)
-                    self.endocrine.apply_successful_forage(take)
+        else:
+            # Carnivore/omnivore: carcasses first (now correctly keyed on the
+            # stored `carcasses` field, not the never-present `carcass`), then the
+            # meat source pool, then fall back to plants.
+            carcass = cell.get("carcasses", 0.0)
+            meat_available = cell.get("meat_food", 0.0)
+            plant_available = cell.get("plant_food", 0.0)
+            if carcass > 0:
+                take = min(carcass, MEAT_ENERGY * eff)
+                world.set_cell(x, y, "carcasses", clamp(carcass - take, 0.0, 140.0))
+                self.energy = min(MAX_ENERGY, self.energy + take)
+                self.meat_eaten += 1
+                gain += take
+                self.endocrine.apply_substance("raw_meat", take / MEAT_ENERGY)
+                self.endocrine.apply_successful_forage(take)
+            elif meat_available > 0:
+                take = min(meat_available, MEAT_ENERGY * eff)
+                apply_consumption(world, x, y, meat=take)
+                self.energy = min(MAX_ENERGY, self.energy + take)
+                self.meat_eaten += 1
+                gain += take
+                self.endocrine.apply_substance("raw_meat", take / MEAT_ENERGY)
+                self.endocrine.apply_successful_forage(take)
+            elif plant_available > 0:
+                take = min(plant_available, PLANT_ENERGY * eff)
+                apply_consumption(world, x, y, plant=take)
+                self.energy = min(MAX_ENERGY, self.energy + take)
+                self.plant_eaten += 1
+                gain += take
+                self.endocrine.apply_substance("plant_food", take / PLANT_ENERGY)
+                self.endocrine.apply_successful_forage(take)
         water_available = cell.get("water", 0.0)
         if water_available > 0 and self.hydration < 100.0:
             take = min(water_available, 8.0 * eff)
@@ -634,9 +654,22 @@ class Agent:
             a for a in nearby if a.tribe_id == self.tribe_id and self.tribe_id is not None
         ]
         self.endocrine.apply_social_signal(len(nearby), bool(same_tribe))
+        # Redistributive group-foraging bonus (Phase 4): instead of minting
+        # `forage_bonus` energy from nothing, the better-off nearby members pool a
+        # little energy for the active cooperator. Zero-sum: self gains exactly what
+        # the donors actually give (the MAX_ENERGY clamp can only lose energy, never
+        # create it).
         forage_bonus = min(COOP_FORAGE_MAX_BONUS, len(nearby) * COOP_FORAGE_BONUS_PER_MEMBER)
-        self.energy = min(MAX_ENERGY, self.energy + forage_bonus)
-        reward += forage_bonus * 0.1
+        donors = [a for a in nearby if a.energy > self.energy]
+        if forage_bonus > 0.0 and donors:
+            per = forage_bonus / len(donors)
+            pooled = 0.0
+            for donor in donors:
+                contrib = min(per, donor.energy)
+                donor.energy -= contrib
+                pooled += contrib
+            self.energy = min(MAX_ENERGY, self.energy + pooled)
+            reward += pooled * 0.1
         if self.energy >= COOP_SHARE_THRESHOLD_DONOR:
             for partner in nearby:
                 if partner.energy < COOP_SHARE_THRESHOLD_RECV:
