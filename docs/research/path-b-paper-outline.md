@@ -22,7 +22,11 @@ paper; the control protocol below carries over unchanged.
    effects; bootstrap CIs; pre-registration.
 2. **An empirical null result** in *Artificial Society*: learned/social ≈/< random recombiner on
    functional innovation (attempt-matched −9.4; discovery-matched −2.8, both paired-significant),
-   with ~70 % of the raw gap shown to be a sampling artifact.
+   with ~70 % of the raw gap shown to be a sampling artifact. The deficit is **robust to measurement
+   reform** — under value-based DVs the gap *widens* (DV2 paired −30.1, discovery-matched −21.75;
+   `stage0a-schrittA-dv-redesign-2026-06-30.md`) — **and to a first generation-coupling attempt**
+   (value reward + imagined means-ends generation: functional-depth DV unmoved, flat at floor;
+   `stage0a-cd-coupling-gonogo-2026-06-30.md`).
 3. **Open tooling + reproducible pipeline** (`artificial_society/research/`, config + seeds → figures).
 
 ## Positioning vs related work (must-distinguish)
@@ -70,8 +74,18 @@ uncapped export. M4 singleton contamination → subprocess isolation.
 Config + seed list + `PYTHONHASHSEED=0`; `run_pilot` → `analyze_gate` / `analyze_robustness`; release
 code + data + notebooks, Zenodo DOI; OSF pre-registration of DV, nulls, matching, rejection rule.
 
-## Decision note
+## Decision note (resolved 2026-06-30 → Path B)
 
-This outline assumes **Path B**. The **P-A retrofit** alternative (policy-couple invention, re-pilot)
-remains open: the modest discovery-matched deficit (−2.8) means a positive flip is *possible* but not
-likely without real mechanism change; that is the expensive hot-file path (core-lead + golden regen).
+Two follow-ups closed the Path-A question this outline originally left open:
+
+- **Schritt A (measurement reform).** Redesigning the DV to value-based, churn-immune metrics did
+  **not** rescue the learned arm; the deficit *deepened* (DV2 paired −30.1). The null is not a metric
+  artifact. (`stage0a-schrittA-dv-redesign-2026-06-30.md`)
+- **C+D generation-coupling go/no-go.** A first coupling attempt (value-gated marginal reward +
+  imagined means-ends generation) left the functional-depth gate **flat at the floor** (DV2 = 2 in
+  every arm/seed) while collapsing discovery efficiency. (`stage0a-cd-coupling-gonogo-2026-06-30.md`)
+
+Honest reading: a positive flip is not reachable without **mechanism change well beyond** reward
+shaping + heuristic generation. **Full learned end-to-end policy-coupling (Cook et al. 2024)** is the
+named boundary of our claim and the journal-extension's question — not something this paper asserts to
+have refuted. **Path B is the committed write-up.**
