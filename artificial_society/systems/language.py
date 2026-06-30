@@ -287,30 +287,31 @@ def agent_mark(
 ) -> Optional[str]:
     """
     Agent fuehrt 'mark'-Action aus.
-    Benoetigt charcoal oder anderes Pigment (conductivity > 0.3)
-    und eine flache Oberflaeche (flat CompositeObject oder stone/clay).
+    Benoetigt irgendein nutzbares Markier-Material (kein Pigment-spezifisches
+    Eigenschafts-Gate mehr -- Phase 5) und eine flache Oberflaeche
+    (flat CompositeObject oder stone/clay).
 
     Gibt token_id zurueck oder None wenn nicht moeglich.
     """
     inv = getattr(agent, "material_inventory", {})
 
-    # Pigment suchen (charcoal, flower_petals als Farbe, etc.)
-    pigment = None
-    pigment_vec = None
+    # Marker suchen: Phase 5 de-scripting -- kein Pigment-spezifisches Eigenschafts-
+    # Gate mehr. Jedes nutzbare Material mit nicht-trivialem Eigenschaftsvektor (kein
+    # interner Scratch-Eintrag) kann als Marker dienen. So entsteht Signalgebung aus
+    # jedem verfuegbaren Marker, nicht nur aus den wenigen "Farb"-Materialien.
+    marker = None
+    marker_vec = None
     for mat_id, qty in inv.items():
-        if qty < 0.05:
+        if qty < 0.05 or mat_id.startswith("_"):
             continue
         vec = get_vector(mat_id)
-        # Pigment: hohe Loeslichkeit + (conductivity oder scent) = Farbe/Tinte
-        if float(vec[IDX["solubility"]]) > 0.3 and (
-            float(vec[IDX["conductivity"]]) > 0.2 or float(vec[IDX["scent"]]) > 0.3
-        ):
-            pigment = mat_id
-            pigment_vec = vec
+        if float(np.linalg.norm(vec)) > 1e-3:
+            marker = mat_id
+            marker_vec = vec
             break
 
-    if pigment is None or pigment_vec is None:
-        return None  # Kein Pigment verfuegbar
+    if marker is None or marker_vec is None:
+        return None  # Kein nutzbarer Marker verfuegbar
 
     # Oberflaeche pruefen: Stein/Lehm in Zelle oder flat obj
     surface_ok = (
@@ -330,7 +331,7 @@ def agent_mark(
         tick=tick,
         x=agent.x,
         y=agent.y,
-        pigment_vec=pigment_vec,
+        pigment_vec=marker_vec,
     )
 
     # In Welt platzieren
@@ -341,8 +342,8 @@ def agent_mark(
         agent.token_memory = TokenMemory()
     agent.token_memory.record_use(token.token_id, context_vec, reward=0.1)
 
-    # Pigment verbrauchen
-    inv[pigment] = max(0.0, inv[pigment] - 0.05)
+    # Marker verbrauchen
+    inv[marker] = max(0.0, inv[marker] - 0.05)
 
     return token.token_id
 
