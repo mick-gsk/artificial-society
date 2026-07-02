@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import math
+import random
+
+import pytest
 
 from artificial_society.agents.agent import MEAT_ENERGY
 from artificial_society.environment.phys_objects import ObjectLayer
@@ -12,12 +15,14 @@ from artificial_society.environment.physics.actions import (
     SIM_ENERGY_PER_KCAL,
     TOX_SPOILAGE_CAP,
     TOX_SPOILAGE_PER_TICK,
+    V_MAX_STRIKE,
     WORK_SIM_ENERGY_PER_JOULE,
     do_grasp,
     do_release,
+    do_strike,
     enforce_carry_budget,
 )
-from artificial_society.environment.physics.body import Body, Hands
+from artificial_society.environment.physics.body import FATIGUE_PER_JOULE, Body, Hands
 from artificial_society.environment.physics.materials_v2 import MATERIALS_V2
 from artificial_society.environment.physics.objects import make_object
 from artificial_society.environment.physics.props import IDX2
@@ -112,3 +117,77 @@ def test_ueberlast_drop_wirft_schwerstes_bis_budget_passt():
     assert layer.position_of(schwer) == (5, 5)
     lhs, rhs = layer.conservation_terms(held_mass_kg=hands.carried_mass_kg())
     assert math.isclose(lhs, rhs, rel_tol=1e-9)
+
+
+def test_strike_kiesel_kappung_und_exert_bindung():
+    """D2: 0.05-kg-Kiesel liefert ≤ ½mv² = 4.9 J, egal welcher Effort; Ermüdung
+    steigt IMMER, auch wenn nichts bricht."""
+    body, hands, layer = _setup(strength=1.0)
+    kiesel = make_object("granite", 0.05)
+    ziel = make_object("flint", 0.8)  # Schwelle 60·(1.05−0.9)·0.8 = 7.2 J
+    layer.add(kiesel, (5, 5), source="spawned")
+    layer.add(ziel, (5, 5), source="spawned")
+    do_grasp(body, hands, layer, (5, 5), kiesel)
+
+    res = do_strike(body, hands, layer, (5, 5), kiesel, ziel, effort=1.0, rng=random.Random(1))
+    cap = 0.5 * 0.05 * V_MAX_STRIKE**2  # 4.9 J
+    assert res.ok and res.reason == "no_fracture"
+    assert res.work_j <= cap + 1e-9
+    assert not res.fragments
+    assert body.fatigue == pytest.approx(res.work_j * FATIGUE_PER_JOULE)
+    assert res.energy_delta_sim < 0.0  # Arbeit kostet metabolisch
+
+
+def test_strike_knapping_positiv_regression():
+    """D2: 0.5-kg-Granit-Schlagstein bricht 0.8-kg-Flint bei Effort 0.8 — eine spätere
+    Verschärfung von V_MAX_STRIKE darf Knapping nicht still killen."""
+    body, hands, layer = _setup(strength=0.5)
+    hammer = make_object("granite", 0.5)
+    flint = make_object("flint", 0.8)
+    layer.add(hammer, (5, 5), source="spawned")
+    layer.add(flint, (5, 5), source="spawned")
+    do_grasp(body, hands, layer, (5, 5), hammer)
+
+    res = do_strike(body, hands, layer, (5, 5), hammer, flint, effort=0.8, rng=random.Random(42))
+    assert res.ok and res.fragments, "Knapping muss möglich bleiben"
+    # Mikro-Invariante (D1): Fragmentmassen summieren exakt zur Zielmasse
+    assert math.isclose(sum(f.mass for f in res.fragments), 0.8, rel_tol=1e-9)
+    # Ziel ist ersetzt: Fragmente liegen am Boden, das Ziel nicht mehr
+    assert layer.position_of(flint) is None
+    for frag in res.fragments:
+        assert layer.position_of(frag) == (5, 5)
+    lhs, rhs = layer.conservation_terms(held_mass_kg=hands.carried_mass_kg())
+    assert math.isclose(lhs, rhs, rel_tol=1e-9)
+
+
+def test_strike_auf_das_andere_gehaltene_objekt():
+    body, hands, layer = _setup(strength=0.5)
+    hammer = make_object("granite", 1.0)
+    flint = make_object("flint", 0.5)
+    layer.add(hammer, (5, 5), source="spawned")
+    layer.add(flint, (5, 5), source="spawned")
+    do_grasp(body, hands, layer, (5, 5), hammer)
+    do_grasp(body, hands, layer, (5, 5), flint)
+
+    res = do_strike(body, hands, layer, (5, 5), hammer, flint, effort=0.9, rng=random.Random(7))
+    assert res.ok and res.fragments
+    assert hands.held == [hammer]  # zerschlagenes Ziel verlässt die Hand
+    assert all(layer.position_of(f) == (5, 5) for f in res.fragments)
+
+
+def test_strike_ungueltige_ziele_sind_noop_ohne_exert():
+    body, hands, layer = _setup()
+    hammer = make_object("granite", 1.0)
+    layer.add(hammer, (5, 5), source="spawned")
+    do_grasp(body, hands, layer, (5, 5), hammer)
+    fern = make_object("flint", 0.5)
+    layer.add(fern, (9, 9), source="spawned")
+
+    assert not do_strike(body, hands, layer, (5, 5), hammer, fern, 1.0, random.Random(1)).ok
+    assert not do_strike(body, hands, layer, (5, 5), hammer, hammer, 1.0, random.Random(1)).ok
+    nicht_gehalten = make_object("granite", 1.0)
+    layer.add(nicht_gehalten, (5, 5), source="spawned")
+    ziel = make_object("flint", 0.5)
+    layer.add(ziel, (5, 5), source="spawned")
+    assert not do_strike(body, hands, layer, (5, 5), nicht_gehalten, ziel, 1.0, random.Random(1)).ok
+    assert body.fatigue == 0.0  # kein ausgeführter Schlag → keine Ermüdung

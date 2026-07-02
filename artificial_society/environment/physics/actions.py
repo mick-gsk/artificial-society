@@ -10,6 +10,7 @@ v1-Energieskala über SIM_ENERGY_PER_KCAL (1-kg-Fleischmahlzeit ≙ MEAT_ENERGY 
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass, field
 
 from artificial_society.environment.daynight import TICKS_PER_DAY
@@ -17,6 +18,7 @@ from artificial_society.environment.daynight import TICKS_PER_DAY
 from .body import Body, Hands
 from .calibration import cal
 from .objects import PhysObject
+from .processes import strike
 
 # --- Energie-Kopplung kcal ↔ Sim-Energie (B5) --------------------------------
 SIM_ENERGY_PER_KCAL = 0.032
@@ -189,3 +191,64 @@ def enforce_carry_budget(body: Body, hands: Hands, layer, pos) -> list:
         layer.add(schwerstes, pos)
         dropped.append(schwerstes)
     return dropped
+
+
+def do_strike(
+    body: Body,
+    hands: Hands,
+    layer,
+    pos,
+    striker_held: PhysObject,
+    target: PhysObject,
+    effort: float,
+    rng: random.Random,
+) -> ActionResult:
+    """Schlag mit gehaltenem Schläger auf ein Boden-Objekt an eigener Position
+    oder auf das andere gehaltene Objekt.
+
+    Gelieferte Energie E = min(body.strike_energy_j(effort), ½·m_striker·V_MAX²)
+    — die Kappung schließt den Kiesel-Exploit (leichter Schläger kann nicht
+    mehr kinetische Energie tragen als ½mv²). body.exert_strike bindet
+    verpflichtend: JEDER ausgeführte Schlag ermüdet, auch ohne Bruch.
+    Ungültiges Ziel (nicht erreichbar / Schläger nicht in der Hand) ist ein
+    No-op OHNE Exert — es wurde nicht geschlagen.
+    """
+    pos = (int(pos[0]), int(pos[1]))
+    if striker_held not in hands.held:
+        return ActionResult(ok=False, verb="strike", reason="striker_not_held")
+    if target is striker_held:
+        return ActionResult(ok=False, verb="strike", reason="target_is_striker")
+    target_held = target in hands.held
+    if not target_held and layer.position_of(target) != pos:
+        return ActionResult(ok=False, verb="strike", reason="target_out_of_reach")
+
+    effort = min(max(float(effort), 0.0), 1.0)
+    impact_j = min(body.strike_energy_j(effort), 0.5 * striker_held.mass * V_MAX_STRIKE**2)
+    body.exert_strike(impact_j)  # verpflichtende exert↔strike-Bindung (B4)
+    energy_delta = -impact_j * WORK_SIM_ENERGY_PER_JOULE  # Arbeits-Metabolik (B5)
+
+    result = strike(target, striker_held, impact_j, rng)
+    if not result.fractured:
+        return ActionResult(
+            ok=True,
+            verb="strike",
+            reason="no_fracture",
+            energy_delta_sim=energy_delta,
+            work_j=impact_j,
+        )
+    # Ziel durch Fragmente ersetzen (Masse exakt erhalten, ledger-neutral);
+    # Fragmente fallen zu Boden — 2–3 Bruchstücke passen in keine Hand.
+    if target_held:
+        hands.release(target)
+    else:
+        layer.remove(target)
+    for frag in result.fragments:
+        layer.add(frag, pos)
+        layer.discovery.register(frag.props)
+    return ActionResult(
+        ok=True,
+        verb="strike",
+        energy_delta_sim=energy_delta,
+        fragments=result.fragments,
+        work_j=impact_j,
+    )
