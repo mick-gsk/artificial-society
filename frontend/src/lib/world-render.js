@@ -30,6 +30,8 @@ import {
   makeToolTextures,
 } from "./sprites.js";
 
+import { buildTerrainMesh, makeDataTexture, makeLutTexture } from "./terrain-shader.js";
+
 const STAGE_SCALE = [0.62, 1.0, 1.06]; // child, adult, elder (figure size)
 const ACT_EMOTE = { 1: "forage", 2: "cooperate", 3: "attack", 4: "build", 5: "sleep" };
 const TRAIL_LEN = 8;
@@ -109,7 +111,7 @@ export class WorldScene {
     this._biomeArr = null;
     this._events = [];
 
-    // terrain texture state (subpixel canvas)
+    // terrain texture state (subpixel canvas) — the Canvas2D fallback painter
     this._terCanvas = null;
     this._terCtx = null;
     this._terImg = null;
@@ -119,6 +121,20 @@ export class WorldScene {
     this._isWater = null;
     this._frameNo = 0;
     this._phase = 0; // water shimmer phase
+
+    // GPU-shader terrain (default path; falls back to the canvas painter on a
+    // shader-compile error). Data texture = one RGBA8 texel per cell; a 16×2
+    // palette LUT drives per-biome colour. See terrain-shader.js.
+    this.useShaderTerrain = true;
+    this._terMesh = null;
+    this._terUniforms = null;
+    this._terShader = null;
+    this._terData = null; // Uint8Array w*h*4, packed each frame
+    this._terDataTex = null;
+    this._lutData = new Uint8Array(16 * 2 * 4); // dry row + lush row
+    this._lutTex = null;
+    this._terTime = 0; // seconds fed to uTime
+    this._terFilled = false; // has the data buffer been filled since rebuild?
 
     // view state
     this._zoom = 1;
@@ -275,6 +291,32 @@ export class WorldScene {
       this._biomeNameByIdx[b.idx] = b.name;
     }
     this._decorKey = ""; // legend can arrive after the first frames
+    this._packLut(); // refresh the shader palette LUT from the same tones
+  }
+
+  // Pack the biome tones into the 16×2 LUT: row 0 = dry colour, row 1 = lush.
+  // The dry row's alpha carries the isWater flag (1 = water biome) so the shader
+  // knows to interpolate dry→lush by water level instead of food. Indices with
+  // no legend entry stay a quiet slate so an unknown biome still reads as ground.
+  _packLut() {
+    const d = this._lutData;
+    for (let i = 0; i < 16; i++) {
+      const tone = this.biomeTones[i];
+      const dry = tone ? tone.dry : { r: 20, g: 26, b: 34 };
+      const lush = tone ? tone.lush : { r: 26, g: 32, b: 40 };
+      const isW = tone && tone.isWater ? 255 : 0;
+      const c0 = i * 4; // dry row (row 0)
+      const c1 = (16 + i) * 4; // lush row (row 1)
+      d[c0] = dry.r;
+      d[c0 + 1] = dry.g;
+      d[c0 + 2] = dry.b;
+      d[c0 + 3] = isW;
+      d[c1] = lush.r;
+      d[c1 + 1] = lush.g;
+      d[c1 + 2] = lush.b;
+      d[c1 + 3] = 255;
+    }
+    if (this._lutTex) this._lutTex.source.update();
   }
 
   update(frame) {
@@ -286,7 +328,9 @@ export class WorldScene {
     this._events = frame.events ?? [];
     if (resized) this._rebuildGrid();
     this._frameNo++;
-    this._paintTerrain(frame.cells);
+    this._syncTerrainMode();
+    if (this.useShaderTerrain) this._fillTerrainData(frame.cells);
+    else this._paintTerrain(frame.cells);
     this._buildDecor();
     this._paintItems(frame.items ?? []);
     this._paintStructures(frame.structures ?? []);
@@ -418,6 +462,110 @@ export class WorldScene {
     }
     this._terCtx.putImageData(this._terImg, 0, 0);
     this._terTex.source.update();
+  }
+
+  // -- terrain: GPU data-texture + fragment shader (default path) --------------
+
+  // Reconcile which terrain path is visible with the `useShaderTerrain` flag.
+  // Lets the World.svelte debug hook flip the mode at runtime: the next frame's
+  // paint fills the now-visible path and the other one is hidden (not destroyed,
+  // so toggling back is instant).
+  _syncTerrainMode() {
+    if (this.useShaderTerrain) {
+      if (this._terSprite) this._terSprite.visible = false;
+      if (this._terMesh) this._terMesh.visible = true;
+    } else {
+      if (this._terSprite) this._terSprite.visible = true;
+      if (this._terMesh) this._terMesh.visible = false;
+    }
+  }
+
+  // Build the shader mesh, data texture and palette LUT for the current grid.
+  // On any shader-compile failure this flips `useShaderTerrain` off, tears down
+  // partial state, and returns false so the caller keeps the canvas painter.
+  _ensureShaderTerrain() {
+    if (!this.grid) return false;
+    const { w, h } = this.grid;
+    if (this._terMesh && this._terData && this._terData.length === w * h * 4) return true;
+
+    // fresh grid size: (re)build persistent buffers + textures + mesh
+    this._destroyShaderTerrain();
+    try {
+      this._terData = new Uint8Array(w * h * 4);
+      this._terFilled = false; // fresh buffer — force a fill on the next frame
+      this._terDataTex = makeDataTexture(w, h, this._terData);
+      this._lutTex = makeLutTexture(this._lutData);
+      this._packLut(); // ensure LUT reflects any legend already received
+      const built = buildTerrainMesh({
+        w,
+        h,
+        cellPx: this.cellPx,
+        offX: this.offX,
+        offY: this.offY,
+        dataTex: this._terDataTex,
+        lutTex: this._lutTex,
+      });
+      this._terMesh = built.mesh;
+      this._terUniforms = built.uniforms;
+      this._terShader = built.shader;
+      this.terrainLayer.addChild(this._terMesh);
+      this._syncTerrainMode(); // shader owns the terrain: hide the canvas sprite
+      return true;
+    } catch (err) {
+      console.warn("[terrain] shader unavailable, falling back to canvas:", err);
+      this.useShaderTerrain = false;
+      this._destroyShaderTerrain();
+      return false;
+    }
+  }
+
+  _destroyShaderTerrain() {
+    if (this._terMesh) {
+      this._terMesh.destroy();
+      this._terMesh = null;
+    }
+    if (this._terDataTex) {
+      this._terDataTex.destroy(true);
+      this._terDataTex = null;
+    }
+    if (this._lutTex) {
+      this._lutTex.destroy(true);
+      this._lutTex = null;
+    }
+    this._terUniforms = null;
+    this._terShader = null;
+    this._terData = null;
+  }
+
+  // Pack one RGBA8 texel per cell into the persistent data buffer, then upload.
+  // R = biome index, G = food (÷90→255), B = water (÷100→255), A = 255 (reserved
+  // for moisture in a later task). Cheap: 160 KB at 200×200. The big-world
+  // every-3rd-frame throttle from the canvas painter carries over — the GPU
+  // animates water/light from uTime each frame regardless of buffer refresh.
+  _fillTerrainData(cells) {
+    if (!this._ensureShaderTerrain()) {
+      this._paintTerrain(cells); // fallback flipped on during ensure
+      return;
+    }
+    const { w, h } = this.grid;
+    // big worlds refresh the data buffer every 3rd frame (as the canvas painter
+    // did) — but always fill once right after a rebuild so no blank frame shows.
+    if (this._terFilled && w * h > 20000 && this._frameNo % 3) return;
+    this._terFilled = true;
+
+    const { food, water, biome } = cells;
+    const d = this._terData;
+    const n = w * h;
+    for (let i = 0; i < n; i++) {
+      const p = i * 4;
+      d[p] = biome[i] & 255;
+      const f = food[i] / 90;
+      d[p + 1] = f > 1 ? 255 : (f * 255) | 0;
+      const wt = water[i] / 100;
+      d[p + 2] = wt > 1 ? 255 : (wt * 255) | 0;
+      d[p + 3] = 255;
+    }
+    this._terDataTex.source.update();
   }
 
   // -- terrain decorations (trees, rocks, tufts) — static per world ------------
@@ -560,6 +708,14 @@ export class WorldScene {
     this._terSprite.y = this.offY;
     this._terSprite.width = w * this.cellPx;
     this._terSprite.height = h * this.cellPx;
+
+    // shader terrain: rebuild mesh + data texture at the new grid/scale. Both a
+    // grid-size change and a pure resize (offX/offY/cellPx shift) need a fresh
+    // quad, so tear down and rebuild rather than resize in place.
+    if (this.useShaderTerrain) {
+      this._destroyShaderTerrain();
+      this._ensureShaderTerrain();
+    }
 
     this._structKey = ""; // force structure re-layout at the new scale
     this._itemKey = "";
@@ -768,6 +924,14 @@ export class WorldScene {
     const px = (cx) => this.offX + (cx + 0.5) * cp;
     const py = (cy) => this.offY + (cy + 0.5) * cp;
 
+    // drive the terrain shader's animation from the display-rate ticker: water
+    // shimmer runs off uTime, day/dusk warmth off uDaylight — no texture uploads
+    this._terTime += dt;
+    if (this.useShaderTerrain && this._terUniforms) {
+      this._terUniforms.uniforms.uTime = this._terTime;
+      this._terUniforms.uniforms.uDaylight = this.daylight;
+    }
+
     this.trailLayer.clear();
     this.fxLayer.clear();
     this.shadowLayer.clear();
@@ -948,6 +1112,7 @@ export class WorldScene {
   }
 
   destroy() {
+    this._destroyShaderTerrain();
     if (this.app) this.app.destroy(true, { children: true });
   }
 }
