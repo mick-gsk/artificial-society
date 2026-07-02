@@ -157,6 +157,8 @@ def ensure_fields(agent) -> None:
     # --- planning / runtime caches ---
     if not hasattr(agent, "goal_stack") or agent.goal_stack is None:
         agent.goal_stack = GoalStack()
+    if not hasattr(agent, "last_action_target"):
+        agent.last_action_target = None
     if not hasattr(agent, "token_memory") or agent.token_memory is None:
         agent.token_memory = TokenMemory()
     if not hasattr(agent, "_next_planning_tick"):
@@ -286,6 +288,7 @@ class Agent:
     birth_tick: int = 0
     sick: float = 0.0
     last_action_mode: str = "idle"
+    last_action_target: int | None = None
     disease_id: str | None = None
     remedy_knowledge: dict = field(default_factory=dict)
     herbs_carried: dict = field(default_factory=dict)
@@ -626,6 +629,7 @@ class Agent:
         if not targets:
             return 0.0
         target = random.choice(targets)
+        self.last_action_target = target.id
         dmg = max(1.0, 8.0 * self.genes["aggression"] + agg_bias * 5.0)
         target.health -= dmg
         target.endocrine.apply_attack_received()
@@ -679,6 +683,7 @@ class Agent:
                     self.trust[partner.id] = min(1.0, self.trust.get(partner.id, 0.0) + 0.05)
                     partner.trust[self.id] = min(1.0, partner.trust.get(self.id, 0.0) + 0.08)
                     reward += COOP_SHARE_REWARD
+                    self.last_action_target = partner.id
                     break
         for partner in nearby:
             if (
@@ -689,6 +694,7 @@ class Agent:
                 self.energy = min(MAX_ENERGY, self.energy + COOP_SHARE_AMOUNT)
                 reward += COOP_RECV_REWARD
                 self.trust[partner.id] = min(1.0, self.trust.get(partner.id, 0.0) + 0.08)
+                self.last_action_target = partner.id
                 break
         for partner in nearby:
             if self.trust.get(partner.id, 0.0) > 0.1:
@@ -1126,6 +1132,7 @@ class Agent:
 
         reward = 0.0
         mode = "idle"
+        self.last_action_target = None
 
         if getattr(self, "goal_stack", None) is not None:
             goal_action, goal_shaping = agent_tick_with_goals(
