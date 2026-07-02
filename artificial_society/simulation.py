@@ -14,6 +14,8 @@ from artificial_society.agents.agent import (
 )
 from artificial_society.environment.materials import DISCOVERY_REGISTRY
 from artificial_society.environment.phys_objects import seed_initial
+from artificial_society.environment.physics.body import BODY_MASS_DEFAULT_KG
+from artificial_society.environment.physics.objects import make_object
 from artificial_society.environment.resources import add_carcass
 from artificial_society.environment.territory import update_territory_claims
 from artificial_society.renderer import Renderer
@@ -276,8 +278,29 @@ class Simulation:
                 survivors.append(agent)
                 continue
             self._broadcast_death_knowledge(agent)
-            add_carcass(self.world, *agent.pos, CORPSE_ENERGY)
+            if self.physics_v2:
+                # v2 (Spec B3): der Tod münzt genau EIN Kadaver-Objekt —
+                # kein add_carcass-Credit auf Zell-Pools, kein Loot.
+                self._spawn_carcass(agent)
+            else:
+                add_carcass(self.world, *agent.pos, CORPSE_ENERGY)
         self.agents = survivors
+
+    def _spawn_carcass(self, agent):
+        """Kadaver-Objekt an der Todesposition; gehaltene Objekte fallen zu Boden.
+
+        Ledger: Handmasse → Boden ist neutral (war schon in der Invariante),
+        die Körpermasse fließt als 'from_carcass' zu (Erhaltung, Spec D1).
+        """
+        layer = self.world.objects
+        hands = getattr(agent, "hands", None)
+        if hands is not None:
+            for obj in list(hands.held):
+                hands.release(obj)
+                layer.add(obj, agent.pos)
+        body = getattr(agent, "body", None)
+        body_mass = body.body_mass if body is not None else BODY_MASS_DEFAULT_KG
+        layer.add(make_object("carcass", body_mass), agent.pos, source="from_carcass")
 
     def _is_immune(self, agent, disease_id):
         return self.tick < getattr(agent, "_disease_immunity", {}).get(disease_id, 0)
@@ -502,11 +525,13 @@ class Simulation:
                 new_children.append(self.spawn_child_from_parent(agent, child_genes))
         self.agents.extend(new_children)
 
-        # Drop agents that died during their own update. As in the current live
-        # loop, pre-filtering means remove_dead() finds no bodies (no carcass or
-        # death-knowledge broadcast yet).
-        # TODO(phase2): route deaths through remove_dead() for carcass + broadcast.
-        self.agents = [a for a in self.agents if a.alive]
+        # Flag aus: Pre-Filtering unverändert (Golden-Garantie) — Tote erreichen
+        # remove_dead() dort wie bisher nicht. Im v2-Modus MÜSSEN Tote
+        # remove_dead() erreichen (Kadaver-Objekt + Erhaltung, Spec B3): ohne
+        # diesen Fix entstünden nie Kadaver — Massenleck im Ledger, und die
+        # Kern-Kette Kadaver→Schneiden→Essen existierte nicht.
+        if not self.physics_v2:
+            self.agents = [a for a in self.agents if a.alive]
         self.remove_dead()
 
         self.tick_immunity_and_recovery()

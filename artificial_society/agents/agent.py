@@ -656,6 +656,11 @@ class Agent:
         target.endocrine.apply_attack_received()
         if target.health <= 0:
             target.alive = False
+            if self.physics_v2:
+                # v2 (Spec B3): Energie aus einem Kill gibt es AUSSCHLIESSLICH
+                # über den Kadaver — Loot wäre Energie ohne Massen-Gegenwert
+                # (Doppel-Münzung, für den Ledger unsichtbar).
+                return 0.0
             loot = target.energy * 0.3
             self.energy = min(MAX_ENERGY, self.energy + loot)
             return loot
