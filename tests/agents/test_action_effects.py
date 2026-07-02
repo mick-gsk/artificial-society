@@ -10,10 +10,16 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 import artificial_society.agents.agent as agent_mod
-from artificial_society.agents.agent import MAX_ENERGY, Agent
+from artificial_society.agents.agent import (
+    BIRTH_ENERGY_FLOOR,
+    CHILD_START_ENERGY,
+    MAX_ENERGY,
+    Agent,
+)
 from artificial_society.agents.brain import HIDDEN_SIZE, INPUT_SIZE
 from artificial_society.simulation import Simulation
 
@@ -166,6 +172,44 @@ def test_children_counted_at_birth_not_conception():
     sim.spawn_child_from_parent(mother, dict(mother.genes))
     assert mother.children == 1
     assert father.children == 1, "father found via _last_mate_id at birth"
+
+
+def test_birth_transfers_energy_from_the_mother():
+    """A newborn's start energy must be paid by the mother, not minted.
+
+    The old code spawned children with CHILD_START_ENERGY=100 while the
+    parents paid only ~30 at conception — +70 energy minted per birth, which
+    fueled the population overshoot past the world's carrying capacity."""
+    sim = _sim(seed=23)
+    mother = sim.agents[0]
+    mother.sex = "f"
+    mother.energy = 200.0
+    mother._last_mate_id = None
+
+    total_before = mother.energy
+    child = sim.spawn_child_from_parent(mother, dict(mother.genes))
+
+    assert child.energy == pytest.approx(CHILD_START_ENERGY)  # rich mother: full start
+    assert child.energy + mother.energy == pytest.approx(total_before), (
+        "birth must conserve energy (transfer, not mint)"
+    )
+
+
+def test_starving_mother_bears_weak_child():
+    sim = _sim(seed=23)
+    mother = sim.agents[0]
+    mother.sex = "f"
+    mother.energy = 40.0
+    mother._last_mate_id = None
+
+    child = sim.spawn_child_from_parent(mother, dict(mother.genes))
+
+    assert child.energy == pytest.approx(40.0 - BIRTH_ENERGY_FLOOR), (
+        "a poor mother can only afford a weak child"
+    )
+    assert mother.energy == pytest.approx(BIRTH_ENERGY_FLOOR), (
+        "birth must not drain the mother below the survival floor"
+    )
 
 
 def test_pregnancy_energy_never_negative():

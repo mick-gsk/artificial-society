@@ -5,7 +5,13 @@ import random
 import pygame
 
 import artificial_society.systems._builtins  # noqa: F401  (registers built-in systems)
-from artificial_society.agents.agent import CORPSE_ENERGY, MAX_ENERGY, Agent, ensure_fields
+from artificial_society.agents.agent import (
+    BIRTH_ENERGY_FLOOR,
+    CORPSE_ENERGY,
+    MAX_ENERGY,
+    Agent,
+    ensure_fields,
+)
 from artificial_society.environment.materials import DISCOVERY_REGISTRY
 from artificial_society.environment.resources import add_carcass
 from artificial_society.environment.territory import update_territory_claims
@@ -172,6 +178,12 @@ class Simulation:
         child = self.evolution.make_child(parent, x, y, genes=genes, other_parent=other_parent)
         child.hidden_state = child.brain.initial_hidden()
         child.birth_tick = self.tick
+        # Birth is an energy TRANSFER from the mother, not minting: the child
+        # keeps at most its default start energy, the mother keeps at least
+        # BIRTH_ENERGY_FLOOR — a starving mother bears a weak child.
+        transfer = min(child.energy, max(0.0, parent.energy - BIRTH_ENERGY_FLOOR))
+        child.energy = transfer
+        parent.energy -= transfer
         # Count offspring at actual birth, not at conception (a pregnancy can
         # abort if the mother dies); a dead father's counter stays frozen.
         parent.children += 1
