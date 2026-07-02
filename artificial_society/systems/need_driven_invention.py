@@ -372,6 +372,7 @@ def agent_invent_from_need(
     # Step 5b: Emergent-Pfad (Vektorkombination -> neues Material)
     new_vec = combine_vectors(vec_a, vec_b, action, env)
     emergent_reward = 0.0
+    emergent_mat_id = None
 
     if new_vec is not None and float(new_vec.sum()) > 0.1:
         agent_state = _agent_homeostatic_state(agent, cell)
@@ -397,6 +398,7 @@ def agent_invent_from_need(
             tick=tick,
             recipe=(action, mat_a, mat_b),
         )
+        emergent_mat_id = mat_id
 
         # Rebalance: genuine Neu-Entdeckung erhält den vollen Discovery-Bonus
         # (wie im klassischen invention.py-Pfad), Re-Entdeckung mindestens den
@@ -422,6 +424,15 @@ def agent_invent_from_need(
     # Step 7: In CausalMemory speichern
     if causal_mem is not None:
         causal_mem.record(action, mat_a, mat_b, legacy_outcomes, total_reward)
+
+    # Erste-Hand-Fakten auch in den KnowledgeGraph (Audit-Fix 21): vorher
+    # füllten nur Vererbung/Imitation/Pooling den KG — aus leeren Graphen.
+    kg = getattr(agent, "knowledge", None)
+    if kg is not None:
+        kg_outcomes = [o for o in legacy_outcomes if not o.startswith("_")]
+        if emergent_mat_id is not None:
+            kg_outcomes.append(emergent_mat_id)
+        kg.record((action, mat_a, mat_b), kg_outcomes, success=bool(kg_outcomes))
 
     return total_reward
 

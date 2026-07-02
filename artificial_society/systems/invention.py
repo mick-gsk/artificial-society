@@ -139,6 +139,7 @@ def agent_try_invention(agent, world, x, y) -> float:
     vec_b = get_vector(mat_b) if mat_b else None
     new_vec = combine_vectors(vec_a, vec_b, action, env)
     emergent_reward = 0.0
+    emergent_mat_id = None
     if new_vec is not None and float(new_vec.sum()) > 0.1:
         agent_state = _agent_homeostatic_state(agent, cell)
         emergent_reward = material_reward(new_vec, agent_state)
@@ -156,6 +157,7 @@ def agent_try_invention(agent, world, x, y) -> float:
             tick=getattr(agent, "age", 0),
             recipe=(action, mat_a, mat_b),
         )
+        emergent_mat_id = mat_id
         inv = getattr(agent, "material_inventory", {})
         # FIX: Echter Neu-Entdeckungs-Bonus vs. kleiner Re-Entdeckungs-Reward
         is_new_discovery = mat_id not in existing_ids
@@ -174,6 +176,15 @@ def agent_try_invention(agent, world, x, y) -> float:
     total_reward = legacy_reward + emergent_reward * 1.0
     if causal_mem is not None:
         causal_mem.record(action, mat_a, mat_b, legacy_outcomes, total_reward)
+    # Erste-Hand-Fakten auch in den KnowledgeGraph (Audit-Fix 21): vorher
+    # füllten nur Vererbung/Imitation/Pooling den KG — aus leeren Graphen.
+    # Misserfolge werden mitgeloggt (negative Confidence markiert Sackgassen).
+    kg = getattr(agent, "knowledge", None)
+    if kg is not None:
+        kg_outcomes = [o for o in legacy_outcomes if not o.startswith("_")]
+        if emergent_mat_id is not None:
+            kg_outcomes.append(emergent_mat_id)
+        kg.record((action, mat_a, mat_b), kg_outcomes, success=bool(kg_outcomes))
     # Lerne die need->action-Zuordnung aus dem erzielten Reward (Phase 5).
     _record_need_action(
         agent, getattr(agent, "_last_invention_need", "curious"), action, total_reward
@@ -217,6 +228,7 @@ def agent_try_cook(agent, world, x, y) -> float:
     vec_heat = get_vector(heat_mat)
     new_vec = combine_vectors(vec_food, vec_heat, "place_on_heat", env)
     emergent_r = 0.0
+    emergent_mat_id = None
     if new_vec is not None and float(new_vec.sum()) > 0.1:
         agent_state = _agent_homeostatic_state(agent, cell)
         emergent_r = material_reward(new_vec, agent_state)
@@ -242,10 +254,18 @@ def agent_try_cook(agent, world, x, y) -> float:
             emergent_r = max(emergent_r, REDISCOVERY_REWARD)
 
         inv[mat_id] = inv.get(mat_id, 0.0) + 0.6
+        emergent_mat_id = mat_id
 
     total = legacy_r + emergent_r * 1.0
     if causal_mem is not None:
         causal_mem.record("place_on_heat", food_mat, heat_mat, outcomes, total)
+    # Erste-Hand-Fakten in den KnowledgeGraph (Audit-Fix 21, wie oben).
+    kg = getattr(agent, "knowledge", None)
+    if kg is not None:
+        kg_outcomes = list(result_mats)
+        if emergent_mat_id is not None:
+            kg_outcomes.append(emergent_mat_id)
+        kg.record(("place_on_heat", food_mat, heat_mat), kg_outcomes, success=bool(kg_outcomes))
     return total
 
 

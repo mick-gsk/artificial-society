@@ -7,7 +7,7 @@ from typing import ClassVar
 import numpy as np
 import torch
 
-from artificial_society.agents.brain import INPUT_SIZE, Brain
+from artificial_society.agents.brain import INPUT_SIZE, RESEARCH_DRIVE_THRESHOLD, Brain
 from artificial_society.agents.communication import CommunicationSystem
 from artificial_society.agents.emotional_memory import EmotionalMemory
 from artificial_society.agents.endocrine import EndocrineSystem
@@ -141,6 +141,12 @@ def ensure_fields(agent) -> None:
         agent._last_mate_id = None
     if not hasattr(agent, "_need_inv_cooldown"):
         agent._need_inv_cooldown = 0
+    if not hasattr(agent, "_research_drive"):
+        # Last tick's research_drive (action dim 6, mapped to [0, 1]). Default
+        # 0.5 = tanh(0) mapped — above the threshold, so untrained/loaded
+        # agents keep bootstrap-era invention pressure until the net learns
+        # to suppress or amplify it.
+        agent._research_drive = 0.5
     if not hasattr(agent, "tom") or agent.tom is None:
         agent.tom = TheoryOfMind(agent.id)
     if not hasattr(agent, "knowledge") or agent.knowledge is None:
@@ -1126,7 +1132,10 @@ class Agent:
         if use_planning:
             self._next_planning_tick = tick + self._planning_stride
 
-        research_mode = self._need_inv_cooldown <= 0 or (
+        # Emergenz v3: the net's own research_drive decides when to research
+        # (previous tick's output — the flag is needed before brain.act, so a
+        # one-tick latency is inherent); active goals keep research mode on.
+        research_mode = self._research_drive > RESEARCH_DRIVE_THRESHOLD or (
             getattr(self, "goal_stack", None) is not None and not self.goal_stack.is_empty()
         )
         brain_step = self.brain.act(
@@ -1136,6 +1145,8 @@ class Agent:
             research_mode=research_mode,
         )
         self.hidden_state = brain_step["next_hidden"]
+        # Map the tanh output [-1, 1] to [0, 1]; consumed next tick (above).
+        self._research_drive = 0.5 * (brain_step["research_drive"] + 1.0)
         action_list = brain_step["action_list"]
         action = {
             "move_x": action_list[0],
@@ -1222,6 +1233,12 @@ class Agent:
             self._share_remedy(agents)
 
         self.last_action_mode = mode
+        # Emergenz v3: record successful action sequences as macro-actions and
+        # reinforce reproducing known ones. Placed here deliberately: `reward`
+        # is still pure action-phase reward (forage/coop/attack/build + goal
+        # shaping) — the right success signal for a motor sequence; later
+        # rewards (territory, invention, intrinsic) would dilute the test.
+        reward += self._record_macro_if_successful(mode, reward)
         reward += territory_reward_for_agent(self, world)
 
         # Sleep gates every *active* behaviour below (reproduction, social
@@ -1236,7 +1253,7 @@ class Agent:
 
         if self._need_inv_cooldown > 0:
             self._need_inv_cooldown -= 1
-        elif not self.is_sleeping:
+        elif not self.is_sleeping and research_mode:
             compute_need_vector(self, current_cell)
             inv_result = agent_invent_from_need(self, world, *self.pos, tick)
             if inv_result:
@@ -1245,7 +1262,10 @@ class Agent:
             self._need_inv_cooldown = NEED_INVENTION_INTERVAL
 
         inv_prob = INVENTION_BASE_PROB + INVENTION_CURIOSITY_MULT * self.genes.get("curiosity", 0.5)
-        if tick % 3 == 0 and not self.is_sleeping and random.random() < inv_prob:
+        # Hard research gate: the net's drive (action dim 6) decides whether to
+        # experiment at all — that is what makes the dimension learnable via
+        # the +0.5/+1.0 discovery rewards. tick%3 + dice stay as rate limiters.
+        if tick % 3 == 0 and not self.is_sleeping and research_mode and random.random() < inv_prob:
             invented = agent_try_invention(self, world, *self.pos)
             if invented:
                 reward += 1.0

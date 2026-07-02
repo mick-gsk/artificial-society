@@ -40,6 +40,7 @@ NEW_FIELDS = (
     "knowledge",
     "emotional_memory",
     "_recent_action_seq",
+    "_research_drive",
 )
 MIGRATE_EXTRAS = ("hidden_state", "remedy_knowledge", "herbs_carried")
 ALL_FIELDS = RUNTIME_FIELDS + NEW_FIELDS + MIGRATE_EXTRAS
