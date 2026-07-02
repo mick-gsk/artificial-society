@@ -1,8 +1,9 @@
 """
-KnowledgeGraph + EpisodicMemory
+KnowledgeGraph + NoveltyMemory
 --------------------------------
-EpisodicMemory  – NGU-style k-NN novelty score (state-space distance,
-                   not activation magnitude).
+NoveltyMemory   – NGU-style k-NN novelty score (state-space distance,
+                   not activation magnitude). Formerly named EpisodicMemory;
+                   a pickle-compat alias keeps old checkpoints loadable.
 KnowledgeGraph  – Persistent causal fact store.  Agents record which
                    (action, mat_a, mat_b) combinations succeeded or
                    failed, accumulate confidence, and share knowledge
@@ -27,9 +28,9 @@ import torch
 
 
 # ---------------------------------------------------------------------------
-# EpisodicMemory – novelty via k-NN distance in observation space
+# NoveltyMemory – novelty via k-NN distance in observation space
 # ---------------------------------------------------------------------------
-class EpisodicMemory:
+class NoveltyMemory:
     """
     Stores a rolling window of past observations and returns a novelty score
     for any new observation as the mean distance to its k nearest neighbours.
@@ -170,6 +171,9 @@ class CausalFact:
         self.successes: int = 0
         # NEU: Voraussetzungen (andere CausalFact-Keys die bekannt sein müssen)
         # Biologisch: Agenten ohne Feuer-Wissen "denken" nicht an Töpfern.
+        # ACHTUNG: wird derzeit nirgends aus Erster-Hand-Erfahrung befüllt (nur
+        # via inherit_from kopiert) — eine Tech-Tree-Quelle zu designen ist ein
+        # getrackter Follow-up; bis dahin ist prerequisites_met() immer True.
         self.prerequisites: list[tuple] = []
 
     def update(self, outcomes: list[str], success: bool) -> None:
@@ -449,3 +453,11 @@ class KnowledgeGraph:
 
     def __repr__(self) -> str:
         return f"KnowledgeGraph({len(self.facts)} facts, {len(self.macro_actions)} macros)"
+
+
+# Pickle-compat alias: checkpoints written before the rename reference
+# artificial_society.agents.knowledge.EpisodicMemory; unpickling resolves the
+# class via module attribute lookup, so this alias keeps them loadable.
+# (Checkpoints written by NEW code serialize as NoveltyMemory and are not
+# loadable by pre-rename code.)
+EpisodicMemory = NoveltyMemory

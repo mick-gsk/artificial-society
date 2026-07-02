@@ -2,7 +2,7 @@
 
 Locks the three behaviours the 60-tick golden trajectory does NOT cover:
 
-* TC-3  -- EpisodicMemory.stacked() is a value-identical, correctly-invalidated
+* TC-3  -- NoveltyMemory.stacked() is a value-identical, correctly-invalidated
            cache of torch.stack(list(buffer)).
 * BC-1  -- a checkpoint pickled before the cache existed (no _version/_cache/
            _cache_version attrs) still loads and runs (pickle bypasses __init__).
@@ -18,19 +18,19 @@ from collections import deque
 import torch
 
 from artificial_society.agents.brain import INPUT_SIZE, ROLLOUT_HORIZON, Brain
-from artificial_society.agents.knowledge import EpisodicMemory
+from artificial_society.agents.knowledge import NoveltyMemory
 
 DIM = 8
 
 
-def _fill(em: EpisodicMemory, n: int) -> None:
+def _fill(em: NoveltyMemory, n: int) -> None:
     for i in range(n):
         em.novelty(torch.full((DIM,), float(i)))
 
 
 # --- TC-3: cache is value-identical and correctly invalidated ----------------
 def test_stacked_matches_plain_stack_across_mutations():
-    em = EpisodicMemory(capacity=32, k=4)
+    em = NoveltyMemory(capacity=32, k=4)
     _fill(em, 20)
     assert torch.equal(em.stacked(), torch.stack(list(em.buffer)))
 
@@ -41,7 +41,7 @@ def test_stacked_matches_plain_stack_across_mutations():
 
 
 def test_stacked_cache_reused_until_mutation():
-    em = EpisodicMemory(capacity=32, k=4)
+    em = NoveltyMemory(capacity=32, k=4)
     _fill(em, 10)
     first = em.stacked()
     # no mutation -> same cached object returned (the whole point of the cache)
@@ -53,7 +53,7 @@ def test_stacked_cache_reused_until_mutation():
 
 
 def test_reset_invalidates_cache():
-    em = EpisodicMemory(capacity=32, k=4)
+    em = NoveltyMemory(capacity=32, k=4)
     _fill(em, 10)
     em.stacked()
     em.reset()
@@ -72,7 +72,7 @@ def test_legacy_pickle_without_cache_attrs_loads_and_runs():
         "epsilon": 1e-3,
         "buffer": deque((torch.zeros(DIM) for _ in range(12)), maxlen=500),
     }
-    em = EpisodicMemory.__new__(EpisodicMemory)
+    em = NoveltyMemory.__new__(NoveltyMemory)
     em.__setstate__(legacy_state)
     # Would AttributeError on _version / _cache before the BC-1 fix:
     em.novelty(torch.ones(DIM))
@@ -81,7 +81,7 @@ def test_legacy_pickle_without_cache_attrs_loads_and_runs():
 
 
 def test_pickle_roundtrip_drops_cache_and_rebuilds():
-    em = EpisodicMemory(capacity=64, k=4)
+    em = NoveltyMemory(capacity=64, k=4)
     _fill(em, 20)
     em.stacked()  # populate the cache so __getstate__ has something to drop
     restored = pickle.loads(pickle.dumps(em))

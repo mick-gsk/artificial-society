@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 import numpy as np
 import torch
@@ -248,7 +249,9 @@ def _maybe_collect_language_convergence(agent, agents: list, tick: int) -> None:
 
 @dataclass
 class Agent:
-    id_counter: int = 0
+    # Class-level id sequence (not a dataclass field): restored after checkpoint
+    # load so newborn ids never collide with loaded agents' ids.
+    id_counter: ClassVar[int] = 0
     id: int = 0
     energy: float = INITIAL_ENERGY
     health: float = 100.0

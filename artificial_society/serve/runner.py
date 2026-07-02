@@ -18,6 +18,7 @@ import time
 import traceback
 from typing import Any
 
+from artificial_society.serve.frame import build_frame
 from artificial_society.simulation import Simulation
 
 # History buffers maintained by StatisticsTracker (each a list of (tick, value)).
@@ -28,6 +29,10 @@ HISTORY_KEYS = (
     "food_history",
     "energy_history",
 )
+
+# Upper bound on how often a live frame is rebuilt (wall-clock seconds, ~20 Hz).
+# The sim may step far faster; frames are sampled, not produced per tick.
+FRAME_INTERVAL = 0.05
 
 # Defaults mirror the headless CLI (artificial_society.main).
 DEFAULTS = {"grid_w": 60, "grid_h": 40, "pop": 36, "seed": None, "ticks": None}
@@ -57,6 +62,9 @@ class SimulationRunner:
         self._tick = 0
         self._last_stats: dict[str, Any] = {}
         self._history = _empty_history()
+        self._last_frame: dict[str, Any] | None = None
+        self._ws_clients = 0
+        self._last_frame_t = 0.0
 
     # -- introspection ------------------------------------------------------
 
@@ -92,6 +100,20 @@ class SimulationRunner:
         with self._lock:
             return {k: list(v) for k, v in self._history.items()}
 
+    def frame(self) -> dict[str, Any] | None:
+        """Latest live frame built by the worker, or ``None`` if none yet."""
+        with self._lock:
+            return self._last_frame
+
+    def client_connect(self) -> None:
+        """A WS client subscribed — enable frame production in the worker loop."""
+        with self._lock:
+            self._ws_clients += 1
+
+    def client_disconnect(self) -> None:
+        with self._lock:
+            self._ws_clients = max(0, self._ws_clients - 1)
+
     # -- control ------------------------------------------------------------
 
     def start(self, params: dict[str, Any] | None = None) -> None:
@@ -110,6 +132,8 @@ class SimulationRunner:
             self._tick = 0
             self._last_stats = {}
             self._history = _empty_history()
+            self._last_frame = None
+            self._last_frame_t = 0.0
 
         self._thread = threading.Thread(
             target=self._run_loop, args=(merged,), name="sim-runner", daemon=True
@@ -150,6 +174,15 @@ class SimulationRunner:
                     self._tick = sim.tick
                     self._last_stats = dict(sim.stats.last)
                     self._history = {k: list(getattr(sim.stats, k, [])) for k in HISTORY_KEYS}
+                    want_frame = self._ws_clients > 0
+                # Build a live frame at most every FRAME_INTERVAL, and only when a
+                # dashboard is watching. build_frame is read-only and only this
+                # thread touches the sim, so it is safe outside the lock.
+                if want_frame and (time.monotonic() - self._last_frame_t) >= FRAME_INTERVAL:
+                    frame = build_frame(sim)
+                    with self._lock:
+                        self._last_frame = frame
+                        self._last_frame_t = time.monotonic()
                 n += 1
                 if max_ticks is not None and n >= int(max_ticks):
                     with self._lock:

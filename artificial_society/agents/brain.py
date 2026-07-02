@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-from .knowledge import EpisodicMemory
+from .knowledge import NoveltyMemory
 
 # ---------------------------------------------------------------------------
 # Device-Setup (Perf Tier 2, gemessen): fuer diese kleinen Batch-1-Netze ist
@@ -41,7 +41,8 @@ INPUT_SIZE = 57
 HIDDEN_SIZE = 96
 
 # Emergenz v3: ACTION_SIZE = 7
-# Neue 7. Dimension: research_drive (0..1)
+# Neue 7. Dimension: research_drive (tanh-Output in [-1, 1]; der Agent mappt
+# auf [0, 1] via 0.5 * (x + 1) bevor er gegen den Threshold vergleicht).
 # Das Netz entscheidet selbst wann es forscht -- nicht mehr gewuerfelt.
 # Biologisches Vorbild: Neugierde als intrinsisch motiviertes Verhalten
 # das durch Belohnungserfahrung verstaerkt oder abgeschwaecht wird.
@@ -156,12 +157,13 @@ class Brain(nn.Module):
         self.rollout = RolloutBuffer()
 
         # --- NGU-style episodic novelty memory ---
-        self.episodic_memory = EpisodicMemory(
+        self.episodic_memory = NoveltyMemory(
             capacity=EPISODIC_MEMORY_CAPACITY,
             k=EPISODIC_K,
         )
 
-        # Netz auf GPU verschieben
+        # Netz auf das konfigurierte Device verschieben (Default: CPU,
+        # Opt-in GPU via AS_BRAIN_DEVICE=cuda — siehe Device-Setup oben).
         self.to(device)
 
     # ------------------------------------------------------------------
@@ -315,8 +317,9 @@ class Brain(nn.Module):
         sequentielle Python-Schleife. Speedup ~8-12x bei PLAN_CANDIDATES=12.
 
         research_mode : bool
-            When True, planner uses PLAN_HORIZON_RESEARCH (30) instead of
-            PLAN_HORIZON (3). Wird automatisch aktiviert wenn research_drive > Threshold.
+            When True, planner uses PLAN_HORIZON_RESEARCH instead of
+            PLAN_HORIZON (module constants above — 6 vs. 2 at time of writing).
+            Wird aktiviert wenn research_drive > Threshold oder Goals anliegen.
         policy : optional (mean, std)
             Precomputed policy head from the caller's forward(obs, hidden). When
             given, the redundant internal forward is skipped. Numerically
