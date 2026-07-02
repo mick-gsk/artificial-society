@@ -40,3 +40,12 @@ def test_gegenprobe_flag_aus_system_wirkt_nicht():
     assert kadaver.mass == 50.0  # keine Verwesung
     boden = [o for o, _ in sim.world.objects.all_objects()]
     assert boden == [kadaver]  # kein Spawning
+    # F6 (3a-Final-Review): Ledger-Asserts — der v1-Pfad darf den Ledger nur um
+    # die Testaufbau-Buchung (from_carcass 50) bewegen, sonst gar nicht.
+    ledger = sim.world.objects.ledger
+    assert ledger["spawned"] == 0.0
+    assert ledger["eaten"] == 0.0
+    assert ledger["decayed"] == 0.0
+    assert ledger["from_carcass"] == 50.0
+    lhs, rhs = sim.world.objects.conservation_terms()
+    assert lhs == rhs == 50.0
