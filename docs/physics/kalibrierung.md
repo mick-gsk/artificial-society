@@ -28,7 +28,7 @@
 | Name | Realer Anker | Quelle |
 |---|---|---|
 | `berries` | Beeren: ≈ 50 kcal/100 g, wasserreich, weich; leichte Rest-Toxizität (Wildsammlung) | USDA Nährwerttabelle (Beeren) |
-| `carcass` | Tierkadaver: Verbund aus Haut/Sehnen/Fleisch/Knochen — sehr zäh; Nährwert praktisch nur durch Zerteilen (Schneiden) erschließbar | Zoologie/Jagdpraxis: Zerwirken |
+| `carcass` | Tierkadaver: Verbund aus Haut/Sehnen/Fleisch/Knochen — sehr zäh; Nährwert praktisch nur durch Zerteilen (Schneiden) erschließbar. nutrition 0.14 = essbarer Anteil ~40 % (dressed yield) × Rohfleisch 0.35 — die intensive nutrition mittelt über Knochen/Haut/Innereien; toxicity 0.02 = frisches Fleisch nahezu unbedenklich, Gefahr entsteht erst über Verwesung | Zoologie/Jagdpraxis: Zerwirken, Schlachtausbeute (dressed yield ~40 %) |
 | `clay_moist` | Feuchter Ton: weich/plastisch, sintert ab ≈ 1000 °C, sehr feines Gefüge | Keramik-Grundlagen |
 | `dry_wood` | Lufttrockenes Holz: ρ ≈ 650, Zündtemp ≈ 300 °C, Zugfestigkeit längs ≈ 100 MPa, zäh (splittert nicht muschelig) | Holztechnik-Tabellenwerte |
 | `flint` | Feuerstein/Silex: Mohs ≈ 7, ρ ≈ 2600, kryptokristallin → muscheliger Bruch; klassisches Ausgangsmaterial für Klingen; im Rohzustand NICHT scharf | Petrologie Silex; experimentelle Archäologie Feuersteinschlagen |

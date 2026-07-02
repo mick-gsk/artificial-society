@@ -211,3 +211,58 @@ def test_tick_spawn_regeneriert_langsam_und_deterministisch():
     assert a == b, "gleicher Seed ⇒ identische Spawns"
     # Erwartung ≈ 100 Zellen · 1e-5 · (1.0 + 0.5) · 20000 = 30 Objekte — nicht 0, nicht flutend
     assert 5 <= len(a) <= 100
+
+
+def test_verwesung_masse_nutrition_toxicity_und_ledger():
+    from artificial_society.environment.phys_objects import tick_decay
+    from artificial_society.environment.physics.actions import (
+        DECAY_RATE,
+        TOX_SPOILAGE_CAP,
+        TOX_SPOILAGE_PER_TICK,
+    )
+    from artificial_society.environment.physics.props import IDX2
+
+    layer = _layer()
+    kadaver = make_object("carcass", 70.0)
+    layer.add(kadaver, (2, 2), source="from_carcass")
+    n0 = float(kadaver.props[IDX2["nutrition"]])
+    t0 = float(kadaver.props[IDX2["toxicity"]])
+
+    tick_decay(layer)
+    assert math.isclose(kadaver.mass, 70.0 * (1.0 - DECAY_RATE), rel_tol=1e-12)
+    assert math.isclose(
+        float(kadaver.props[IDX2["nutrition"]]), n0 * (1.0 - DECAY_RATE), rel_tol=1e-6
+    )
+    assert math.isclose(
+        float(kadaver.props[IDX2["toxicity"]]), t0 + TOX_SPOILAGE_PER_TICK, rel_tol=1e-6
+    )
+    assert math.isclose(layer.ledger["decayed"], 70.0 * DECAY_RATE, rel_tol=1e-9)
+    lhs, rhs = layer.conservation_terms()
+    assert math.isclose(lhs, rhs, rel_tol=1e-9)
+
+    for _ in range(2000):  # Toxin-Kappe (0.6) wird erreicht und nie überschritten
+        tick_decay(layer)
+    assert float(kadaver.props[IDX2["toxicity"]]) == pytest.approx(TOX_SPOILAGE_CAP)
+
+
+def test_verwesung_verschont_trockene_stoffe():
+    from artificial_society.environment.phys_objects import tick_decay
+
+    layer = _layer()
+    stein = make_object("granite", 3.0)
+    holz = make_object("dry_wood", 2.0)
+    layer.add(stein, (1, 1), source="spawned")
+    layer.add(holz, (1, 2), source="spawned")
+    for _ in range(100):
+        tick_decay(layer)
+    assert stein.mass == 3.0 and holz.mass == 2.0
+    assert layer.ledger["decayed"] == 0.0
+
+
+def test_kadaver_rekalibrierung():
+    """Spec B5: dressed yield ~40 % → nutrition 0.35·0.40 = 0.14; frisch fast unbedenklich."""
+    from artificial_society.environment.physics.materials_v2 import MATERIALS_V2
+    from artificial_society.environment.physics.props import IDX2
+
+    assert float(MATERIALS_V2["carcass"][IDX2["nutrition"]]) == pytest.approx(0.14)
+    assert float(MATERIALS_V2["carcass"][IDX2["toxicity"]]) == pytest.approx(0.02)

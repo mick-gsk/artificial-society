@@ -111,8 +111,8 @@ MATERIALS_V2: dict = {
         ignition_temp=0.60,
         melting_point=1.0,
         thermal_conductivity=0.05,
-        nutrition=0.30,
-        toxicity=0.10,
+        nutrition=0.14,
+        toxicity=0.02,
         moisture=0.65,
         grain_fineness=0.30,
     ),
@@ -174,6 +174,9 @@ cal(
     "material",
     "carcass",
     "Tierkadaver: Verbund aus Haut/Sehnen/Fleisch/Knochen — sehr zäh; Nährwert praktisch nur "
-    "durch Zerteilen (Schneiden) erschließbar",
-    "Zoologie/Jagdpraxis: Zerwirken",
+    "durch Zerteilen (Schneiden) erschließbar. nutrition 0.14 = essbarer Anteil ~40 % "
+    "(dressed yield) × Rohfleisch 0.35 — die intensive nutrition mittelt über "
+    "Knochen/Haut/Innereien; toxicity 0.02 = frisches Fleisch nahezu unbedenklich, Gefahr "
+    "entsteht erst über Verwesung",
+    "Zoologie/Jagdpraxis: Zerwirken, Schlachtausbeute (dressed yield ~40 %)",
 )

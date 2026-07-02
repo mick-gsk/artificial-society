@@ -17,10 +17,16 @@ from collections.abc import Iterator
 
 import numpy as np
 
+from artificial_society.environment.physics.actions import (
+    DECAY_MOISTURE_MIN,
+    DECAY_RATE,
+    TOX_SPOILAGE_CAP,
+    TOX_SPOILAGE_PER_TICK,
+)
 from artificial_society.environment.physics.calibration import cal
 from artificial_society.environment.physics.discovery import DiscoveryV2
 from artificial_society.environment.physics.objects import PhysObject, make_object
-from artificial_society.environment.physics.props import N_PROPS_V2
+from artificial_society.environment.physics.props import IDX2, N_PROPS_V2
 
 _LEDGER_SOURCES = ("spawned", "from_carcass")
 
@@ -262,3 +268,24 @@ cal(
     "Ufer-Lehm 0.5–5 kg in Sumpf und an Ufern (Nicht-Wasser-Zelle mit Wasser-Nachbar)",
     "Sedimentologie: Ton-/Lehmablagerungen an Gewässerrändern",
 )
+
+
+# ---------------------------------------------------------------------------
+# Verwesung (Spec B3.4): wirkt aus Eigenschaften (feucht + nahrhaft), nie aus Labels
+# ---------------------------------------------------------------------------
+def tick_decay(layer: ObjectLayer) -> None:
+    """Ein Verwesungs-Tick über alle Boden-Objekte: Masse und nutrition sinken
+    exponentiell, toxicity steigt bis zur Kappe. Verweste Masse fließt
+    bilanziert in ledger['decayed'] (kein Culling, kein Leck)."""
+    for obj, _pos in layer.all_objects():
+        moisture = float(obj.props[IDX2["moisture"]])
+        nutrition = float(obj.props[IDX2["nutrition"]])
+        if moisture < DECAY_MOISTURE_MIN or nutrition <= 0.0:
+            continue
+        verlust = obj.mass * DECAY_RATE
+        obj.mass -= verlust
+        layer.ledger["decayed"] += verlust
+        obj.props[IDX2["nutrition"]] = nutrition * (1.0 - DECAY_RATE)
+        tox = float(obj.props[IDX2["toxicity"]])
+        if tox < TOX_SPOILAGE_CAP:
+            obj.props[IDX2["toxicity"]] = min(TOX_SPOILAGE_CAP, tox + TOX_SPOILAGE_PER_TICK)
