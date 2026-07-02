@@ -45,6 +45,10 @@ const EVENT_COLORS = {
   blight: 0xc774f0,
 };
 
+// Event kind → shader code (packed as kind*10 + intensity in uEvents[].w).
+// Must match the branch order in terrain-shader.js.
+const EVENT_KIND_CODE = { drought: 1, fire: 2, blight: 3, storm: 4 };
+
 // Action codes from serve/frame.py: 0 idle/move, 1 forage, 2 cooperate,
 // 3 attack, 4 build, 5 sleep.
 export const ACT = { IDLE: 0, FORAGE: 1, COOPERATE: 2, ATTACK: 3, BUILD: 4, SLEEP: 5 };
@@ -110,6 +114,18 @@ export class WorldScene {
     this._bursts = []; // {cx, cy, age, color} — knapping sparks, discoveries, fire
     this._biomeArr = null;
     this._events = [];
+
+    // Debug-only cell grid. Off by default (the shader terrain reads as an
+    // organic landscape, not a game board). Flip at runtime via
+    // window.__scene.showGrid = true to get a faint alignment grid.
+    this.showGrid = false;
+
+    // Environment events are drawn INTO the terrain shader (drought/fire/blight/
+    // storm as ground scars). Up to 8 slots packed strongest-first each frame,
+    // one vec4 per slot: (cx, cy, radius, kind*10 + intensity). Persistent buffer
+    // — no per-frame allocation. Mirrors the mesh's uEvents uniform value.
+    this._eventPack = new Float32Array(8 * 4);
+    this._eventCount = 0;
 
     // terrain texture state (subpixel canvas) — the Canvas2D fallback painter
     this._terCanvas = null;
@@ -335,6 +351,7 @@ export class WorldScene {
     this._paintItems(frame.items ?? []);
     this._paintStructures(frame.structures ?? []);
     this._syncAgents(frame.agents);
+    this._packEvents(this._events); // event → shader uniforms (20 Hz, no realloc)
     this._paintEvents(this._events);
   }
 
@@ -568,6 +585,45 @@ export class WorldScene {
     this._terDataTex.source.update();
   }
 
+  // Pack the (up to 8) strongest environment events into the shader's uEvents
+  // uniform so the terrain shader can paint them as ground scars. Runs at frame
+  // rate (~20 Hz) from update(), not per display tick — no per-frame allocation:
+  // the sort works on a small array and the packed floats go into the persistent
+  // `_eventPack` buffer, which is the mesh uniform's backing store.
+  //
+  // Slot layout (vec4): x,y = event centre in cells; z = radius in cells;
+  // w = kind*10 + intensity (kind 1=drought 2=fire 3=blight 4=storm).
+  _packEvents(events) {
+    const pack = this._eventPack;
+    if (!this.useShaderTerrain || !this._terUniforms || !events || !events.length) {
+      this._eventCount = 0;
+      if (this._terUniforms) this._terUniforms.uniforms.uEventCount = 0;
+      return;
+    }
+    // strongest first by intensity × radius; take the top 8.
+    const top =
+      events.length > 8
+        ? [...events].sort((a, b) => b.i * b.r - a.i * a.r).slice(0, 8)
+        : events;
+    let n = 0;
+    for (let k = 0; k < top.length && n < 8; k++) {
+      const e = top[k];
+      const kind = EVENT_KIND_CODE[e.kind];
+      if (!kind) continue; // unknown kind → the shader has no branch for it
+      const p = n * 4;
+      pack[p] = e.x;
+      pack[p + 1] = e.y;
+      pack[p + 2] = Math.max(1, e.r);
+      pack[p + 3] = kind * 10 + Math.min(0.999, Math.max(0, e.i ?? 0));
+      n++;
+    }
+    this._eventCount = n;
+    // uEvents value is the same Float32Array (mutated in place); reassigning is
+    // cheap and keeps Pixi's dirty tracking honest.
+    this._terUniforms.uniforms.uEvents = pack;
+    this._terUniforms.uniforms.uEventCount = n;
+  }
+
   // -- terrain decorations (trees, rocks, tufts) — static per world ------------
 
   _buildDecor() {
@@ -722,7 +778,14 @@ export class WorldScene {
     this._drawGrid();
   }
 
+  // Debug-only alignment grid. Off by default — the default landscape shows no
+  // cell lines or frame. window.__scene.showGrid = true draws a faint grid; the
+  // change takes effect on the next _rebuildGrid (resize) or immediately if you
+  // also call __scene._drawGrid().
   _drawGrid() {
+    this.gridLayer.removeChildren().forEach((c) => c.destroy());
+    if (!this.showGrid) return;
+
     const { w, h } = this.grid;
     const cp = this.cellPx;
     const x0 = this.offX;
@@ -731,7 +794,6 @@ export class WorldScene {
     const y1 = y0 + h * cp;
     const step = w > 40 ? 10 : 5;
 
-    this.gridLayer.removeChildren().forEach((c) => c.destroy());
     const g = new Graphics();
     for (let x = 0; x <= w; x += step) {
       const px = x0 + x * cp;
@@ -741,11 +803,11 @@ export class WorldScene {
       const py = y0 + y * cp;
       g.moveTo(x0, py).lineTo(x1, py);
     }
-    g.stroke({ width: 1, color: COLORS.gridLine, alpha: 0.22 });
+    g.stroke({ width: 1, color: COLORS.gridLine, alpha: 0.08 });
     g.rect(x0, y0, w * cp, h * cp).stroke({
       width: 1,
       color: COLORS.gridTick,
-      alpha: 0.5,
+      alpha: 0.08,
     });
     this.gridLayer.addChild(g);
   }
@@ -1034,7 +1096,12 @@ export class WorldScene {
       }
     }
 
-    // weather is visible weather: rain inside storms, glow + haze for the rest
+    // weather is visible weather. Storm rain always draws (particles, not a
+    // ground tint — untouched, replaced by a real particle system in a later
+    // task). The flat fire/drought/blight tint discs are the OLD event look;
+    // when the shader terrain is on it paints those as ground scars instead, so
+    // the discs only draw as a fallback when useShaderTerrain is off.
+    const flatEvents = !this.useShaderTerrain;
     for (const e of this._events) {
       const ex = px(e.x);
       const ey = py(e.y);
@@ -1051,12 +1118,12 @@ export class WorldScene {
             .lineTo(dx - cp * 0.12, dy + cp * 0.4)
             .stroke({ width: lw, color: 0x9fd4ff, alpha: 0.35 });
         }
-      } else if (e.kind === "fire") {
+      } else if (flatEvents && e.kind === "fire") {
         const fl = 0.06 + 0.05 * Math.sin(this._pulse * 11 + e.x);
         this.fxLayer.circle(ex, ey, rad).fill({ color: 0xff7a3c, alpha: fl });
-      } else if (e.kind === "drought") {
+      } else if (flatEvents && e.kind === "drought") {
         this.fxLayer.circle(ex, ey, rad).fill({ color: 0xf0b030, alpha: 0.05 });
-      } else if (e.kind === "blight") {
+      } else if (flatEvents && e.kind === "blight") {
         this.fxLayer.circle(ex, ey, rad).fill({ color: 0xc774f0, alpha: 0.05 });
       }
     }

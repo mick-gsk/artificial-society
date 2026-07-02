@@ -44,6 +44,12 @@ void main() {
 // uGrid   : (w, h) cell counts — lets us walk the data texture by cell centre.
 // uTime   : seconds, ever-increasing — drives water ripples/sparkle.
 // uDaylight: 0..1 light level (frame.daylight) — dawn/dusk warmth, night blue.
+// uEvents : up to 8 active environment events. Per slot: xy = cell centre,
+//           z = radius in cells, w = kind*10 + intensity (kind 1=drought 2=fire
+//           3=blight 4=storm; intensity 0..1). Packed by world-render.js each
+//           frame, strongest first. GLSL ES 1.00: fixed loop bound 8, early-out
+//           against uEventCount inside.
+// uEventCount: how many uEvents slots are live (0..8).
 const TERRAIN_FRAG = /* glsl */ `
 in vec2 vUV;
 out vec4 finalColor;
@@ -54,6 +60,9 @@ uniform sampler2D uLut;
 uniform vec2 uGrid;
 uniform float uTime;
 uniform float uDaylight;
+
+uniform vec4 uEvents[8];
+uniform int uEventCount;
 
 // --- cheap hash value-noise (no noise texture; deterministic, tileable-ish) ---
 float hash(vec2 p) {
@@ -75,6 +84,12 @@ float valueNoise(vec2 p) {
 
 float fbm2(vec2 p) {
   return valueNoise(p) * 0.65 + valueNoise(p * 2.3 + 7.1) * 0.35;
+}
+
+// desaturate toward luminance by amount k (0 = unchanged, 1 = greyscale).
+vec3 desaturate(vec3 c, float k) {
+  float l = dot(c, vec3(0.299, 0.587, 0.114));
+  return mix(c, vec3(l), k);
 }
 
 // Colour of a single cell: sample its data texel, pick dry/lush from the LUT by
@@ -183,6 +198,58 @@ void main() {
     rgb = mix(rgb, vec3(0.72, 0.78, 0.82), foam * 0.55);
   }
 
+  // --- environment events: drought / fire / blight / storm painted straight
+  // into the ground as organic scars, not flat overlay discs. Applied AFTER the
+  // biome/water/shore colour, BEFORE the daylight tint so brand scars sit under
+  // the day/night light. GLSL ES 1.00 needs a constant loop bound, so we walk a
+  // fixed 8 slots and break past uEventCount; each slot is (cx, cy, radius,
+  // kind*10 + intensity), packed strongest-first by world-render.js. ---
+  for (int ei = 0; ei < 8; ei++) {
+    if (ei >= uEventCount) break;
+    vec4 ev = uEvents[ei];
+    float dist = length(cellPos - ev.xy);
+    float r = max(1.0, ev.z);
+    // soft falloff: 1 at the centre, 0 outside the radius. smoothstep(r, r*0.6,
+    // dist) is 1 for dist<=r*0.6 and 0 for dist>=r — no hard disc edge.
+    float fall = smoothstep(r, r * 0.6, dist);
+    if (fall <= 0.0) continue;
+    float kind = floor(ev.w / 10.0 + 0.5);
+    float inten = ev.w - kind * 10.0;      // 0..1
+    float amt = fall * clamp(inten, 0.0, 1.0);
+
+    if (kind < 1.5) {
+      // 1 = drought: heat-shimmer wobble (re-sample the ground at a small
+      // time-animated UV offset) + warm sandy bleach with saturation loss.
+      vec2 shimmer = vec2(
+        valueNoise(cellPos * 2.0 + vec2(uTime * 1.3, 0.0)) - 0.5,
+        valueNoise(cellPos * 2.0 + vec2(0.0, uTime * 1.1) + 5.0) - 0.5
+      ) * amt * 0.6;
+      vec3 wob = cellColor(cellPos + shimmer).rgb;
+      rgb = mix(rgb, wob, amt * 0.5);
+      rgb = desaturate(rgb, amt * 0.35);
+      rgb = mix(rgb, vec3(0.80, 0.72, 0.50), amt * 0.35); // toward sand-yellow
+    } else if (kind < 2.5) {
+      // 2 = fire: charred, darkened core toward black-brown + an animated
+      // orange glowing rim at the radius edge (flicker off uTime noise).
+      vec3 char = vec3(0.10, 0.06, 0.04);
+      rgb = mix(rgb, char, amt * 0.85);
+      // rim peaks near the falloff edge (fall ~0.5), fades to centre and outside.
+      float rim = smoothstep(0.15, 0.5, fall) * (1.0 - smoothstep(0.5, 0.85, fall));
+      float flick = 0.6 + 0.4 * valueNoise(cellPos * 4.0 + uTime * 3.0);
+      vec3 ember = vec3(1.0, 0.42, 0.10);
+      rgb += ember * rim * flick * clamp(inten, 0.0, 1.0) * 0.9;
+    } else if (kind < 3.5) {
+      // 3 = blight: desaturate and push a sickly violet stain into the ground.
+      rgb = desaturate(rgb, amt * 0.55);
+      rgb = mix(rgb, vec3(0.34, 0.20, 0.40), amt * 0.4);
+    } else {
+      // 4 = storm: gentle darkening + a cool blue tint (rain arrives later as
+      // particles; this is just the shadowed, storm-lit ground).
+      rgb *= 1.0 - amt * 0.28;
+      rgb = mix(rgb, vec3(0.30, 0.38, 0.52), amt * 0.22);
+    }
+  }
+
   // --- daylight: replicate the CPU painter's dawn/dusk warmth + night blue. ---
   float dl = uDaylight;
   float day = 0.45 + 0.55 * dl;
@@ -251,10 +318,15 @@ export function buildTerrainMesh({ w, h, cellPx, offX, offY, dataTex, lutTex }) 
   });
 
   // Animatable scalar/vector uniforms live in one group we can poke each frame.
+  // uEvents is a fixed 8-slot vec4 array (Pixi uploads it via gl.uniform4fv);
+  // world-render.js mutates the backing Float32Array in place and sets
+  // uEventCount. Zeroed at build so a fresh mesh shows no phantom events.
   const uniforms = new UniformGroup({
     uGrid: { value: new Float32Array([w, h]), type: "vec2<f32>" },
     uTime: { value: 0, type: "f32" },
     uDaylight: { value: 1, type: "f32" },
+    uEvents: { value: new Float32Array(8 * 4), type: "vec4<f32>", size: 8 },
+    uEventCount: { value: 0, type: "i32" },
   });
 
   const shader = Shader.from({
