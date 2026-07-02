@@ -10,14 +10,16 @@ ledger-neutral. DiscoveryV2 wird PRO Welt instanziert (kein Modul-Singleton).
 
 from __future__ import annotations
 
+import math
 import random as _random
 import types
 from collections.abc import Iterator
 
 import numpy as np
 
+from artificial_society.environment.physics.calibration import cal
 from artificial_society.environment.physics.discovery import DiscoveryV2
-from artificial_society.environment.physics.objects import PhysObject
+from artificial_society.environment.physics.objects import PhysObject, make_object
 from artificial_society.environment.physics.props import N_PROPS_V2
 
 _LEDGER_SOURCES = ("spawned", "from_carcass")
@@ -114,3 +116,149 @@ class ObjectLayer:
         if self.__dict__.get("rng") is None:
             self.rng = _random  # Modul-Default wieder anbinden (global via seed_all geseedet)
         self._pos_by_id = {id(obj): pos for pos, bucket in self._by_pos.items() for obj in bucket}
+
+
+# ---------------------------------------------------------------------------
+# Spawning (Spec B2): Biome-gebunden, kalibrierte Massen, langsame Regeneration
+# ---------------------------------------------------------------------------
+SPAWN_INITIAL_DENSITY = 0.03  # 3 % der passenden Biom-Zellen tragen initial ein Objekt
+SPAWN_RATE_PER_CELL_TICK = 1e-5  # ≈ 0.0024 Objekte je Biom-Zelle und Tag (240 Ticks)
+
+# (material, biome_tag, rate_mult, mass_min_kg, mass_max_kg).
+# "shore" = Nicht-Wasser-Zelle mit mind. einem Wasser-Nachbarn (Chebyshev 1).
+SPAWN_TABLE = (
+    ("granite", "mountain", 1.0, 0.5, 8.0),
+    ("flint", "mountain", 0.5, 0.3, 4.0),  # Knollen
+    ("flint", "grassland", 0.05, 0.3, 4.0),  # selten: Kiesel
+    ("dry_wood", "forest", 1.0, 0.5, 6.0),
+    ("plant_fiber", "grassland", 1.0, 0.05, 0.4),
+    ("plant_fiber", "swamp", 1.0, 0.05, 0.4),
+    ("clay_moist", "swamp", 1.0, 0.5, 5.0),
+    ("clay_moist", "shore", 1.0, 0.5, 5.0),
+)
+
+# Vom Realitäts-Gate geprüfte Spawn-Parameter (kind "spawn").
+CALIBRATED_SPAWN_PARAMS = (
+    "initial_density",
+    "regen_rate",
+    "granite",
+    "flint",
+    "dry_wood",
+    "plant_fiber",
+    "clay_moist",
+)
+
+
+def _eligible_cells(biomes, biome_tag: str) -> list:
+    """Zellen (x, y), auf denen ein biome_tag spawnen darf; Scan-Reihenfolge row-major."""
+    h, w = len(biomes), len(biomes[0])
+    if biome_tag != "shore":
+        return [(x, y) for y in range(h) for x in range(w) if biomes[y][x] == biome_tag]
+    out = []
+    for y in range(h):
+        for x in range(w):
+            if biomes[y][x] == "water":
+                continue
+            nachbar_wasser = any(
+                0 <= y + dy < h and 0 <= x + dx < w and biomes[y + dy][x + dx] == "water"
+                for dy in (-1, 0, 1)
+                for dx in (-1, 0, 1)
+                if dx or dy
+            )
+            if nachbar_wasser:
+                out.append((x, y))
+    return out
+
+
+def _cells_for(layer: ObjectLayer, biomes, biome_tag: str) -> list:
+    """Pro Layer gecachte Eignungs-Listen (Biome sind nach Weltgenerierung statisch)."""
+    cache = getattr(layer, "_spawn_cells", None)
+    if cache is None:
+        cache = {}
+        layer._spawn_cells = cache
+    if biome_tag not in cache:
+        cache[biome_tag] = _eligible_cells(biomes, biome_tag)
+    return cache[biome_tag]
+
+
+def _poisson(lam: float, rng) -> int:
+    """Knuth-Poisson — für die winzigen Pro-Tick-Raten (λ ≪ 1) fast immer 1 RNG-Draw."""
+    if lam <= 0.0:
+        return 0
+    schwelle = math.exp(-lam)
+    k = 0
+    p = 1.0
+    while True:
+        p *= rng.random()
+        if p <= schwelle:
+            return k
+        k += 1
+
+
+def seed_initial(layer: ObjectLayer, biomes) -> None:
+    """Start-Seeding beim Welt-Aufbau (nur physics_v2): 3 % der passenden Zellen."""
+    for material, biome_tag, rate_mult, m_lo, m_hi in SPAWN_TABLE:
+        for pos in _cells_for(layer, biomes, biome_tag):
+            if layer.rng.random() < SPAWN_INITIAL_DENSITY * rate_mult:
+                layer.add(
+                    make_object(material, layer.rng.uniform(m_lo, m_hi)), pos, source="spawned"
+                )
+
+
+def tick_spawn(layer: ObjectLayer, biomes) -> None:
+    """Langsame Regeneration: Poisson über alle geeigneten Zellen einer Quelle."""
+    for material, biome_tag, rate_mult, m_lo, m_hi in SPAWN_TABLE:
+        cells = _cells_for(layer, biomes, biome_tag)
+        if not cells:
+            continue
+        lam = SPAWN_RATE_PER_CELL_TICK * rate_mult * len(cells)
+        for _ in range(_poisson(lam, layer.rng)):
+            pos = cells[layer.rng.randrange(len(cells))]
+            layer.add(make_object(material, layer.rng.uniform(m_lo, m_hi)), pos, source="spawned")
+
+
+cal(
+    "spawn",
+    "initial_density",
+    "Start-Seeding: 3 % der geeigneten Biom-Zellen tragen initial ein Objekt "
+    "(SPAWN_INITIAL_DENSITY = 0.03, je Quelle skaliert mit rate_mult)",
+    "Größenordnung Oberflächen-Vorkommen von Lesesteinen/Totholz; Pilot-feinjustierbar (Spec B2)",
+)
+cal(
+    "spawn",
+    "regen_rate",
+    "Regeneration 1e-5 Objekte je Zelle und Tick ≈ 0.0024/Zelle/Tag (240 Ticks/Tag); auf "
+    "200×200 mit ~15 % Gebirge ≈ 14 neue Steine/Tag — versiegt nicht, flutet nicht",
+    "Auslegungsrechnung Spec B2 (Pilot-feinjustierbar, nie zur Laufzeit pro Agent)",
+)
+cal(
+    "spawn",
+    "granite",
+    "Granit-Gerölle 0.5–8 kg im Gebirge (Lesesteine/Hangschutt)",
+    "Geologie: Hangschutt/Lesesteine im Mittelgebirge",
+)
+cal(
+    "spawn",
+    "flint",
+    "Feuerstein 0.3–4 kg: Knollen im Gebirge (rate_mult 0.5), selten als Kiesel im "
+    "Grasland (rate_mult 0.05)",
+    "Geologie: Feuerstein-Knollen in Kreide/Schotterfluren",
+)
+cal(
+    "spawn",
+    "dry_wood",
+    "Totholz-Äste 0.5–6 kg im Wald",
+    "Forstökologie: Totholzaufkommen in Wäldern",
+)
+cal(
+    "spawn",
+    "plant_fiber",
+    "Gras-/Bastbündel 0.05–0.4 kg in Grasland und Sumpf",
+    "Ethnobotanik: Sammelmengen Faserpflanzen",
+)
+cal(
+    "spawn",
+    "clay_moist",
+    "Ufer-Lehm 0.5–5 kg in Sumpf und an Ufern (Nicht-Wasser-Zelle mit Wasser-Nachbar)",
+    "Sedimentologie: Ton-/Lehmablagerungen an Gewässerrändern",
+)

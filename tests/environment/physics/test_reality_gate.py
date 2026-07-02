@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from artificial_society.environment.phys_objects import CALIBRATED_SPAWN_PARAMS
 from artificial_society.environment.physics import MATERIALS_V2, PROP_DIMS_V2
 from artificial_society.environment.physics.actions import CALIBRATED_ACTION_PARAMS
 from artificial_society.environment.physics.body import CALIBRATED_BODY_PARAMS
@@ -107,3 +108,14 @@ def test_no_orphan_action_entries():
     for kind, name in CALIBRATION:
         if kind == "action":
             assert name in CALIBRATED_ACTION_PARAMS, f"verwaister action-Eintrag: {name}"
+
+
+def test_every_spawn_param_is_calibrated():
+    for name in CALIBRATED_SPAWN_PARAMS:
+        _assert_calibrated("spawn", name)
+
+
+def test_no_orphan_spawn_entries():
+    for kind, name in CALIBRATION:
+        if kind == "spawn":
+            assert name in CALIBRATED_SPAWN_PARAMS, f"verwaister spawn-Eintrag: {name}"

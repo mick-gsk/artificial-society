@@ -142,3 +142,72 @@ def test_discovery_pro_welt_verschieden():
 
     a, b = World(6, 5), World(6, 5)
     assert a.objects.discovery is not b.objects.discovery
+
+
+def _biome_grid(biome: str, w: int = 10, h: int = 10) -> list:
+    return [[biome for _ in range(w)] for _ in range(h)]
+
+
+def test_seed_initial_spawnt_nur_passende_biome_und_massen():
+    import random
+
+    from artificial_society.environment.phys_objects import (
+        SPAWN_TABLE,
+        seed_initial,
+    )
+
+    grenzen = {m: (lo, hi) for m, _, _, lo, hi in SPAWN_TABLE}
+    layer = ObjectLayer(40, 40, rng=random.Random(7))
+    seed_initial(layer, _biome_grid("mountain", 40, 40))
+    objekte = [obj for obj, _ in layer.all_objects()]
+    assert objekte, "3 % von 1600 Bergzellen müssen deterministisch > 0 Objekte liefern"
+    assert {o.kind for o in objekte} <= {"granite", "flint"}  # Berg: Geröll + Knollen
+    for o in objekte:
+        lo, hi = grenzen[o.kind]
+        assert lo <= o.mass <= hi
+    assert math.isclose(layer.ledger["spawned"], layer.total_mass(), rel_tol=1e-9)
+
+
+def test_seed_initial_wueste_bleibt_leer():
+    import random
+
+    from artificial_society.environment.phys_objects import seed_initial
+
+    layer = ObjectLayer(20, 20, rng=random.Random(7))
+    seed_initial(layer, _biome_grid("desert", 20, 20))
+    assert layer.total_mass() == 0.0
+
+
+def test_seed_initial_ufer_lehm():
+    import random
+
+    from artificial_society.environment.phys_objects import seed_initial
+
+    # linke Spalte Wasser, Rest Grasland → Ufer = Spalte x=1 (200 Ufer-Zellen,
+    # Erwartung ≈ 6 Lehm-Objekte — groß genug, dass ein Seed praktisch nie 0 liefert)
+    biomes = [["water"] + ["grassland"] * 39 for _ in range(200)]
+    layer = ObjectLayer(40, 200, rng=random.Random(3))
+    seed_initial(layer, biomes)
+    lehm = [(o, p) for o, p in layer.all_objects() if o.kind == "clay_moist"]
+    assert lehm, (
+        "Ufer-Zellen müssen Lehm tragen können (falls 0: anderen Seed wählen — deterministisch)"
+    )
+    assert all(p[0] == 1 for _, p in lehm)  # nur die Ufer-Spalte
+
+
+def test_tick_spawn_regeneriert_langsam_und_deterministisch():
+    import random
+
+    from artificial_society.environment.phys_objects import tick_spawn
+
+    def _lauf(seed: int) -> list:
+        layer = ObjectLayer(10, 10, rng=random.Random(seed))
+        biomes = _biome_grid("mountain", 10, 10)
+        for _ in range(20000):
+            tick_spawn(layer, biomes)
+        return sorted((o.kind, round(o.mass, 9), p) for o, p in layer.all_objects())
+
+    a, b = _lauf(11), _lauf(11)
+    assert a == b, "gleicher Seed ⇒ identische Spawns"
+    # Erwartung ≈ 100 Zellen · 1e-5 · (1.0 + 0.5) · 20000 = 30 Objekte — nicht 0, nicht flutend
+    assert 5 <= len(a) <= 100

@@ -58,6 +58,13 @@
 
 | Name | Realer Anker | Quelle |
 |---|---|---|
+| `clay_moist` | Ufer-Lehm 0.5–5 kg in Sumpf und an Ufern (Nicht-Wasser-Zelle mit Wasser-Nachbar) | Sedimentologie: Ton-/Lehmablagerungen an Gewässerrändern |
+| `dry_wood` | Totholz-Äste 0.5–6 kg im Wald | Forstökologie: Totholzaufkommen in Wäldern |
+| `flint` | Feuerstein 0.3–4 kg: Knollen im Gebirge (rate_mult 0.5), selten als Kiesel im Grasland (rate_mult 0.05) | Geologie: Feuerstein-Knollen in Kreide/Schotterfluren |
+| `granite` | Granit-Gerölle 0.5–8 kg im Gebirge (Lesesteine/Hangschutt) | Geologie: Hangschutt/Lesesteine im Mittelgebirge |
+| `initial_density` | Start-Seeding: 3 % der geeigneten Biom-Zellen tragen initial ein Objekt (SPAWN_INITIAL_DENSITY = 0.03, je Quelle skaliert mit rate_mult) | Größenordnung Oberflächen-Vorkommen von Lesesteinen/Totholz; Pilot-feinjustierbar (Spec B2) |
+| `plant_fiber` | Gras-/Bastbündel 0.05–0.4 kg in Grasland und Sumpf | Ethnobotanik: Sammelmengen Faserpflanzen |
+| `regen_rate` | Regeneration 1e-5 Objekte je Zelle und Tick ≈ 0.0024/Zelle/Tag (240 Ticks/Tag); auf 200×200 mit ~15 % Gebirge ≈ 14 neue Steine/Tag — versiegt nicht, flutet nicht | Auslegungsrechnung Spec B2 (Pilot-feinjustierbar, nie zur Laufzeit pro Agent) |
 
 ## Aktions- & Kopplungs-Parameter
 

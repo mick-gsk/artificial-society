@@ -145,6 +145,8 @@ def render_markdown() -> str:
     """Kalibrierungstabelle als Markdown (SSOT = diese Datei)."""
     # Import hier, damit alle cal()-Registrierungen der Schwester-Module feuern
     # (kein Import-Zyklus: die Schwestern importieren nur cal aus diesem Modul).
+    from artificial_society.environment import phys_objects  # noqa: F401
+
     from . import actions, body, materials_v2, processes  # noqa: F401
 
     lines = [_DOC_HEADER]
