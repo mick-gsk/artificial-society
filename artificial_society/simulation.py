@@ -12,6 +12,7 @@ from artificial_society.agents.agent import (
     attach_body,
     ensure_fields,
 )
+from artificial_society.agents.genetics import inherit_strength as inherit_strength_gene
 from artificial_society.environment.materials import DISCOVERY_REGISTRY
 from artificial_society.environment.phys_objects import seed_initial
 from artificial_society.environment.physics.body import BODY_MASS_DEFAULT_KG
@@ -199,6 +200,11 @@ class Simulation:
         child.hidden_state = child.brain.initial_hidden()
         child.birth_tick = self.tick
         if self.physics_v2:
+            # strength wird über den eigenen v2-Pfad vererbt (inherit_genes
+            # überspringt es — Golden), DANN baut attach_body den Body daraus.
+            # ALIAS beachten: `inherit_strength` ist in dieser Funktion bereits
+            # die lokale Gewichts-Vererbungsstärke — daher inherit_strength_gene.
+            inherit_strength_gene(child.genes, parent, other_parent)
             attach_body(child)
         inherit_strength = max(
             0.20, min(0.75, 0.75 - (child.genes["plasticity"] - 0.3) / (1.8 - 0.3) * 0.55)

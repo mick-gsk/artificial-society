@@ -10,7 +10,7 @@ from artificial_society.agents.brain import INPUT_SIZE, Brain
 from artificial_society.agents.communication import CommunicationSystem
 from artificial_society.agents.emotional_memory import EmotionalMemory
 from artificial_society.agents.endocrine import EndocrineSystem
-from artificial_society.agents.genetics import inherit_genes, random_genes
+from artificial_society.agents.genetics import ensure_strength_gene, inherit_genes, random_genes
 from artificial_society.agents.knowledge import KnowledgeGraph
 from artificial_society.agents.life_stage import get_stage_stats
 from artificial_society.agents.memory import EpisodicMemory
@@ -184,19 +184,20 @@ def ensure_fields(agent) -> None:
     if not hasattr(agent, "hands"):
         agent.hands = None
     if agent.physics_v2 and agent.body is None:
-        agent.body = Body(body_mass=BODY_MASS_DEFAULT_KG, strength=0.5)
+        agent.body = Body(body_mass=BODY_MASS_DEFAULT_KG, strength=agent.genes.get("strength", 0.5))
     if agent.physics_v2 and agent.hands is None:
         agent.hands = Hands()
 
 
 def attach_body(agent) -> None:
-    """Physik-v2-Embodiment (Plan 3a): Body + Hände mit Default-Kraft 0.5.
+    """Physik-v2-Embodiment: Body + Hände; Kraft aus dem strength-Gen (Plan 3b).
 
-    Das strength-Gen ersetzt den Default in Plan 3b; die Körpermasse ist real
-    geankert (BODY_MASS_DEFAULT_KG, cal 'body_mass'). Zieht keine RNG.
+    ensure_strength_gene zieht RNG NUR hier (v2-Pfad) — nie in random_genes
+    (Golden). Die Körpermasse ist real geankert (BODY_MASS_DEFAULT_KG).
     """
     agent.physics_v2 = True
-    agent.body = Body(body_mass=BODY_MASS_DEFAULT_KG, strength=0.5)
+    ensure_strength_gene(agent.genes)
+    agent.body = Body(body_mass=BODY_MASS_DEFAULT_KG, strength=agent.genes["strength"])
     agent.hands = Hands()
 
 
