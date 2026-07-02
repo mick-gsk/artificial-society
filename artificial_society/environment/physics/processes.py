@@ -65,7 +65,44 @@ def strike(
     return StrikeResult(fractured=True, fragments=fragments)
 
 
-PROCESSES: dict = {"strike": strike}
+# Schneide-Physik (realer Anker: siehe cal()-Eintrag unten)
+BARE_HAND_SHARPNESS = 0.05  # Hände/Zähne/Reißen
+MAX_CUT_FRACTION = 0.9
+
+
+@dataclass
+class CutResult:
+    extracted: PhysObject | None
+    remainder: PhysObject
+
+
+def effective_sharpness(tool: PhysObject | None) -> float:
+    """Ohne Werkzeug: Hände/Zähne. Mit Werkzeug: Schärfe, getragen von Härte —
+    eine scharfe, aber weiche Kante verformt sich beim Schnitt."""
+    if tool is None:
+        return BARE_HAND_SHARPNESS
+    return float(tool.props[IDX2["sharpness"]]) * (0.5 + 0.5 * float(tool.props[IDX2["hardness"]]))
+
+
+def cut(target: PhysObject, tool: PhysObject | None) -> CutResult:
+    """Ein Schneidevorgang trennt einen Massenanteil ab. Ertrag steigt mit
+    effektiver Schärfe des Werkzeugs, sinkt mit Zähigkeit des Ziels.
+    Eigenschaften bleiben unverändert (nur kleiner) — Masse exakt erhalten."""
+    toughness = 1.0 - float(target.props[IDX2["brittleness"]])
+    yield_fraction = min(effective_sharpness(tool) * max(0.0, 1.15 - toughness), MAX_CUT_FRACTION)
+    extracted_mass = yield_fraction * target.mass
+    if extracted_mass <= 1e-9:
+        return CutResult(extracted=None, remainder=target)
+    extracted = PhysObject(
+        props=target.props.copy(), mass=extracted_mass, kind=f"{target.kind}_piece"
+    )
+    remainder = PhysObject(
+        props=target.props.copy(), mass=target.mass - extracted_mass, kind=target.kind
+    )
+    return CutResult(extracted=extracted, remainder=remainder)
+
+
+PROCESSES: dict = {"strike": strike, "cut": cut}
 
 cal(
     "process",
@@ -74,4 +111,13 @@ cal(
     "scharfe Abschläge; nötige Schlagenergie im Bereich eines kräftigen Handschlags (10–50 J); "
     "zähe Stoffe (Holz, Fleisch) zersplittern so nicht",
     "Experimentelle Archäologie: Feuersteinschlagen/Lithik; Bruchmechanik spröder Stoffe",
+)
+
+cal(
+    "process",
+    "cut",
+    "Schneiden: Ertrag steigt mit Kantenschärfe × Härte des Werkzeugs und sinkt mit der "
+    "Zähigkeit des Ziels; einen Kadaver mit bloßer Hand zu zerwirken ist nahezu unmöglich, "
+    "mit Steinklinge effizient",
+    "Experimentelle Archäologie: Zerwirken mit Steinklingen",
 )
