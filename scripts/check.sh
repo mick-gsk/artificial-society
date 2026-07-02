@@ -17,11 +17,12 @@ RUFF="${RUFF:-$ROOT/../venv/bin/ruff}"
 BASE="${1:-origin/main}"
 
 # Changed Python files: committed vs base + unstaged + staged, de-duplicated.
+# Exclude archive/ (legacy code is grandfathered).
 changed="$( {
   git diff --name-only --diff-filter=ACMR "${BASE}...HEAD" -- '*.py' 2>/dev/null
   git diff --name-only -- '*.py'
   git diff --name-only --cached -- '*.py'
-} | sort -u | grep -E '\.py$' || true )"
+} | sort -u | grep -E '\.py$' | grep -v '^archive/' || true )"
 
 rc=0
 if [ -n "$changed" ]; then

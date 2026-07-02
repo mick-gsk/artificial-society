@@ -5,8 +5,17 @@ import random
 import pygame
 
 import artificial_society.systems._builtins  # noqa: F401  (registers built-in systems)
-from artificial_society.agents.agent import CORPSE_ENERGY, MAX_ENERGY, Agent, ensure_fields
+from artificial_society.agents.agent import (
+    CORPSE_ENERGY,
+    MAX_ENERGY,
+    Agent,
+    attach_body,
+    ensure_fields,
+)
 from artificial_society.environment.materials import DISCOVERY_REGISTRY
+from artificial_society.environment.phys_objects import seed_initial
+from artificial_society.environment.physics.body import BODY_MASS_DEFAULT_KG
+from artificial_society.environment.physics.objects import make_object
 from artificial_society.environment.resources import add_carcass
 from artificial_society.environment.territory import update_territory_claims
 from artificial_society.renderer import Renderer
@@ -51,6 +60,14 @@ DEATH_MATERIAL_MIN_QTY = 0.3
 DEATH_MATERIAL_TRANSFER_RATIO = 0.4
 
 SIDEBAR_W = 300
+
+
+class CheckpointIncompatibleError(RuntimeError):
+    """Checkpoint passt nicht zur angeforderten Konfiguration (z. B. physics_v2-Mismatch).
+
+    Wird in _load_checkpoint VOR dem broad-except re-raised: still verschlucken
+    und „frisch starten" wäre stiller Datenverlust (Spec C5).
+    """
 
 
 def _reset_accumulating_singletons() -> None:
@@ -108,10 +125,13 @@ class Simulation:
         headless=False,
         seed=None,
         load_checkpoint=True,
+        physics_v2=False,
     ):
         # Seed first, before anything stochastic (biome grid, population) is built.
         self.headless = headless
         self.seed = seed
+        # Physik v2 (Plan 3a): additive Objekt-Schicht. Default False = v1 byte-gleich.
+        self.physics_v2 = bool(physics_v2)
         if seed is not None:
             seed_all(seed)
             # Reset the agent id sequence so a seed reproduces the same ids too.
@@ -152,12 +172,19 @@ class Simulation:
             self._load_checkpoint()
         else:
             self.spawn_initial_population(initial_population)
+            if self.physics_v2:
+                # Start-Seeding NUR beim Frisch-Start (ein geladener Checkpoint
+                # bringt seine Objekt-Schicht mit); zieht RNG nur bei Flag an.
+                seed_initial(self.world.objects, self.world.biomes)
         seed_world_materials(self.world)
 
     def spawn_initial_population(self, n):
         for _ in range(n):
             x, y = self.world.random_land_position()
-            self.agents.append(Agent.spawn_random(x, y))
+            agent = Agent.spawn_random(x, y)
+            if self.physics_v2:
+                attach_body(agent)
+            self.agents.append(agent)
 
     def spawn_child_from_parent(self, parent, genes):
         x, y = self.world.find_free_neighbor(parent.pos)
@@ -171,6 +198,8 @@ class Simulation:
         child = self.evolution.make_child(parent, x, y, genes=genes, other_parent=other_parent)
         child.hidden_state = child.brain.initial_hidden()
         child.birth_tick = self.tick
+        if self.physics_v2:
+            attach_body(child)
         inherit_strength = max(
             0.20, min(0.75, 0.75 - (child.genes["plasticity"] - 0.3) / (1.8 - 0.3) * 0.55)
         )
@@ -246,6 +275,8 @@ class Simulation:
             x, y = self.world.random_land_position()
             a = Agent.spawn_random(x, y)
             a.birth_tick = self.tick
+            if self.physics_v2:
+                attach_body(a)
             self.agents.append(a)
 
     def remove_dead(self):
@@ -255,8 +286,29 @@ class Simulation:
                 survivors.append(agent)
                 continue
             self._broadcast_death_knowledge(agent)
-            add_carcass(self.world, *agent.pos, CORPSE_ENERGY)
+            if self.physics_v2:
+                # v2 (Spec B3): der Tod münzt genau EIN Kadaver-Objekt —
+                # kein add_carcass-Credit auf Zell-Pools, kein Loot.
+                self._spawn_carcass(agent)
+            else:
+                add_carcass(self.world, *agent.pos, CORPSE_ENERGY)
         self.agents = survivors
+
+    def _spawn_carcass(self, agent):
+        """Kadaver-Objekt an der Todesposition; gehaltene Objekte fallen zu Boden.
+
+        Ledger: Handmasse → Boden ist neutral (war schon in der Invariante),
+        die Körpermasse fließt als 'from_carcass' zu (Erhaltung, Spec D1).
+        """
+        layer = self.world.objects
+        hands = getattr(agent, "hands", None)
+        if hands is not None:
+            for obj in list(hands.held):
+                hands.release(obj)
+                layer.add(obj, agent.pos)
+        body = getattr(agent, "body", None)
+        body_mass = body.body_mass if body is not None else BODY_MASS_DEFAULT_KG
+        layer.add(make_object("carcass", body_mass), agent.pos, source="from_carcass")
 
     def _is_immune(self, agent, disease_id):
         return self.tick < getattr(agent, "_disease_immunity", {}).get(disease_id, 0)
@@ -307,6 +359,9 @@ class Simulation:
         # investment (tribe ties + number of children). Energy only ever moves
         # *within* a tribe, so total energy is conserved (the MAX_ENERGY clamp can
         # only sink energy, never create it).
+        if self.physics_v2:
+            # v2 (B6/Architekturtabelle): keine Verwandten-Energie-Umverteilung.
+            return
         if self.tick % HAMILTON_TICK_INTERVAL != 0:
             return
         tribe_members = {}
@@ -347,6 +402,7 @@ class Simulation:
                     {
                         "agents": self.agents,
                         "tick": self.tick,
+                        "physics_v2": self.physics_v2,
                         "world": self.world,
                         "stats": self.stats,
                         "tribes": self.tribes,
@@ -363,6 +419,12 @@ class Simulation:
         try:
             with open(CHECKPOINT_PATH, "rb") as f:
                 data = pickle.load(f)
+            saved_flag = bool(data.get("physics_v2", False))
+            if saved_flag != self.physics_v2:
+                raise CheckpointIncompatibleError(
+                    f"checkpoint physics_v2={saved_flag} != Simulation physics_v2="
+                    f"{self.physics_v2} — Checkpoint löschen oder Flag angleichen"
+                )
             self.agents = data.get("agents", [])
             self.tick = data.get("tick", 0)
             self.world = data.get("world", self.world)
@@ -378,9 +440,16 @@ class Simulation:
             for agent in self.agents:
                 ensure_fields(agent)
             print(f"[checkpoint] loaded tick={self.tick}, agents={len(self.agents)}")
+        except CheckpointIncompatibleError:
+            raise  # harte Schranke — NICHT vom broad-except verschlucken lassen
         except Exception as e:
             print(f"[checkpoint] load failed: {e} — starting fresh")
             self.spawn_initial_population(self._initial_population)
+            if self.physics_v2:
+                # Spiegelt das Start-Seeding aus __init__: ein kaputter Checkpoint
+                # bringt keine Objekt-Schicht mit, also muss sie hier ebenfalls
+                # frisch geseedet werden (sonst startet physics_v2 masselos).
+                seed_initial(self.world.objects, self.world.biomes)
 
     def _collect_stats(self):
         alive = [a for a in self.agents if a.alive]
@@ -481,11 +550,13 @@ class Simulation:
                 new_children.append(self.spawn_child_from_parent(agent, child_genes))
         self.agents.extend(new_children)
 
-        # Drop agents that died during their own update. As in the current live
-        # loop, pre-filtering means remove_dead() finds no bodies (no carcass or
-        # death-knowledge broadcast yet).
-        # TODO(phase2): route deaths through remove_dead() for carcass + broadcast.
-        self.agents = [a for a in self.agents if a.alive]
+        # Flag aus: Pre-Filtering unverändert (Golden-Garantie) — Tote erreichen
+        # remove_dead() dort wie bisher nicht. Im v2-Modus MÜSSEN Tote
+        # remove_dead() erreichen (Kadaver-Objekt + Erhaltung, Spec B3): ohne
+        # diesen Fix entstünden nie Kadaver — Massenleck im Ledger, und die
+        # Kern-Kette Kadaver→Schneiden→Essen existierte nicht.
+        if not self.physics_v2:
+            self.agents = [a for a in self.agents if a.alive]
         self.remove_dead()
 
         self.tick_immunity_and_recovery()

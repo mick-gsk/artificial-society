@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-VALID_KINDS = ("dim", "material", "process", "body")
+VALID_KINDS = ("dim", "material", "process", "body", "spawn", "action")
 
 
 @dataclass(frozen=True)
@@ -129,6 +129,8 @@ _KIND_TITLES = {
     "material": "Startmaterialien",
     "process": "Prozesse",
     "body": "Körper-Parameter",
+    "spawn": "Spawn-Parameter (Vorkommen)",
+    "action": "Aktions- & Kopplungs-Parameter",
 }
 
 _DOC_HEADER = (
@@ -143,7 +145,9 @@ def render_markdown() -> str:
     """Kalibrierungstabelle als Markdown (SSOT = diese Datei)."""
     # Import hier, damit alle cal()-Registrierungen der Schwester-Module feuern
     # (kein Import-Zyklus: die Schwestern importieren nur cal aus diesem Modul).
-    from . import body, materials_v2, processes  # noqa: F401
+    from artificial_society.environment import phys_objects  # noqa: F401
+
+    from . import actions, body, materials_v2, processes  # noqa: F401
 
     lines = [_DOC_HEADER]
     for kind in VALID_KINDS:

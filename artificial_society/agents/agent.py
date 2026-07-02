@@ -17,6 +17,8 @@ from artificial_society.agents.memory import EpisodicMemory
 from artificial_society.agents.theory_of_mind import TheoryOfMind
 from artificial_society.environment.herbs import available_herbs, collect_herb
 from artificial_society.environment.materials import get_vector, material_reward
+from artificial_society.environment.physics.actions import enforce_carry_budget
+from artificial_society.environment.physics.body import BODY_MASS_DEFAULT_KG, Body, Hands
 from artificial_society.environment.resources import apply_consumption, clamp, maybe_build_structure
 from artificial_society.environment.structures import (
     BUILD_ENERGY_COST,
@@ -174,6 +176,28 @@ def ensure_fields(agent) -> None:
         agent._cached_nearby_radius = 2
     if not hasattr(agent, "_disease_immunity"):
         agent._disease_immunity = {}
+    # --- Physik v2 (Plan 3a) ---
+    if not hasattr(agent, "physics_v2"):
+        agent.physics_v2 = False
+    if not hasattr(agent, "body"):
+        agent.body = None
+    if not hasattr(agent, "hands"):
+        agent.hands = None
+    if agent.physics_v2 and agent.body is None:
+        agent.body = Body(body_mass=BODY_MASS_DEFAULT_KG, strength=0.5)
+    if agent.physics_v2 and agent.hands is None:
+        agent.hands = Hands()
+
+
+def attach_body(agent) -> None:
+    """Physik-v2-Embodiment (Plan 3a): Body + Hände mit Default-Kraft 0.5.
+
+    Das strength-Gen ersetzt den Default in Plan 3b; die Körpermasse ist real
+    geankert (BODY_MASS_DEFAULT_KG, cal 'body_mass'). Zieht keine RNG.
+    """
+    agent.physics_v2 = True
+    agent.body = Body(body_mass=BODY_MASS_DEFAULT_KG, strength=0.5)
+    agent.hands = Hands()
 
 
 def _inventory_value_state(agent) -> dict:
@@ -301,6 +325,10 @@ class Agent:
     emotional_memory: EmotionalMemory = field(default_factory=EmotionalMemory)
     # Emergenz v3: Kurzzeitgedaechtnis fuer ausgefuehrte Aktionssequenzen
     _recent_action_seq: list = field(default_factory=list)
+    # Physik v2 (Plan 3a): Flag + Embodiment. Default False/None ⇒ v1 byte-gleich.
+    physics_v2: bool = False
+    body: object = None
+    hands: object = None
 
     @classmethod
     def spawn_random(cls, x, y):
@@ -520,7 +548,10 @@ class Agent:
         # recomputes from the sources every tick -- so debiting `food` directly was
         # wiped out next tick and effectively minted energy. The energy gained now
         # equals the food removed (1:1), a genuine transfer from the world.
-        if diet < 0:
+        if diet < 0 or self.physics_v2:
+            # Herbivore (v1) bzw. Physik-v2-Modus: nur Pflanzen-Zell-Foraging.
+            # v2 (B6): Zell-Fleisch/Aas-Pools sind AUS — Fleisch existiert nur
+            # noch als Kadaver-OBJEKT (B3); ein einziger Pfad je Kalorienquelle.
             # Herbivore: plant-food only.
             plant_available = cell.get("plant_food", 0.0)
             if plant_available > 0:
@@ -628,6 +659,11 @@ class Agent:
         target.endocrine.apply_attack_received()
         if target.health <= 0:
             target.alive = False
+            if self.physics_v2:
+                # v2 (Spec B3): Energie aus einem Kill gibt es AUSSCHLIESSLICH
+                # über den Kadaver — Loot wäre Energie ohne Massen-Gegenwert
+                # (Doppel-Münzung, für den Ledger unsichtbar).
+                return 0.0
             loot = target.energy * 0.3
             self.energy = min(MAX_ENERGY, self.energy + loot)
             return loot
@@ -1059,6 +1095,16 @@ class Agent:
 
         self._sleep_tick(mods)
 
+        if self.physics_v2 and self.body is not None:
+            # Körper-Mechanik pro Tick (B4): Tragen ermüdet, Ruhe erholt;
+            # Überlast (Ermüdung senkt die Kapazität) wirft zu Tick-Beginn das
+            # jeweils schwerste gehaltene Objekt ab. Rein mechanisch, kein Reward.
+            if self.hands.held:
+                self.body.carry_tick(self.hands.carried_mass_kg())
+            else:
+                self.body.rest_tick()
+            enforce_carry_budget(self.body, self.hands, world.objects, self.pos)
+
         current_cell = world.get_cell(*self.pos)
         structure_mods = apply_structure_effects(self, current_cell)
 
@@ -1124,7 +1170,7 @@ class Agent:
         reward = 0.0
         mode = "idle"
 
-        if getattr(self, "goal_stack", None) is not None:
+        if not self.physics_v2 and getattr(self, "goal_stack", None) is not None:
             goal_action, goal_shaping = agent_tick_with_goals(
                 self,
                 current_cell,
@@ -1198,24 +1244,27 @@ class Agent:
         if tick % 3 == 0:
             reward += social_learning_step(self, agents, tick)
 
-        if self._need_inv_cooldown <= 0:
-            compute_need_vector(self, current_cell)
-            inv_result = agent_invent_from_need(self, world, *self.pos, tick)
-            if inv_result:
-                reward += 0.5
-                self.endocrine.apply_discovery(1.0)
-            self._need_inv_cooldown = NEED_INVENTION_INTERVAL
-        else:
-            self._need_inv_cooldown -= 1
+        if not self.physics_v2:
+            # v2 (B6): v1-Erfindung AUS — beide Trigger-Pfade entfallen mitsamt
+            # ihren Boni; Entdecken läuft künftig über die Objekt-Physik (3b).
+            if self._need_inv_cooldown <= 0:
+                compute_need_vector(self, current_cell)
+                inv_result = agent_invent_from_need(self, world, *self.pos, tick)
+                if inv_result:
+                    reward += 0.5
+                    self.endocrine.apply_discovery(1.0)
+                self._need_inv_cooldown = NEED_INVENTION_INTERVAL
+            else:
+                self._need_inv_cooldown -= 1
 
         inv_prob = INVENTION_BASE_PROB + INVENTION_CURIOSITY_MULT * self.genes.get("curiosity", 0.5)
-        if tick % 3 == 0 and random.random() < inv_prob:
+        if not self.physics_v2 and tick % 3 == 0 and random.random() < inv_prob:
             invented = agent_try_invention(self, world, *self.pos)
             if invented:
                 reward += 1.0
                 self.endocrine.apply_discovery(1.0)
 
-        if tick % 4 == 0 and random.random() < 0.18:
+        if not self.physics_v2 and tick % 4 == 0 and random.random() < 0.18:
             cooked = agent_try_cook(self, world, *self.pos)
             if cooked:
                 reward += 0.3

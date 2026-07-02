@@ -23,9 +23,10 @@ FATIGUE_RECOVERY_PER_TICK = 0.02  # volle Erholung nach ~50 Ruhe-Ticks
 CARRY_FATIGUE_PER_TICK_AT_CAPACITY = (
     0.002  # Dauerlast an der Traggrenze: ~500 Ticks bis Erschöpfung
 )
+BODY_MASS_DEFAULT_KG = 70.0  # Default-Körpermasse fürs Embodiment (Plan 3a); Gen-Kopplung = Plan 3b
 
 # Vom Realitäts-Gate geprüfte Körper-Parameter (wächst mit Tasks 2/3).
-CALIBRATED_BODY_PARAMS = ("carry_capacity", "strike_energy", "fatigue", "hands")
+CALIBRATED_BODY_PARAMS = ("carry_capacity", "strike_energy", "fatigue", "hands", "body_mass")
 
 
 @dataclass
@@ -138,4 +139,12 @@ cal(
     "Ohne erfundene Behälter ist Transport damit auf 2 Objekte pro Weg begrenzt — der "
     "reale Druck, aus dem Behälter/Bündel entstanden sind",
     "Menschliche Anatomie; Archäologie früher Trage-/Behältertechnik",
+)
+cal(
+    "body",
+    "body_mass",
+    "Default-Körpermasse 70 kg (erwachsener Mensch, Referenzperson); bestimmt Tragkapazität "
+    "(~30 % davon) und die Kadaver-Masse beim Tod (Spec B3/B5: 70-kg-Kadaver ≈ 1250 Sim-Energie "
+    "≈ 5× MAX_ENERGY)",
+    "Anthropometrie: ICRP-Referenzperson ~70 kg",
 )

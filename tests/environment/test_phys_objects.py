@@ -1,0 +1,268 @@
+"""ObjectLayer (Plan 3a, Spec B1): sparse Registry, Ledger, per-Welt-Discovery."""
+
+from __future__ import annotations
+
+import math
+import pickle
+
+import numpy as np
+import pytest
+
+from artificial_society.environment.phys_objects import ObjectLayer
+from artificial_society.environment.physics.objects import PhysObject, make_object
+from artificial_society.environment.physics.props import pv
+
+
+def _layer() -> ObjectLayer:
+    return ObjectLayer(10, 8)
+
+
+def test_add_und_objects_at():
+    layer = _layer()
+    a = make_object("granite", 2.0)
+    layer.add(a, (3, 4))
+    assert layer.objects_at((3, 4)) == [a]
+    assert layer.objects_at((0, 0)) == []
+    assert layer.position_of(a) == (3, 4)
+    assert layer.total_mass() == 2.0
+
+
+def test_add_validiert_props_masse_und_bounds():
+    layer = _layer()
+    with pytest.raises(ValueError):  # Props außerhalb [0,1]
+        layer.add(PhysObject(props=pv(hardness=1.5), mass=1.0), (0, 0))
+    with pytest.raises(ValueError):  # außerhalb des Grids
+        layer.add(make_object("granite", 1.0), (10, 0))
+    obj = make_object("granite", 1.0)
+    layer.add(obj, (1, 1))
+    with pytest.raises(ValueError):  # Doppel-Add desselben Objekts
+        layer.add(obj, (2, 2))
+    with pytest.raises(ValueError):  # unbekannte Ledger-Quelle
+        layer.add(make_object("flint", 1.0), (0, 0), source="geschenkt")
+
+
+def test_remove_ist_identitaetsbasiert():
+    layer = _layer()
+    a = make_object("granite", 1.0)
+    b = make_object("granite", 1.0)  # wertgleich, aber anderes Objekt
+    layer.add(a, (2, 2))
+    layer.add(b, (2, 2))
+    layer.remove(a)
+    assert layer.objects_at((2, 2)) == [b]
+    with pytest.raises(KeyError):
+        layer.remove(a)
+
+
+def test_objects_near_chebyshev():
+    layer = _layer()
+    nah = make_object("flint", 0.5)
+    diagonal = make_object("flint", 0.5)
+    fern = make_object("flint", 0.5)
+    layer.add(nah, (5, 5))
+    layer.add(diagonal, (6, 6))
+    layer.add(fern, (8, 5))
+    gefunden = layer.objects_near((5, 5), radius=1)
+    assert {id(o) for o, _ in gefunden} == {id(nah), id(diagonal)}
+    assert (diagonal, (6, 6)) in gefunden
+
+
+def test_ledger_und_erhaltungsterme():
+    layer = _layer()
+    layer.add(make_object("granite", 3.0), (1, 1), source="spawned")
+    layer.add(make_object("carcass", 70.0), (2, 2), source="from_carcass")
+    layer.add(make_object("flint", 1.0), (3, 3))  # ledger-neutral (z. B. abgelegt)
+    assert layer.ledger["spawned"] == 3.0
+    assert layer.ledger["from_carcass"] == 70.0
+    assert layer.ledger["eaten"] == 0.0 and layer.ledger["decayed"] == 0.0
+    lhs, rhs = layer.conservation_terms(held_mass_kg=0.0)
+    # Boden 74 == spawned 3 + from_carcass 70 + neutral 1 → neutral zählt links,
+    # also balanciert die Invariante nur, wenn neutrale Adds Bewegungen sind
+    # (Hand→Boden). Hier: bewusst unbalanciert um genau 1.0.
+    assert math.isclose(lhs - rhs, 1.0, rel_tol=1e-9)
+
+
+def test_discovery_ist_instanz_pro_layer():
+    a, b = _layer(), _layer()
+    assert a.discovery is not b.discovery
+    a.discovery.register(np.zeros(13, dtype=np.float32))
+    assert a.discovery.known_ids() and not b.discovery.known_ids()
+
+
+def test_pickle_roundtrip_baut_rueckwaertsmap_neu():
+    """Default-rng ist das random-MODUL (nicht picklebar) — der Roundtrip MUSS es
+    trotzdem überleben: exakt der Checkpoint-Pfad (_save_checkpoint pickelt world
+    inkl. world.objects, simulation.py:343)."""
+    import random as random_mod
+
+    layer = _layer()  # Default-rng = random-Modul
+    layer.add(make_object("granite", 2.5), (4, 3), source="spawned")
+    layer.add(make_object("carcass", 70.0), (4, 3), source="from_carcass")
+    layer2 = pickle.loads(pickle.dumps(layer))
+    objekte = layer2.objects_at((4, 3))
+    assert len(objekte) == 2
+    assert all(layer2.position_of(o) == (4, 3) for o in objekte)
+    assert layer2.ledger == layer.ledger
+    assert math.isclose(layer2.total_mass(), layer.total_mass(), rel_tol=1e-12)
+    assert layer2.rng is random_mod  # Modul-Default wieder angebunden
+    layer2.rng.random()  # und benutzbar
+
+
+def test_pickle_erhaelt_explizite_rng_instanz():
+    import random
+
+    layer = ObjectLayer(10, 8, rng=random.Random(5))
+    erwartet = random.Random(5).random()
+    layer2 = pickle.loads(pickle.dumps(layer))
+    assert isinstance(layer2.rng, random.Random)
+    assert layer2.rng.random() == erwartet  # RNG-Zustand überlebt das Pickling
+
+
+def test_world_traegt_objectlayer_als_schwester_attribut():
+    """Spec B1: world.objects lebt NEBEN world.F/S, nie in den Zell-Arrays."""
+    from artificial_society.world import World
+
+    world = World(12, 9)
+    assert isinstance(world.objects, ObjectLayer)
+    assert world.objects.width == 12 and world.objects.height == 9
+    assert world.objects.total_mass() == 0.0  # Konstruktion spawnt nichts
+
+
+def test_ensure_array_storage_migriert_alte_welten():
+    from artificial_society.world import World
+
+    world = World(6, 5)
+    del world.objects  # simuliert eine Welt aus einem alten Checkpoint
+    world.ensure_array_storage()
+    assert isinstance(world.objects, ObjectLayer)
+
+
+def test_discovery_pro_welt_verschieden():
+    """Spec D2: zwei Welten teilen keinen Discovery-Zustand."""
+    from artificial_society.world import World
+
+    a, b = World(6, 5), World(6, 5)
+    assert a.objects.discovery is not b.objects.discovery
+
+
+def _biome_grid(biome: str, w: int = 10, h: int = 10) -> list:
+    return [[biome for _ in range(w)] for _ in range(h)]
+
+
+def test_seed_initial_spawnt_nur_passende_biome_und_massen():
+    import random
+
+    from artificial_society.environment.phys_objects import (
+        SPAWN_TABLE,
+        seed_initial,
+    )
+
+    grenzen = {m: (lo, hi) for m, _, _, lo, hi in SPAWN_TABLE}
+    layer = ObjectLayer(40, 40, rng=random.Random(7))
+    seed_initial(layer, _biome_grid("mountain", 40, 40))
+    objekte = [obj for obj, _ in layer.all_objects()]
+    assert objekte, "3 % von 1600 Bergzellen müssen deterministisch > 0 Objekte liefern"
+    assert {o.kind for o in objekte} <= {"granite", "flint"}  # Berg: Geröll + Knollen
+    for o in objekte:
+        lo, hi = grenzen[o.kind]
+        assert lo <= o.mass <= hi
+    assert math.isclose(layer.ledger["spawned"], layer.total_mass(), rel_tol=1e-9)
+
+
+def test_seed_initial_wueste_bleibt_leer():
+    import random
+
+    from artificial_society.environment.phys_objects import seed_initial
+
+    layer = ObjectLayer(20, 20, rng=random.Random(7))
+    seed_initial(layer, _biome_grid("desert", 20, 20))
+    assert layer.total_mass() == 0.0
+
+
+def test_seed_initial_ufer_lehm():
+    import random
+
+    from artificial_society.environment.phys_objects import seed_initial
+
+    # linke Spalte Wasser, Rest Grasland → Ufer = Spalte x=1 (200 Ufer-Zellen,
+    # Erwartung ≈ 6 Lehm-Objekte — groß genug, dass ein Seed praktisch nie 0 liefert)
+    biomes = [["water"] + ["grassland"] * 39 for _ in range(200)]
+    layer = ObjectLayer(40, 200, rng=random.Random(3))
+    seed_initial(layer, biomes)
+    lehm = [(o, p) for o, p in layer.all_objects() if o.kind == "clay_moist"]
+    assert lehm, (
+        "Ufer-Zellen müssen Lehm tragen können (falls 0: anderen Seed wählen — deterministisch)"
+    )
+    assert all(p[0] == 1 for _, p in lehm)  # nur die Ufer-Spalte
+
+
+def test_tick_spawn_regeneriert_langsam_und_deterministisch():
+    import random
+
+    from artificial_society.environment.phys_objects import tick_spawn
+
+    def _lauf(seed: int) -> list:
+        layer = ObjectLayer(10, 10, rng=random.Random(seed))
+        biomes = _biome_grid("mountain", 10, 10)
+        for _ in range(20000):
+            tick_spawn(layer, biomes)
+        return sorted((o.kind, round(o.mass, 9), p) for o, p in layer.all_objects())
+
+    a, b = _lauf(11), _lauf(11)
+    assert a == b, "gleicher Seed ⇒ identische Spawns"
+    # Erwartung ≈ 100 Zellen · 1e-5 · (1.0 + 0.5) · 20000 = 30 Objekte — nicht 0, nicht flutend
+    assert 5 <= len(a) <= 100
+
+
+def test_verwesung_masse_nutrition_toxicity_und_ledger():
+    from artificial_society.environment.phys_objects import tick_decay
+    from artificial_society.environment.physics.actions import (
+        DECAY_RATE,
+        TOX_SPOILAGE_CAP,
+        TOX_SPOILAGE_PER_TICK,
+    )
+    from artificial_society.environment.physics.props import IDX2
+
+    layer = _layer()
+    kadaver = make_object("carcass", 70.0)
+    layer.add(kadaver, (2, 2), source="from_carcass")
+    n0 = float(kadaver.props[IDX2["nutrition"]])
+    t0 = float(kadaver.props[IDX2["toxicity"]])
+
+    tick_decay(layer)
+    assert math.isclose(kadaver.mass, 70.0 * (1.0 - DECAY_RATE), rel_tol=1e-12)
+    assert math.isclose(
+        float(kadaver.props[IDX2["nutrition"]]), n0 * (1.0 - DECAY_RATE), rel_tol=1e-6
+    )
+    assert math.isclose(
+        float(kadaver.props[IDX2["toxicity"]]), t0 + TOX_SPOILAGE_PER_TICK, rel_tol=1e-6
+    )
+    assert math.isclose(layer.ledger["decayed"], 70.0 * DECAY_RATE, rel_tol=1e-9)
+    lhs, rhs = layer.conservation_terms()
+    assert math.isclose(lhs, rhs, rel_tol=1e-9)
+
+    for _ in range(2000):  # Toxin-Kappe (0.6) wird erreicht und nie überschritten
+        tick_decay(layer)
+    assert float(kadaver.props[IDX2["toxicity"]]) == pytest.approx(TOX_SPOILAGE_CAP)
+
+
+def test_verwesung_verschont_trockene_stoffe():
+    from artificial_society.environment.phys_objects import tick_decay
+
+    layer = _layer()
+    stein = make_object("granite", 3.0)
+    holz = make_object("dry_wood", 2.0)
+    layer.add(stein, (1, 1), source="spawned")
+    layer.add(holz, (1, 2), source="spawned")
+    for _ in range(100):
+        tick_decay(layer)
+    assert stein.mass == 3.0 and holz.mass == 2.0
+    assert layer.ledger["decayed"] == 0.0
+
+
+def test_kadaver_rekalibrierung():
+    """Spec B5: dressed yield ~40 % → nutrition 0.35·0.40 = 0.14; frisch fast unbedenklich."""
+    from artificial_society.environment.physics.materials_v2 import MATERIALS_V2
+    from artificial_society.environment.physics.props import IDX2
+
+    assert float(MATERIALS_V2["carcass"][IDX2["nutrition"]]) == pytest.approx(0.14)
+    assert float(MATERIALS_V2["carcass"][IDX2["toxicity"]]) == pytest.approx(0.02)
