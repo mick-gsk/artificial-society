@@ -18,6 +18,7 @@ from .props import IDX2
 FRACTURE_BASE_J_PER_KG = 60.0
 MIN_STRIKER_HARDNESS = 0.5
 MIN_HARDNESS_MARGIN = -0.15  # Schlagstein darf höchstens 0.15 weicher sein als das Ziel
+MIN_FRACTURE_BRITTLENESS = 0.35  # zähe Stoffe (Holz, Fleisch) verformen/dämpfen statt zu zersplittern; Flüssigkeiten (brittleness 0) zerbrechen nicht
 
 
 @dataclass
@@ -47,6 +48,8 @@ def strike(
         return StrikeResult(fractured=False)
     if striker_hardness - target_hardness < MIN_HARDNESS_MARGIN:
         return StrikeResult(fractured=False)
+    if float(target.props[IDX2["brittleness"]]) < MIN_FRACTURE_BRITTLENESS:
+        return StrikeResult(fractured=False)
     if impact_energy_j < fracture_threshold_j(target):
         return StrikeResult(fractured=False)
 
@@ -68,6 +71,12 @@ def strike(
 # Schneide-Physik (realer Anker: siehe cal()-Eintrag unten)
 BARE_HAND_SHARPNESS = 0.05  # Hände/Zähne/Reißen
 MAX_CUT_FRACTION = 0.9
+BARE_HAND_HARDNESS = (
+    0.30  # Hände/Zähne: Zahnschmelz Mohs ~5 (0.5), wirksam begrenzt durch Biss-/Greifmechanik
+)
+CUTTABLE_HARDNESS_CEILING = (
+    0.35  # nur weiche Stoffe sind schneidbar; Gestein wird geschlagen/geschliffen, nie geschnitten
+)
 
 
 @dataclass
@@ -86,10 +95,20 @@ def effective_sharpness(tool: PhysObject | None) -> float:
 
 def cut(target: PhysObject, tool: PhysObject | None) -> CutResult:
     """Ein Schneidevorgang trennt einen Massenanteil ab. Ertrag steigt mit
-    effektiver Schärfe des Werkzeugs, sinkt mit Zähigkeit des Ziels.
+    effektiver Schärfe des Werkzeugs, sinkt mit Zähigkeit des Ziels — und nur
+    Ziele, die deutlich weicher als das Werkzeug und insgesamt weich sind,
+    lassen sich überhaupt schneiden (Gestein wird geschlagen, nicht geschnitten).
     Eigenschaften bleiben unverändert (nur kleiner) — Masse exakt erhalten."""
+    tool_hardness = BARE_HAND_HARDNESS if tool is None else float(tool.props[IDX2["hardness"]])
+    target_hardness = float(target.props[IDX2["hardness"]])
+    if tool_hardness <= target_hardness:
+        return CutResult(extracted=None, remainder=target)
+    cuttability = max(0.0, 1.0 - target_hardness / CUTTABLE_HARDNESS_CEILING)
     toughness = 1.0 - float(target.props[IDX2["brittleness"]])
-    yield_fraction = min(effective_sharpness(tool) * max(0.0, 1.15 - toughness), MAX_CUT_FRACTION)
+    yield_fraction = min(
+        effective_sharpness(tool) * max(0.0, 1.15 - toughness) * cuttability,
+        MAX_CUT_FRACTION,
+    )
     extracted_mass = yield_fraction * target.mass
     if extracted_mass <= 1e-9:
         return CutResult(extracted=None, remainder=target)
@@ -117,7 +136,9 @@ cal(
     "process",
     "cut",
     "Schneiden: Ertrag steigt mit Kantenschärfe × Härte des Werkzeugs und sinkt mit der "
-    "Zähigkeit des Ziels; einen Kadaver mit bloßer Hand zu zerwirken ist nahezu unmöglich, "
-    "mit Steinklinge effizient",
+    "Zähigkeit des Ziels; schneidbar sind nur Stoffe, die weicher als das Werkzeug und "
+    "insgesamt weich sind (Fleisch, Pflanzen, bedingt Holz) — Gestein ist nicht schneidbar, "
+    "sondern nur schlagbearbeitbar; einen Kadaver mit bloßer Hand zu zerwirken ist nahezu "
+    "unmöglich, mit Steinklinge effizient",
     "Experimentelle Archäologie: Zerwirken mit Steinklingen",
 )

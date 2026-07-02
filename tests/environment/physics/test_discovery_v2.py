@@ -38,6 +38,8 @@ def test_state_roundtrip_and_reset():
     reg2 = DiscoveryV2()
     reg2.load_state_dict(snapshot)
     assert reg2.known_ids() == reg.known_ids()
+    reg.register(np.full(13, 0.7, dtype=np.float32))
+    assert len(snapshot["entries"]) == 1
     reg2.reset()
     assert reg2.known_ids() == []
     assert reg2.get_vector("pmat_0000") is None

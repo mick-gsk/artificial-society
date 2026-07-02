@@ -74,3 +74,12 @@ def test_striking_creates_no_nutrition():
     )
     for f in result.fragments:
         assert f.props[IDX2["nutrition"]] == 0.0
+
+
+def test_tough_and_liquid_targets_never_shatter_even_at_high_energy():
+    # Der Kalibrierungs-Anker sagt: zähe Stoffe zersplittern nicht — auch nicht
+    # bei hoher Energie. Flüssigkeiten (Wasser) zerbrechen erst recht nicht.
+    hammer = make_object("granite", 1.2)
+    for kind in ("dry_wood", "raw_meat", "carcass", "water"):
+        result = strike(make_object(kind, 0.5), hammer, 60.0, random.Random(42))
+        assert not result.fractured, kind

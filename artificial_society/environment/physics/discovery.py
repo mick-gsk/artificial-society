@@ -20,10 +20,13 @@ class DiscoveryV2:
         self.entries.clear()
 
     def state_dict(self) -> dict:
-        return {"entries": self.entries}
+        return {"entries": [{**e, "vector": e["vector"].copy()} for e in self.entries]}
 
     def load_state_dict(self, data: dict) -> None:
-        self.entries = list(data.get("entries", []))
+        self.entries = [
+            {**e, "vector": np.asarray(e["vector"], dtype=np.float32).copy()}
+            for e in data.get("entries", [])
+        ]
 
     def register(self, vector: np.ndarray, discoverer_id: int = -1, tick: int = 0) -> str:
         vec = np.asarray(vector, dtype=np.float32)
