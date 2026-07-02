@@ -43,3 +43,12 @@
 |---|---|---|
 | `cut` | Schneiden: Ertrag steigt mit Kantenschärfe × Härte des Werkzeugs und sinkt mit der Zähigkeit des Ziels; schneidbar sind nur Stoffe, die weicher als das Werkzeug und insgesamt weich sind (Fleisch, Pflanzen, bedingt Holz) — Gestein ist nicht schneidbar, sondern nur schlagbearbeitbar; einen Kadaver mit bloßer Hand zu zerwirken ist nahezu unmöglich, mit Steinklinge effizient | Experimentelle Archäologie: Zerwirken mit Steinklingen |
 | `strike` | Hart-Hammer-Perkussion: nur spröde, feinkörnige Gesteine (muscheliger Bruch) liefern scharfe Abschläge; nötige Schlagenergie im Bereich eines kräftigen Handschlags (10–50 J); zähe Stoffe (Holz, Fleisch) zersplittern so nicht | Experimentelle Archäologie: Feuersteinschlagen/Lithik; Bruchmechanik spröder Stoffe |
+
+## Körper-Parameter
+
+| Name | Realer Anker | Quelle |
+|---|---|---|
+| `carry_capacity` | Dauer-Tragfähigkeit ≈ 30 % des Körpergewichts (Trekking-Richtwert 20–25 %, militärisches Marschgepäck 30–45 % mit Ermüdungsfolgen); skaliert mit Kraft, gedämpft durch Ermüdung | Ergonomie-/Militär-Richtwerte zum Lastentragen |
+| `fatigue` | Ermüdung/Erholung, Größenordnungen: ~200 kräftige Schläge bis deutliche Erschöpfung (geübte Steinschläger arbeiten stundenlang); Dauerlast an der Traggrenze über Hunderte Ticks tragbar; Erholung in Ruhe über Dutzende Ticks. [Zeitskala Sim-Tick↔Realzeit bewusst qualitativ, bis die Sim-Integration sie fixiert] | Arbeitsphysiologie (Ermüdung/Erholung beim Lastentragen und repetitiver Arbeit) |
+| `hands` | Zwei Hände, je Hand ein gehaltenes Objekt; Gesamtlast innerhalb der Tragkapazität. Ohne erfundene Behälter ist Transport damit auf 2 Objekte pro Weg begrenzt — der reale Druck, aus dem Behälter/Bündel entstanden sind | Menschliche Anatomie; Archäologie früher Trage-/Behältertechnik |
+| `strike_energy` | Schlagenergie eines Handschlags mit Werkzeugstein 5–50 J (deckungsgleich mit dem Anker des Prozesses strike: kräftiger Handschlag 10–50 J); skaliert mit Kraft, gedämpft durch Ermüdung | Biomechanik des Hammerschlags; experimentelle Archäologie |
