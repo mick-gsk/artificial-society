@@ -123,3 +123,29 @@ cal(
     "Bestimmt muscheligen Bruch und erreichbare Kantenschärfe",
     "Petrologie: Kryptokristallinität von Silex — Grundlage des Feuersteinschlagens",
 )
+
+_KIND_TITLES = {"dim": "Eigenschafts-Dimensionen", "material": "Startmaterialien", "process": "Prozesse"}
+
+_DOC_HEADER = (
+    "# Kalibrierungstabelle Physik v2\n\n"
+    "> GENERIERT aus `artificial_society/environment/physics/calibration.py` via\n"
+    "> `scripts/gen_kalibrierung.py` — nicht von Hand editieren.\n"
+    "> Realitäts-Gate: Spec `docs/superpowers/specs/2026-07-02-realphysik-emergenz-schnitt1-design.md` §2.\n"
+)
+
+
+def render_markdown() -> str:
+    """Kalibrierungstabelle als Markdown (SSOT = diese Datei)."""
+    # Import hier, damit alle cal()-Registrierungen der Schwester-Module feuern
+    # (kein Import-Zyklus: die Schwestern importieren nur cal aus diesem Modul).
+    from . import materials_v2, processes  # noqa: F401
+
+    lines = [_DOC_HEADER]
+    for kind in VALID_KINDS:
+        lines.append(f"\n## {_KIND_TITLES[kind]}\n")
+        lines.append("| Name | Realer Anker | Quelle |")
+        lines.append("|---|---|---|")
+        entries = sorted((e for e in CALIBRATION.values() if e.kind == kind), key=lambda e: e.name)
+        for e in entries:
+            lines.append(f"| `{e.name}` | {e.anchor} | {e.source} |")
+    return "\n".join(lines) + "\n"
