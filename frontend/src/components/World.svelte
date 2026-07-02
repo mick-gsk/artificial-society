@@ -88,6 +88,12 @@
       <span class="icon sq" style="--c:#74c69d"></span><span class="lg-label">farm</span>
       <span class="icon ring" style="--c:#64b5f6"></span><span class="lg-label">brunnen</span>
     </span>
+    <span class="lg-sep">·</span>
+    <span class="lg-group">
+      <span class="glyph" style="--c:#cfd8e3">⚒</span><span class="lg-label">werkzeug</span>
+      <span class="glyph" style="--c:#ff8a3c">▲</span><span class="lg-label">feuer</span>
+      <span class="glyph" style="--c:#c084fc">◆</span><span class="lg-label">entdeckung</span>
+    </span>
   </div>
 </div>
 
@@ -250,6 +256,11 @@
   .icon.ring {
     border: 1.5px solid var(--c);
     border-radius: 50%;
+  }
+  .glyph {
+    color: var(--c);
+    font-size: 10px;
+    line-height: 1;
   }
 
   @media (prefers-reduced-motion: reduce) {

@@ -81,6 +81,16 @@
   .row.tech .ic { color: #ffd166; }
   .row.tribe .ic { color: #3fc5f0; }
   .row.event .ic { color: var(--amber, #f0b030); }
+  .row.tool .ic { color: #cfd8e3; }
+  .row.wonder .ic { color: #c084fc; }
+  .row.fire .ic { color: #ff8a3c; }
+  .row.epoch {
+    background: rgba(255, 209, 102, 0.09);
+    border-left: 2px solid #ffd166;
+    padding-left: 10px;
+  }
+  .row.epoch .ic { color: #ffd166; }
+  .row.epoch .tx { color: #ffe3a3; }
 
   @keyframes slide-in {
     from { opacity: 0; transform: translateY(-4px); }

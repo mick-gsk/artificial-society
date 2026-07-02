@@ -19,7 +19,9 @@ import {
   makeAgentTexture,
   makeDecorTextures,
   makeEmoteTextures,
+  makeItemTextures,
   makeSleepingTexture,
+  makeToolTextures,
 } from "./sprites.js";
 
 const STAGE_SCALE = [0.62, 1.0, 1.06]; // child, adult, elder (figure size)
@@ -81,6 +83,7 @@ export class WorldScene {
     this.terrainLayer = new Container();
     this.decorLayer = new Container();
     this.gridLayer = new Container();
+    this.itemLayer = new Container();
     this.structLayer = new Container();
     this.trailLayer = new Graphics();
     this.fxLayer = new Graphics();
@@ -90,9 +93,13 @@ export class WorldScene {
     this.eventLayer = new Container();
 
     this.terrainSprites = [];
-    this.agents = new Map(); // id -> {glow, figure, emote, fromX..toY, t, trail, act, actAge, tint}
+    this.agents = new Map(); // id -> {glow, figure, emote, tool, bundle, fromX..toY, t, trail, act, actAge, tint}
     this._structKey = "";
     this._decorKey = "";
+    this._itemKey = "";
+    this._specialSet = null; // "k@x,y" of shard/wonder/fire cells — burst on new ones
+    this._fireSprites = [];
+    this._bursts = []; // {cx, cy, age, color} — knapping sparks, discoveries, fire
     this._biomeArr = null;
 
     this._glowTex = null;
@@ -111,6 +118,7 @@ export class WorldScene {
       this.terrainLayer,
       this.decorLayer,
       this.gridLayer,
+      this.itemLayer,
       this.structLayer,
       this.trailLayer,
       this.fxLayer,
@@ -129,6 +137,8 @@ export class WorldScene {
     this._sleepTex = makeSleepingTexture();
     this._emoteTex = makeEmoteTextures();
     this._decorTex = makeDecorTextures();
+    this._itemTex = makeItemTextures();
+    this._toolTex = makeToolTextures();
     this.app.ticker.add((t) => this._tick(t.deltaMS));
     this.app.renderer.on("resize", () => this._rebuildGrid());
   }
@@ -155,6 +165,7 @@ export class WorldScene {
     if (resized) this._rebuildGrid();
     this._paintTerrain(frame.cells);
     this._buildDecor();
+    this._paintItems(frame.items ?? []);
     this._paintStructures(frame.structures ?? []);
     this._syncAgents(frame.agents);
     this._paintEvents(frame.events);
@@ -222,6 +233,59 @@ export class WorldScene {
     }
     // paint order: lower rows in front
     this.decorLayer.children.sort((a, b) => a.y - b.y);
+  }
+
+  // -- ground materials (Physik v2) --------------------------------------------
+
+  // items is the flat [k, x, y, …] list from frame.py; the server refreshes it
+  // every few ticks, so most frames repaint nothing.
+  _paintItems(items) {
+    const key = items.join() + "@" + this.cellPx;
+    if (key === this._itemKey) return;
+    this._itemKey = key;
+    this.itemLayer.removeChildren().forEach((c) => c.destroy());
+    this._fireSprites = [];
+
+    const cp = this.cellPx;
+    const rnd = (i, salt) => {
+      const n = Math.sin(i * 127.1 + salt * 269.5) * 43758.5453;
+      return n - Math.floor(n);
+    };
+    const special = new Set();
+    const BURST_COLOR = { 10: 0xffd166, 9: 0xc084fc, 11: 0xff8a3c };
+    for (let i = 0; i < items.length; i += 3) {
+      const k = items[i];
+      const x = items[i + 1];
+      const y = items[i + 2];
+      const t = this._itemTex[k];
+      if (!t) continue;
+      const s = new Sprite(t);
+      s.anchor.set(0.5, 1);
+      const ci = y * (this.grid?.w ?? 1) + x;
+      s.x = this.offX + (x + 0.5 + (rnd(ci, 4) - 0.5) * 0.4) * cp;
+      s.y = this.offY + (y + 0.88) * cp;
+      const hpx = cp * (k === 11 ? 0.95 : k >= 9 ? 0.75 : k >= 6 ? 0.68 : 0.58);
+      s.scale.set(hpx / t.height);
+      this.itemLayer.addChild(s);
+      if (k === 11) {
+        s._bs = s.scale.x;
+        this._fireSprites.push(s);
+      }
+      if (k >= 9) special.add(`${k}@${x},${y}`);
+    }
+    this.itemLayer.children.sort((a, b) => a.y - b.y);
+
+    // a flake, discovery or fire appearing is THE moment worth marking
+    if (this._specialSet) {
+      for (const sk of special) {
+        if (!this._specialSet.has(sk)) {
+          const [k, pos] = sk.split("@");
+          const [x, y] = pos.split(",").map(Number);
+          this._bursts.push({ cx: x, cy: y, age: 0, color: BURST_COLOR[k] ?? 0xffd166 });
+        }
+      }
+    }
+    this._specialSet = special;
   }
 
   // -- terrain / grid --------------------------------------------------------
@@ -406,6 +470,19 @@ export class WorldScene {
         figure.anchor.set(0.5, 0.85); // feet on the cell
         emote.anchor.set(0.5, 1);
         emote.visible = false;
+        // tool in the hand + carry bundle at the hip, in figure-local pixels
+        // (children inherit scale, walking bob and the facing flip)
+        const tool = new Sprite(this._toolTex.blunt);
+        tool.anchor.set(0.5, 1);
+        tool.position.set(4.5, -3.5);
+        tool.rotation = 0.3;
+        tool.visible = false;
+        const bundle = new Sprite(this._toolTex.bundle);
+        bundle.anchor.set(0.5, 0.5);
+        bundle.position.set(-4, -6.5);
+        bundle.visible = false;
+        figure.addChild(bundle);
+        figure.addChild(tool);
         this.glowLayer.addChild(glow);
         this.figureLayer.addChild(figure);
         this.emoteLayer.addChild(emote);
@@ -413,6 +490,9 @@ export class WorldScene {
           glow,
           figure,
           emote,
+          tool,
+          bundle,
+          tl: a.tl ?? 0,
           fromX: a.x,
           fromY: a.y,
           toX: a.x,
@@ -439,6 +519,11 @@ export class WorldScene {
         rec.act = a.act ?? 0;
         rec.actAge = 0; // restart the action animation
       }
+      // the knapping moment: hands were empty or blunt, now hold a sharp blade
+      if ((a.tl ?? 0) === 2 && rec.tl !== 2) {
+        this._bursts.push({ cx: a.x, cy: a.y, age: 0, color: 0xffd166 });
+      }
+      rec.tl = a.tl ?? 0;
       const tint = blip(a.col);
       rec.tint = tint;
       rec.energy = a.e;
@@ -453,6 +538,11 @@ export class WorldScene {
       rec.figure.scale.set(hpx / tex.height);
       rec.figure.scale.x *= rec.facing;
       rec.figure.alpha = sleeping ? 0.75 : 1.0;
+
+      // what the body carries: blade/stone in hand, bundle at the hip
+      rec.tool.visible = !sleeping && rec.tl > 0;
+      if (rec.tl > 0) rec.tool.texture = rec.tl === 2 ? this._toolTex.sharp : this._toolTex.blunt;
+      rec.bundle.visible = !sleeping && (a.cg ?? 0) >= 2;
 
       // soft ground glow keeps agents findable at night
       rec.glow.tint = tint;
@@ -472,7 +562,7 @@ export class WorldScene {
     for (const [id, rec] of this.agents) {
       if (!seen.has(id)) {
         rec.glow.destroy();
-        rec.figure.destroy();
+        rec.figure.destroy({ children: true }); // takes tool + bundle with it
         rec.emote.destroy();
         this.agents.delete(id);
       }
@@ -582,6 +672,39 @@ export class WorldScene {
             .stroke({ width: 1, color: ACT_COLORS[ACT.COOPERATE], alpha: 0.45 });
         }
       }
+    }
+
+    // knapping sparks / discovery / fire-lit moments: a short radiant star
+    if (this._bursts.length) {
+      const keep = [];
+      for (const b of this._bursts) {
+        b.age += dt;
+        if (b.age >= 0.8) continue;
+        keep.push(b);
+        const bx = px(b.cx);
+        const by = py(b.cy);
+        const p = b.age / 0.8;
+        const alpha = 0.9 * (1 - p);
+        const r0 = cp * (0.2 + p * 0.9);
+        const r1 = cp * (0.55 + p * 1.6);
+        for (let k = 0; k < 6; k++) {
+          const ang = (k / 6) * Math.PI * 2 + 0.35;
+          this.fxLayer
+            .moveTo(bx + Math.cos(ang) * r0, by + Math.sin(ang) * r0)
+            .lineTo(bx + Math.cos(ang) * r1, by + Math.sin(ang) * r1)
+            .stroke({ width: 1.5, color: b.color, alpha });
+        }
+        this.fxLayer
+          .circle(bx, by, r0 * 0.9)
+          .stroke({ width: 1, color: 0xffffff, alpha: alpha * 0.7 });
+      }
+      this._bursts = keep;
+    }
+
+    // fire flickers
+    for (const s of this._fireSprites) {
+      s.alpha = 0.82 + 0.18 * Math.sin(this._pulse * 9 + s.x * 0.7);
+      s.scale.set(s._bs * (1 + 0.06 * Math.sin(this._pulse * 13 + s.x)));
     }
 
     // event pulse

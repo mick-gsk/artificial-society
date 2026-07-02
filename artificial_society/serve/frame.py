@@ -22,6 +22,7 @@ from typing import Any
 import numpy as np
 
 from artificial_society.environment.biomes import BIOME_BASE_COLOR
+from artificial_society.environment.materials import IDX, get_vector
 
 # Biomes are fixed after world generation — cache the flattened index list per
 # world instead of rebuilding a w*h Python loop for every ~20 Hz frame.
@@ -38,6 +39,138 @@ _STAGE_IDX: dict[str, int] = {"child": 0, "adult": 1, "elder": 2}
 # which overrides the mode because a sleeping agent executes no actions).
 _ACT_IDX: dict[str, int] = {"idle": 0, "forage": 1, "cooperate": 2, "attack": 3, "build": 4}
 ACT_SLEEP = 5
+
+# --- ground materials (Physik v2 / Embodiment) --------------------------------
+#
+# Cells carry a sparse ``materials`` dict (id -> mass). For the picture world we
+# reduce each id to a small visual class; the client owns one sprite per class.
+# Classes double as a priority order (highest first) when a cell holds several
+# materials or the frame item cap forces a cut — fire, fresh flakes and
+# discovered materials must always make it onto the wire.
+ITEM_FIRE = 11
+ITEM_SHARD = 10  # sharpness above _SHARP_MIN — knapped flakes / blades
+ITEM_WONDER = 9  # discovered (registry) material without an edge
+ITEM_FLINT = 8
+ITEM_BONE = 7
+ITEM_MEAT = 6
+ITEM_CLAY = 5
+ITEM_STONE = 4
+ITEM_WOOD = 3
+ITEM_FIBER = 2
+ITEM_BERRY = 1
+
+_SHARP_MIN = 0.45
+_ITEM_QTY_MIN = 0.15  # ignore trace amounts (growth seeds, mined-out slots)
+_ITEM_CAP = 800  # per frame, priority-ranked
+_ITEM_REFRESH_TICKS = 10  # ground materials change slowly; rescan every N ticks
+
+# Raw materials blanket most of the map; drawn 1:1 they bury the landscape and
+# the special finds. Common classes (flint deposits included — they cover whole
+# mountainsides) only ship from richer slots and only for a deterministic ~1/3
+# of cells — enough to say "here lies wood", calm enough to keep the rare
+# classes (flakes, discoveries, fire) visible at a glance.
+_THINNED_CLASSES = frozenset(
+    (ITEM_BERRY, ITEM_FIBER, ITEM_WOOD, ITEM_STONE, ITEM_CLAY, ITEM_FLINT)
+)
+_COMMON_QTY_MIN = 0.5
+_COMMON_KEEP_MOD = 3  # keep cells whose spatial hash % mod == 0
+
+_NAMED_ITEM_CLASS: dict[str, int] = {
+    "fire": ITEM_FIRE,
+    "ember": ITEM_FIRE,
+    "sharp_stone": ITEM_SHARD,
+    "flint": ITEM_FLINT,
+    "carcass": ITEM_BONE,
+    "bone": ITEM_BONE,
+    "raw_meat": ITEM_MEAT,
+    "cooked_meat": ITEM_MEAT,
+    "clay_moist": ITEM_CLAY,
+    "clay": ITEM_CLAY,
+    "stone": ITEM_STONE,
+    "granite": ITEM_STONE,
+    "dry_wood": ITEM_WOOD,
+    "wet_wood": ITEM_WOOD,
+    "wood": ITEM_WOOD,
+    "plant_fiber": ITEM_FIBER,
+    "fiber": ITEM_FIBER,
+    "dry_grass": ITEM_FIBER,
+    "berries": ITEM_BERRY,
+}
+
+# id -> visual class, resolved once per material id (registry lookups allocate).
+_MAT_CLASS_CACHE: dict[str, int] = {}
+
+# world -> (tick_bucket, items) — reuse the scan between refreshes.
+_ITEMS_CACHE: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _item_class(mat_id: str) -> int:
+    """Visual class for a material id; 0 = not worth drawing."""
+    cls = _MAT_CLASS_CACHE.get(mat_id)
+    if cls is None:
+        cls = _NAMED_ITEM_CLASS.get(mat_id, 0)
+        if cls == 0:
+            try:
+                vec = get_vector(mat_id)
+                sharp = float(vec[IDX["sharpness"]]) if vec is not None else 0.0
+            except Exception:
+                sharp = 0.0
+            if sharp >= _SHARP_MIN:
+                cls = ITEM_SHARD
+            elif mat_id.startswith(("mat_", "pmat_")):
+                cls = ITEM_WONDER
+        _MAT_CLASS_CACHE[mat_id] = cls
+    return cls
+
+
+def _ground_items(world, tick: int) -> list[int]:
+    """Flat ``[k0, x0, y0, k1, x1, y1, …]`` of the most visible material per cell.
+
+    Priority-ranked before the cap so fire/flakes/discoveries always ship; ties
+    within a class break on a spatial hash so a cap cut thins the whole map
+    uniformly instead of chopping off the bottom rows.
+    """
+    bucket = tick // _ITEM_REFRESH_TICKS
+    cached = _ITEMS_CACHE.get(world)
+    if cached is not None and cached[0] == bucket:
+        return cached[1]
+
+    found: list[tuple[int, int, int, int]] = []  # (-class, hash, x, y)
+    for y, row in enumerate(world.obj):
+        for x, cell in enumerate(row):
+            slot = cell.get("materials")
+            if not slot:
+                continue
+            cell_hash = (x * 73856093 ^ y * 19349663) & 0xFFFF
+            best = 0
+            for mat_id, qty in slot.items():
+                if qty < _ITEM_QTY_MIN:
+                    continue
+                cls = _item_class(mat_id)
+                if cls <= best:
+                    continue
+                if cls in _THINNED_CLASSES and (
+                    qty < _COMMON_QTY_MIN or cell_hash % _COMMON_KEEP_MOD
+                ):
+                    continue
+                best = cls
+            if best:
+                found.append((-best, cell_hash, x, y))
+
+    found.sort()
+    items: list[int] = []
+    for negcls, _, x, y in found[:_ITEM_CAP]:
+        items.extend((-negcls, x, y))
+    _ITEMS_CACHE[world] = (bucket, items)
+    return items
+
+
+def _tool_class(agent) -> int:
+    """0 = empty hands, 1 = blunt tool, 2 = sharp blade."""
+    tool = getattr(agent, "tool", None)
+    if not tool:
+        return 0
+    return 2 if _item_class(tool) == ITEM_SHARD else 1
 
 
 def biome_legend() -> list[dict[str, Any]]:
@@ -63,7 +196,8 @@ def build_frame(sim) -> dict[str, Any]:
         ``daylight``  : float 0..1 (world.day_state light level)
         ``cells``     : {food[w*h], water[w*h], biome[w*h]} — row-major, quantized ints
         ``structures``: [{x, y, k}] sparse; k ∈ {camp, farm, well}
-        ``agents``    : [{id, x, y, e, hp, st, act, tribe, col}]
+        ``items``     : flat [k, x, y, …] sparse ground materials; k = ITEM_* class
+        ``agents``    : [{id, x, y, e, hp, st, act, tl, cg, tribe, col}]
         ``events``    : [{kind, x, y, r, i}]
         ``stats``     : the aggregate dict the cards already use (``sim.stats.last``)
     """
@@ -101,6 +235,8 @@ def build_frame(sim) -> dict[str, Any]:
             "act": ACT_SLEEP
             if getattr(a, "is_sleeping", False)
             else _ACT_IDX.get(getattr(a, "last_action_mode", "idle"), 0),
+            "tl": _tool_class(a),
+            "cg": min(9, int(sum(getattr(a, "material_inventory", {}).values()))),
             "tribe": a.tribe_id,
             "col": _hex(a.display_color()),
         }
@@ -125,6 +261,7 @@ def build_frame(sim) -> dict[str, Any]:
         "daylight": round(float(getattr(world, "day_state", {}).get("light", 1.0)), 3),
         "cells": {"food": food, "water": water, "biome": biome_idx},
         "structures": structures,
+        "items": _ground_items(world, sim.tick),
         "agents": agents,
         "events": events,
         "stats": dict(getattr(sim.stats, "last", {})),

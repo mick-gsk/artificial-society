@@ -104,6 +104,145 @@ export function makeEmoteTextures() {
   return out;
 }
 
+// -- ground materials (Physik v2) ------------------------------------------------
+//
+// One texture per ITEM_* class from serve/frame.py. Common raw materials stay
+// small and earthy; the special classes (flint, bone, shard, wonder, fire) are
+// the ones that tell the tool story and get more contrast.
+export function makeItemTextures() {
+  const out = {};
+
+  // berry pile (1)
+  {
+    const [c, ctx] = makeCanvas(8, 6);
+    px(ctx, 1, 2, 3, 3, "#c4384d");
+    px(ctx, 4, 3, 3, 3, "#a52e40");
+    px(ctx, 3, 1, 2, 2, "#d94a5e");
+    out[1] = tex(c);
+  }
+  // fiber sheaf (2)
+  {
+    const [c, ctx] = makeCanvas(8, 7);
+    px(ctx, 1, 1, 1, 6, "#b7a05c");
+    px(ctx, 3, 0, 1, 7, "#cbb26a");
+    px(ctx, 5, 1, 1, 6, "#a89252");
+    px(ctx, 1, 3, 5, 1, "#8a7440"); // binding
+    out[2] = tex(c);
+  }
+  // wood log (3)
+  {
+    const [c, ctx] = makeCanvas(10, 6);
+    px(ctx, 0, 1, 9, 4, "#7c5a34");
+    px(ctx, 0, 2, 9, 1, "#8f6b40");
+    px(ctx, 8, 1, 2, 4, "#a98756"); // cut face
+    px(ctx, 8, 2, 1, 2, "#c2a06c");
+    out[3] = tex(c);
+  }
+  // stone pebbles (4)
+  {
+    const [c, ctx] = makeCanvas(8, 6);
+    px(ctx, 1, 2, 4, 3, "#8a949c");
+    px(ctx, 4, 3, 3, 3, "#727c85");
+    px(ctx, 2, 1, 2, 2, "#9ba5ad");
+    out[4] = tex(c);
+  }
+  // clay lump (5)
+  {
+    const [c, ctx] = makeCanvas(8, 6);
+    px(ctx, 1, 2, 6, 4, "#a4693e");
+    px(ctx, 2, 1, 4, 2, "#b5794c");
+    px(ctx, 3, 3, 2, 1, "#8c5731");
+    out[5] = tex(c);
+  }
+  // meat chunk (6)
+  {
+    const [c, ctx] = makeCanvas(8, 7);
+    px(ctx, 1, 1, 6, 5, "#b8434e");
+    px(ctx, 2, 2, 2, 2, "#d16b74"); // marbling
+    px(ctx, 5, 4, 1, 1, "#e8d8c8");
+    out[6] = tex(c);
+  }
+  // bones / carcass (7)
+  {
+    const [c, ctx] = makeCanvas(11, 7);
+    px(ctx, 1, 3, 9, 1, "#ddd6c8"); // long bone
+    px(ctx, 0, 2, 2, 3, "#e9e2d4");
+    px(ctx, 9, 2, 2, 3, "#e9e2d4");
+    px(ctx, 4, 1, 1, 5, "#cfc6b4"); // rib
+    px(ctx, 6, 1, 1, 5, "#cfc6b4");
+    out[7] = tex(c);
+  }
+  // flint nodule (8) — dark rounded stone with a pale knapping scar
+  {
+    const [c, ctx] = makeCanvas(9, 7);
+    px(ctx, 2, 1, 5, 5, "#3c4652");
+    px(ctx, 1, 2, 7, 3, "#3c4652");
+    px(ctx, 3, 2, 2, 2, "#546070");
+    px(ctx, 5, 3, 2, 1, "#8b9aa8"); // exposed pale scar
+    out[8] = tex(c);
+  }
+  // sharp flake / blade lying on the ground (10)
+  {
+    const [c, ctx] = makeCanvas(9, 8);
+    // triangular flake
+    px(ctx, 4, 0, 1, 1, "#eef2f5");
+    px(ctx, 3, 1, 3, 1, "#dbe2e8");
+    px(ctx, 3, 2, 4, 1, "#c4ced6");
+    px(ctx, 2, 3, 5, 1, "#aab6c0");
+    px(ctx, 2, 4, 6, 1, "#93a1ad");
+    px(ctx, 4, 0, 1, 5, "#ffffff"); // edge glint
+    out[10] = tex(c);
+  }
+  // discovered material (9) — small glowing crystal
+  {
+    const [c, ctx] = makeCanvas(8, 9);
+    px(ctx, 3, 0, 2, 2, "#d9b8ff");
+    px(ctx, 2, 2, 4, 4, "#a86fe8");
+    px(ctx, 3, 6, 2, 2, "#7b4bc4");
+    px(ctx, 3, 2, 1, 3, "#ecdcff"); // inner light
+    out[9] = tex(c);
+  }
+  // fire (11)
+  {
+    const [c, ctx] = makeCanvas(9, 10);
+    px(ctx, 2, 8, 5, 2, "#5d4126"); // embers/wood base
+    px(ctx, 2, 3, 5, 5, "#e8642c");
+    px(ctx, 3, 1, 3, 4, "#f59d3d");
+    px(ctx, 4, 0, 1, 3, "#ffd66e");
+    px(ctx, 4, 4, 1, 3, "#fff0b8"); // hot core
+    out[11] = tex(c);
+  }
+  return out;
+}
+
+// Tool in hand: a hafted blade (sharp) or a fist stone (blunt), drawn to read
+// at ~half figure height.
+export function makeToolTextures() {
+  const out = {};
+  {
+    const [c, ctx] = makeCanvas(7, 9); // sharp blade
+    px(ctx, 3, 0, 2, 4, "#e8eef2");
+    px(ctx, 2, 1, 1, 3, "#c8d2da");
+    px(ctx, 3, 4, 2, 5, "#8a5a2b"); // grip
+    px(ctx, 4, 0, 1, 4, "#ffffff"); // edge
+    out.sharp = tex(c);
+  }
+  {
+    const [c, ctx] = makeCanvas(6, 6); // blunt stone
+    px(ctx, 1, 1, 4, 4, "#8a949c");
+    px(ctx, 2, 1, 2, 1, "#a3adb5");
+    out.blunt = tex(c);
+  }
+  {
+    const [c, ctx] = makeCanvas(8, 8); // carry bundle on the back
+    px(ctx, 1, 2, 6, 5, "#7a6238");
+    px(ctx, 2, 1, 4, 2, "#8d7344");
+    px(ctx, 1, 4, 6, 1, "#5f4c2b"); // strap
+    out.bundle = tex(c);
+  }
+  return out;
+}
+
 // -- terrain decorations --------------------------------------------------------
 
 export function makeDecorTextures() {
