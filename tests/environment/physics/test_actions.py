@@ -15,12 +15,14 @@ from artificial_society.environment.physics.actions import (
     DECAY_RATE,
     KCAL_PER_KG_PER_NUTRITION,
     SIM_ENERGY_PER_KCAL,
+    TOX_DAMAGE_PER_KG,
     TOX_SPOILAGE_CAP,
     TOX_SPOILAGE_PER_TICK,
     V_MAX_STRIKE,
     WORK_SIM_ENERGY_PER_JOULE,
     blade_factor,
     do_cut,
+    do_eat,
     do_grasp,
     do_release,
     do_strike,
@@ -304,3 +306,57 @@ def test_cut_granit_kein_ertrag_aber_arbeit():
     assert res.ok and res.reason == "no_yield" and res.extracted is None
     assert granit.mass == 3.0 and layer.position_of(granit) == (5, 5)
     assert body.fatigue > 0.0
+
+
+def test_eat_1kg_rohfleisch_ergibt_45_sim_energie():
+    """D2 (Produkt-Test): 1 kg raw_meat ⇒ 45 ± 1 Sim-Energie über 4 Bisse (0.3+0.3+0.3+0.1)."""
+    body, hands, layer = _setup()
+    fleisch = make_object("raw_meat", 1.0)
+    layer.add(fleisch, (5, 5), source="spawned")
+
+    gesamt_energie = 0.0
+    gesamt_schaden = 0.0
+    bisse = 0
+    while layer.position_of(fleisch) is not None:
+        res = do_eat(body, hands, layer, (5, 5), fleisch)
+        assert res.ok
+        gesamt_energie += res.energy_delta_sim
+        gesamt_schaden += res.health_delta
+        bisse += 1
+        assert bisse <= 10, "1 kg muss in ≤ 4 Bissen à 0.3 kg weg sein"
+    assert bisse == 4
+    assert abs(gesamt_energie - MEAT_ENERGY) <= 1.0  # 44.8 ≈ 45
+    # Toxizität roh (0.15): −0.15·1.0·20 = −3.0 Health über die ganze Mahlzeit
+    assert gesamt_schaden == pytest.approx(-0.15 * 1.0 * TOX_DAMAGE_PER_KG)
+    assert math.isclose(layer.ledger["eaten"], 1.0, rel_tol=1e-9)
+    lhs, rhs = layer.conservation_terms()
+    assert math.isclose(lhs, rhs, rel_tol=1e-9)
+
+
+def test_eat_steinbeissen_ist_noop():
+    body, hands, layer = _setup()
+    granit = make_object("granite", 2.0)
+    layer.add(granit, (5, 5), source="spawned")
+    res = do_eat(body, hands, layer, (5, 5), granit)
+    assert not res.ok and res.reason == "not_edible"
+    assert res.energy_delta_sim == 0.0 and res.health_delta == 0.0
+    assert granit.mass == 2.0 and layer.ledger["eaten"] == 0.0
+
+
+def test_eat_aus_der_hand_und_vollverzehr():
+    body, hands, layer = _setup()
+    stueck = make_object("raw_meat", 0.25)  # < BITE_MASS_KG → ein Biss, weg
+    layer.add(stueck, (5, 5), source="spawned")
+    do_grasp(body, hands, layer, (5, 5), stueck)
+
+    res = do_eat(body, hands, layer, (5, 5), stueck)
+    assert res.ok and res.bite_kg == pytest.approx(0.25)
+    assert hands.held == []
+    assert math.isclose(layer.ledger["eaten"], 0.25, rel_tol=1e-9)
+
+
+def test_eat_ausser_reichweite_noop():
+    body, hands, layer = _setup()
+    fleisch = make_object("raw_meat", 1.0)
+    layer.add(fleisch, (9, 9), source="spawned")
+    assert not do_eat(body, hands, layer, (5, 5), fleisch).ok

@@ -19,6 +19,7 @@ from .body import Body, Hands
 from .calibration import cal
 from .objects import PhysObject
 from .processes import cut, strike
+from .props import IDX2
 
 # --- Energie-Kopplung kcal ↔ Sim-Energie (B5) --------------------------------
 SIM_ENERGY_PER_KCAL = 0.032
@@ -331,4 +332,38 @@ def do_cut(
     layer.discovery.register(extracted.props)
     return ActionResult(
         ok=True, verb="cut", energy_delta_sim=energy_delta, extracted=extracted, work_j=work_j
+    )
+
+
+def do_eat(body: Body, hands: Hands, layer, pos, target: PhysObject) -> ActionResult:
+    """Ein Biss pro Tick: bite = min(BITE_MASS_KG, Restmasse). Energie-Kopplung
+    (B5): energy += nutrition·4000·bite·SIM_ENERGY_PER_KCAL; Toxin-Schaden:
+    health −= toxicity·bite·TOX_DAMAGE_PER_KG. Objekte mit nutrition ≤ 0.02
+    sind wirkungslos (Steinbeißen = No-op). Gegessene Masse fließt bilanziert
+    in ledger['eaten']; vollständig verzehrte Objekte verschwinden."""
+    pos = (int(pos[0]), int(pos[1]))
+    target_held = target in hands.held
+    if not target_held and layer.position_of(target) != pos:
+        return ActionResult(ok=False, verb="eat", reason="target_out_of_reach")
+    nutrition = float(target.props[IDX2["nutrition"]])
+    if nutrition <= MIN_NUTRITION_EDIBLE:
+        return ActionResult(ok=False, verb="eat", reason="not_edible")
+
+    bite = min(BITE_MASS_KG, target.mass)
+    if target.mass - bite <= 1e-9:
+        bite = target.mass  # Krümel-Reste mitessen statt Masse zu verlieren
+    energy_gain = nutrition * KCAL_PER_KG_PER_NUTRITION * bite * SIM_ENERGY_PER_KCAL
+    toxicity = float(target.props[IDX2["toxicity"]])
+    health_delta = -(toxicity * bite * TOX_DAMAGE_PER_KG)
+
+    if bite >= target.mass:  # vollständig verzehrt
+        if target_held:
+            hands.release(target)
+        else:
+            layer.remove(target)
+    else:
+        target.mass -= bite
+    layer.ledger["eaten"] += bite
+    return ActionResult(
+        ok=True, verb="eat", energy_delta_sim=energy_gain, health_delta=health_delta, bite_kg=bite
     )
