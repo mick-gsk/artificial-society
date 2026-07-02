@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -8,11 +10,13 @@ import torch.optim as optim
 from .knowledge import EpisodicMemory
 
 # ---------------------------------------------------------------------------
-# GPU-Setup: automatisch CUDA (RTX 5070 Ti / Blackwell) oder CPU als Fallback
-# Fuer Blackwell (CC 12.0) wird PyTorch Nightly benoetigt:
-#   pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128
+# Device-Setup (Perf Tier 2, gemessen): fuer diese kleinen Batch-1-Netze ist
+# die CPU 7-11x SCHNELLER als die GPU (docs/performance-notes.md), und der
+# CUDA-Pfad hat einen offenen FP16-Autocast-Crash (docs/remote-host.md).
+# Default ist deshalb CPU; Opt-in per AS_BRAIN_DEVICE=cuda — erst sinnvoll,
+# wenn die Brains gebatcht laufen (Tier 4 / GPU-residente Engine).
 # ---------------------------------------------------------------------------
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device(os.environ.get("AS_BRAIN_DEVICE", "cpu"))
 USE_FP16 = device.type == "cuda"  # FP16 autocast nur auf GPU aktivieren
 
 # Feature layout (57 total):

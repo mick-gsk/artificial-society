@@ -1,3 +1,5 @@
+import numpy as np
+
 from artificial_society.environment.biomes import BIOME_BASE
 
 DISEASE_POLLUTION_THRESHOLD = 36.0
@@ -443,4 +445,196 @@ def regrow_cell(world, x, y, biome, season_state, weather_state, tick, event_str
             0.0,
             100.0,
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Vectorized grid regrowth (perf Tier 1)
+#
+# regrow_grid is a statement-for-statement transliteration of the per-cell
+# regrow_cell + apply_event pair into whole-grid numpy expressions. The
+# per-cell semantics (which reads see original vs freshly written values) are
+# preserved exactly, and since neither function has cross-cell reads or RNG,
+# the result is bit-identical to running the scalar pair over every cell.
+# The scalar functions above stay as the reference oracle (see
+# tests/environment/test_vectorized_equivalence.py) and for unit-test fakes.
+# ---------------------------------------------------------------------------
+
+
+def regrow_grid(world, season_state, weather_state, tick, event_fields):
+    F = world.F
+    S = world.S
+    bio = world._bio
+
+    season_food = season_state.get("food_factor", 1.0)
+    rain = weather_state.get("rain_map", 0.0)
+    temp_shift = weather_state.get("temperature_shift", 0.0)
+    wind = weather_state.get("wind", 0.0)
+
+    # Originals captured up front, mirroring regrow_cell's local snapshot and
+    # its reads of not-yet-updated fields.
+    usage = F["usage_pressure"].copy()
+    pollution = F["pollution"].copy()
+    fertility = F["soil_fertility"].copy()
+    capacity = F["carrying_capacity"]  # never written here
+    spoilage = F["spoilage"].copy()
+    moisture = F["moisture"].copy()
+    disturbance = F["disturbance"].copy()
+    plant_food0 = F["plant_food"].copy()
+    meat_food0 = F["meat_food"].copy()
+    ash0 = F["ash"].copy()
+    water0 = F["water"].copy()
+    disease0 = F["disease"].copy()
+    carcasses0 = F["carcasses"].copy()
+
+    farm = S["farm"]
+    camp = S["camp"]
+    well = S["well"]
+    farm_bonus = np.where(farm != 0.0, 10.0, 0.0)
+    well_bonus = np.where(well != 0.0, 10.0, 0.0)
+
+    world.tick_grid[:] = tick
+    F["temperature"] = np.clip(
+        bio["base_temperature"] + temp_shift + season_state.get("temperature_shift", 0.0), -12, 52
+    )
+    temperature = F["temperature"]
+
+    water_gain = 0.08 * rain + np.where(bio["is_swamp"], 0.12, 0.03) + 0.03 * well
+    fert_factor = 0.4 + fertility / 100.0
+    moisture_factor = 0.35 + moisture / 100.0
+    cap_factor = 0.35 + (capacity + farm_bonus) / 120.0
+    stress_factor = np.maximum(0.12, 1.0 - pollution / 120.0 - usage / 180.0 - disturbance / 180.0)
+
+    plant_gain = (
+        0.042
+        * FOOD_SCARCITY_FACTOR
+        * season_food
+        * fert_factor
+        * moisture_factor
+        * cap_factor
+        * stress_factor
+        * np.where(bio["is_forest"], 1.15, 1.0)
+    )
+    plant_gain = plant_gain + 0.012 * farm
+    # plant_temperature_factor, vectorized (clamp == clip for finite values)
+    plant_gain = plant_gain * np.clip(
+        1.0 - np.abs(temperature - PLANT_TEMP_OPTIMUM) / PLANT_TEMP_TOLERANCE,
+        PLANT_TEMP_FLOOR,
+        1.0,
+    )
+
+    meat_gain = (
+        0.015
+        * MEAT_SCARCITY_FACTOR
+        * season_food
+        * cap_factor
+        * np.maximum(0.2, 1.0 - pollution / 150.0)
+        * np.where(bio["is_meat_biome"], 1.1, 0.7)
+    )
+
+    plant_ceiling = bio["plant_ceiling"]
+    plant_target = plant_ceiling * capacity + farm_bonus
+    meat_target = MEAT_CEILING_FACTOR * capacity
+    plant_headroom = np.maximum(0.0, 1.0 - plant_food0 / np.maximum(1.0, plant_target))
+    meat_headroom = np.maximum(0.0, 1.0 - meat_food0 / np.maximum(1.0, meat_target))
+    plant_gain = plant_gain * plant_headroom
+    meat_gain = meat_gain * meat_headroom
+
+    plant_gain = np.where(bio["is_desert"], plant_gain * 0.3, plant_gain)
+    meat_gain = np.where(bio["is_desert"], meat_gain * 0.22, meat_gain)
+    water_gain = np.where(bio["is_desert"], water_gain * 0.25, water_gain)
+    plant_gain = np.where(bio["is_mountain"], plant_gain * 0.55, plant_gain)
+    meat_gain = np.where(bio["is_mountain"], meat_gain * 1.18, meat_gain)
+    water_gain = np.where(bio["is_water"], 0.0, water_gain)
+    plant_gain = np.where(bio["is_water"], 0.0, plant_gain)
+    meat_gain = np.where(bio["is_water"], 0.0, meat_gain)
+
+    meat_cap = np.maximum(15.0, capacity)
+    decayed_meat = np.minimum(meat_food0, spoilage * MEAT_SPOIL_RATE)
+    F["meat_food"] = np.clip(meat_food0 - decayed_meat, 0.0, meat_cap)
+    F["carcasses"] = np.clip(carcasses0 - CARCASS_DECAY, 0.0, 140.0)
+    F["spoilage"] = np.clip(
+        spoilage + decayed_meat * 0.85 - 0.05 * rain - 0.04 * camp, 0.0, 100.0
+    )
+    F["disease"] = np.clip(
+        disease0
+        + np.maximum(0.0, pollution - DISEASE_POLLUTION_THRESHOLD) * 0.025
+        + F["spoilage"] * 0.03
+        + F["carcasses"] * 0.012
+        - 0.05 * rain
+        - 0.03 * well,
+        0.0,
+        100.0,
+    )
+    plant_hard_cap = np.maximum(20.0, plant_ceiling * capacity * 1.25 + farm_bonus)
+    F["plant_food"] = np.clip(
+        plant_food0 + plant_gain - 0.012 * wind - 0.02 * ash0, 0.0, plant_hard_cap
+    )
+    F["meat_food"] = np.clip(F["meat_food"] + meat_gain, 0.0, meat_cap)
+    F["water"] = np.clip(water0 + water_gain + 0.05 * well, 0.0, 100.0)
+    F["moisture"] = np.clip(
+        moisture
+        + 0.2 * F["water"] / 100.0
+        + 0.35 * rain
+        + 0.1 * well_bonus
+        - 0.03 * np.abs(temperature - 20),
+        0.0,
+        100.0,
+    )
+    F["soil_fertility"] = np.clip(
+        fertility
+        + 0.05 * rain
+        - 0.03 * pollution
+        + 0.015 * np.maximum(0.0, 60 - usage)
+        + 0.03 * F["carcasses"]
+        + 0.04 * ash0,
+        0.0,
+        100.0,
+    )
+    F["pollution"] = np.clip(
+        pollution
+        - 0.03 * rain
+        - 0.015 * np.maximum(0.0, fertility - 25)
+        + 0.02 * F["spoilage"]
+        - 0.02 * camp,
+        0.0,
+        100.0,
+    )
+    F["ash"] = np.clip(ash0 - 0.06 * rain - 0.03 * moisture / 100.0, 0.0, 100.0)
+    F["usage_pressure"] = np.clip(usage * 0.91, 0.0, 100.0)
+    F["disturbance"] = np.clip(disturbance * 0.94, 0.0, 100.0)
+
+    # apply_event, vectorized (reads the freshly written values, like the
+    # scalar call placed after the regrowth writes)
+    drought = event_fields["drought"]
+    storm = event_fields["storm"]
+    fire = event_fields["fire"]
+    blight = event_fields["blight"]
+    dist_ev = event_fields["disturbance"]
+    F["moisture"] = np.clip(
+        F["moisture"] - 12.0 * drought + 8.0 * storm - 18.0 * fire, 0.0, 100.0
+    )
+    F["water"] = np.clip(F["water"] - 0.35 * drought + 0.45 * storm - 0.1 * fire, 0.0, 100.0)
+    F["plant_food"] = np.clip(
+        F["plant_food"] - 2.4 * drought - 5.8 * fire - 3.6 * blight, 0.0, 180.0
+    )
+    F["meat_food"] = np.clip(F["meat_food"] - 1.8 * fire, 0.0, 110.0)
+    F["ash"] = np.clip(F["ash"] + 7.0 * fire - 0.3 * storm, 0.0, 100.0)
+    F["pollution"] = np.clip(F["pollution"] + 4.0 * fire + 1.6 * blight, 0.0, 100.0)
+    F["disease"] = np.clip(F["disease"] + 4.0 * blight + 1.2 * storm, 0.0, 100.0)
+    F["disturbance"] = np.clip(F["disturbance"] + 9.0 * dist_ev, 0.0, 100.0)
+    F["food"] = np.clip(F["plant_food"] + F["meat_food"] * 0.7, 0.0, 180.0)
+
+    # trailing food + danger updates from regrow_cell
+    F["food"] = np.clip(F["plant_food"] + F["meat_food"] * 0.7, 0.0, 180.0)
+    F["danger"] = np.clip(
+        bio["base_danger"]
+        + weather_state.get("storm_risk", 0.0) * 20
+        + np.abs(F["temperature"] - 20) * 0.5
+        + np.maximum(0.0, COLD_DANGER_THRESHOLD - F["temperature"]) * COLD_DANGER_COEFF
+        + F["pollution"] * 0.16
+        + F["disease"] * 0.12
+        + F["disturbance"] * 0.18,
+        0.0,
+        100.0,
     )

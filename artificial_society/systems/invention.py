@@ -37,6 +37,7 @@ import random
 import numpy as np
 
 from artificial_society.environment.materials import (
+    DECAY_FLAGGED,
     DISCOVERY_REGISTRY,
     IDX,
     apply_interaction,
@@ -282,16 +283,23 @@ def share_discovery(teacher, student, mat_id: str) -> bool:
 
 
 def tick_materials(world):
-    for y in range(world.height):
-        for x in range(world.width):
-            cell = world.cells[y][x]
-            if "materials" in cell and cell["materials"]:
+    # Hot per-tick pass over every cell: go straight at the object store and
+    # the field arrays instead of building CellViews, and skip cells whose
+    # materials can't decay at all (DECAY_FLAGGED precheck) before building
+    # the env dict. Semantics identical to the per-cell CellView version.
+    disturbance = world.F["disturbance"]
+    moisture = world.F["moisture"]
+    temperature = world.F["temperature"]
+    for y, row in enumerate(world.obj):
+        for x, obj in enumerate(row):
+            materials = obj.get("materials")
+            if materials and not DECAY_FLAGGED.isdisjoint(materials):
                 env = {
-                    "wind": cell.get("disturbance", 0) / 100.0,
-                    "moisture": cell.get("moisture", 50) / 100.0,
-                    "temperature": cell.get("temperature", 20),
+                    "wind": float(disturbance[y, x]) / 100.0,
+                    "moisture": float(moisture[y, x]) / 100.0,
+                    "temperature": float(temperature[y, x]),
                 }
-                decay_materials(cell["materials"], env)
+                decay_materials(materials, env)
 
 
 def seed_world_materials(world):

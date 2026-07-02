@@ -366,6 +366,9 @@ class Simulation:
             self.agents = data.get("agents", [])
             self.tick = data.get("tick", 0)
             self.world = data.get("world", self.world)
+            # Checkpoints from before the struct-of-arrays cell storage hold
+            # plain dict cells — migrate them in place (no-op for new saves).
+            self.world.ensure_array_storage()
             self.stats = data.get("stats", self.stats)
             self.tribes = data.get("tribes", self.tribes)
             self.technology = data.get("technology", self.technology)

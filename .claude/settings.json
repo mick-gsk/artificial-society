@@ -15,10 +15,6 @@
       "Bash(git log *)",
       "Bash(git show *)",
       "Bash(git add *)"
-    ],
-    "deny": [
-      "Bash(git push *)"
-    ]
   },
   "hooks": {
     "PostToolUse": [

@@ -31,27 +31,28 @@ def update_territory_claims(world, agents):
     Aktualisiert alle Zell-Territory-Claims basierend auf aktueller Agentenpraesenz.
     Wird einmal pro Tick von simulation.py aufgerufen.
     """
-    # Zuerst alle Claims etwas zerfallen lassen
-    for y in range(world.height):
-        for x in range(world.width):
-            cell = world.cells[y][x]
-            claims = cell.get("territory_claim", {})
-            for tid in list(claims):
-                claims[tid] = max(CLAIM_MIN, claims[tid] - CLAIM_DECAY_RATE)
-                if claims[tid] < 0.01:
-                    del claims[tid]
-            world.set_cell(x, y, "territory_claim", claims)
+    # Zuerst alle Claims etwas zerfallen lassen. Claims leben im Objekt-Store
+    # (world.obj); Zellen ohne Claims werden uebersprungen statt fuer jede der
+    # H*W Zellen ein leeres Dict zu materialisieren — Konsumenten lesen mit
+    # cell.get("territory_claim", {}), fuer die ist fehlend == leer.
+    for row in world.obj:
+        for obj in row:
+            claims = obj.get("territory_claim")
+            if claims:
+                for tid in list(claims):
+                    claims[tid] = max(CLAIM_MIN, claims[tid] - CLAIM_DECAY_RATE)
+                    if claims[tid] < 0.01:
+                        del claims[tid]
 
     # Dann Praesenz-Verstaerkung durch lebende Agenten
     for agent in agents:
         if not agent.alive or agent.tribe_id is None:
             continue
         x, y = agent.pos
-        cell = world.cells[y][x]
-        claims = cell.get("territory_claim", {})
+        obj = world.obj[y][x]
+        claims = obj.setdefault("territory_claim", {})
         tid = agent.tribe_id
         claims[tid] = min(CLAIM_MAX, claims.get(tid, 0.0) + CLAIM_STRENGTHEN_RATE)
-        world.set_cell(x, y, "territory_claim", claims)
 
 
 def territory_reward_for_agent(agent, world) -> float:

@@ -588,11 +588,25 @@ def empty_material_slot():
     return {}
 
 
+# Materials that decay_materials can act on at all. The decays/perishable
+# flags live only in the static _LEGACY_FLAGS table (discovered materials
+# never carry them), so this set is fixed at import time. Anything outside it
+# is a guaranteed no-op for decay — the per-tick world pass skips it without
+# building the full get_material() property dict (perf: that dictcomp was
+# ~65k calls/tick at 200x200).
+DECAY_FLAGGED = frozenset(
+    name for name, flags in _LEGACY_FLAGS.items() if flags.get("decays") or flags.get("perishable")
+)
+_EMPTY_FLAGS: dict = {}
+
+
 def decay_materials(slot: dict, env: dict) -> dict:
+    if DECAY_FLAGGED.isdisjoint(slot):
+        return slot
     remove = []
     ash_add = 0.0
     for mat, qty in list(slot.items()):
-        props = get_material(mat)
+        props = _LEGACY_FLAGS.get(mat, _EMPTY_FLAGS)  # only the flags matter here
         if props.get("decays"):
             slot[mat] = max(0.0, qty - 0.05 - 0.03 * env.get("wind", 0.3))
             if slot[mat] < 0.05:
