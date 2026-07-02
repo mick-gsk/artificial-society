@@ -13,6 +13,7 @@ from artificial_society.agents.agent import (
     ensure_fields,
 )
 from artificial_society.environment.materials import DISCOVERY_REGISTRY
+from artificial_society.environment.phys_objects import seed_initial
 from artificial_society.environment.resources import add_carcass
 from artificial_society.environment.territory import update_territory_claims
 from artificial_society.renderer import Renderer
@@ -161,6 +162,10 @@ class Simulation:
             self._load_checkpoint()
         else:
             self.spawn_initial_population(initial_population)
+            if self.physics_v2:
+                # Start-Seeding NUR beim Frisch-Start (ein geladener Checkpoint
+                # bringt seine Objekt-Schicht mit); zieht RNG nur bei Flag an.
+                seed_initial(self.world.objects, self.world.biomes)
         seed_world_materials(self.world)
 
     def spawn_initial_population(self, n):
