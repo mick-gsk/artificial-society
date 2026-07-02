@@ -500,6 +500,17 @@ class Simulation:
         self.tick_immunity_and_recovery()
         self._apply_hamilton_rewards()
 
+        # Language convergence is a world-level census, not an agent behaviour.
+        # (It used to hang off agent id==1 inside Agent.update and died with
+        # that agent; token decay was also wrongly coupled to population >= 2.)
+        if tick % 90 == 0:
+            memories = [
+                m for m in (getattr(a, "token_memory", None) for a in self.agents) if m is not None
+            ]
+            if len(memories) >= 2:
+                TOKEN_WORLD.check_convergence(memories, tick)
+            TOKEN_WORLD.tick_decay()
+
         # Registered systems with a tick hook run here in ascending `order`. The
         # built-ins are dormant (tick=None) so this is a no-op today — it is the
         # seam a newly-added system ticks through without editing step(). Re-wiring

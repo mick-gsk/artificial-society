@@ -246,16 +246,6 @@ def _observe_tokens(agent, cell: dict, context_vec, reward: float) -> None:
         agent_observe_token(agent, token, context_vec, reward_signal=signal)
 
 
-def _maybe_collect_language_convergence(agent, agents: list, tick: int) -> None:
-    if tick % 90 != 0 or getattr(agent, "id", 0) != 1:
-        return
-    memories = [getattr(a, "token_memory", None) for a in agents]
-    memories = [m for m in memories if m is not None]
-    if len(memories) >= 2:
-        TOKEN_WORLD.check_convergence(memories, tick)
-        TOKEN_WORLD.tick_decay()
-
-
 @dataclass
 class Agent:
     # Class-level id sequence (not a dataclass field): restored after checkpoint
@@ -300,11 +290,6 @@ class Agent:
     herbs_carried: dict = field(default_factory=dict)
     causal_memory: CausalMemory = field(default_factory=lambda: CausalMemory(capacity=32))
     material_inventory: dict = field(default_factory=dict)
-    world_memory: dict = field(default_factory=dict)
-    current_goal: str = "SURVIVE"
-    goal_target: tuple | None = None
-    last_goal_change: int = 0
-    goal_commitment: int = 0
     is_sleeping: bool = False
     _last_mate_id: int | None = None
     _need_inv_cooldown: int = 0
@@ -361,10 +346,6 @@ class Agent:
             agent.tom.inherit_from(parent.tom, strength=0.4)
             agent.knowledge.inherit_from(parent.knowledge, strength=0.7)
             agent.emotional_memory.inherit_from(parent.emotional_memory, strength_factor=0.30)
-            known_places = list(parent.world_memory.items())
-            random.shuffle(known_places)
-            for pos, info in known_places[:50]:
-                agent.world_memory[pos] = dict(info)
         ensure_fields(agent)
         return agent
 
@@ -883,184 +864,6 @@ class Agent:
 
         return macro_bonus
 
-    def update_memory(self, world):
-
-        MEMORY_DECAY = 500
-        MAX_MEMORY_CELLS = 200
-
-        x, y = self.pos
-
-        for agent in world.agents:
-            if agent is self:
-                continue
-
-            if not agent.alive:
-                continue
-
-            if abs(agent.pos[0] - x) <= 8 and abs(agent.pos[1] - y) <= 8:
-                self.world_memory[("agent", agent.id)] = {
-                    "type": "agent",
-                    "value": 1,
-                    "tick": self.age,
-                    "pos": agent.pos,
-                }
-
-        for dx in range(-4, 5):
-            for dy in range(-4, 5):
-                nx = x + dx
-                ny = y + dy
-
-                if not world.in_bounds(nx, ny):
-                    continue
-
-                cell = world.get_cell(nx, ny)
-
-                if cell.get("food", 0) > 15:
-                    self.world_memory[(nx, ny)] = {
-                        "type": "food",
-                        "value": cell["food"],
-                        "tick": self.age,
-                    }
-
-                if cell.get("water", 0) > 15:
-                    self.world_memory[(nx, ny)] = {
-                        "type": "water",
-                        "value": cell["water"],
-                        "tick": self.age,
-                    }
-
-                if cell.get("danger", 0) > 30:
-                    self.world_memory[(nx, ny)] = {
-                        "type": "danger",
-                        "value": cell["danger"],
-                        "tick": self.age,
-                    }
-
-                if cell.get("disease", 0) > 20:
-                    self.world_memory[(nx, ny)] = {
-                        "type": "disease",
-                        "value": cell["disease"],
-                        "tick": self.age,
-                    }
-
-                if cell.get("warmth", 0) > 0.2:
-                    self.world_memory[(nx, ny)] = {
-                        "type": "warmth",
-                        "value": cell["warmth"],
-                        "tick": self.age,
-                    }
-
-        self.world_memory = {
-            pos: info
-            for pos, info in self.world_memory.items()
-            if self.age - info["tick"] < MEMORY_DECAY
-        }
-
-        if len(self.world_memory) > MAX_MEMORY_CELLS:
-            newest = sorted(self.world_memory.items(), key=lambda x: x[1]["tick"])[
-                -MAX_MEMORY_CELLS:
-            ]
-
-            self.world_memory = dict(newest)
-
-    def choose_goal(self):
-
-        if self.goal_commitment > 0:
-            self.goal_commitment -= 1
-            return self.current_goal
-
-        if self.energy < 60:
-            self.current_goal = "EAT"
-            self.goal_commitment = 30
-
-        elif self.hydration < 40:
-            self.current_goal = "DRINK"
-            self.goal_commitment = 30
-
-        elif (
-            self.energy > REPRODUCTION_ENERGY
-            and self.health > 70
-            and self.age > MIN_REPRODUCTION_AGE
-        ):
-            self.current_goal = "REPRODUCE"
-            self.goal_commitment = 40
-
-        else:
-            self.current_goal = "EXPLORE"
-            self.goal_commitment = 20
-
-        return self.current_goal
-
-    def select_goal_target(self):
-
-        candidates = []
-
-        for pos, info in self.world_memory.items():
-            score = info["value"]
-
-            if self.current_goal == "EAT":
-                if info["type"] == "food":
-                    candidates.append((score, pos))
-
-            elif self.current_goal == "DRINK":
-                if info["type"] == "water":
-                    candidates.append((score, pos))
-
-            elif self.current_goal == "REPRODUCE":
-                if info["type"] == "agent":
-                    candidates.append((1, info["pos"]))
-
-            elif self.current_goal == "EXPLORE" and info["type"] in (
-                "food",
-                "water",
-                "warmth",
-            ):
-                candidates.append((score * 0.5, pos))
-
-        if candidates:
-            candidates.sort(reverse=True)
-            self.goal_target = candidates[0][1]
-        else:
-            self.goal_target = None
-
-    def goal_move(self, world):
-
-        if self.goal_target is None:
-            return None
-
-        tx, ty = self.goal_target
-
-        if not world.in_bounds(tx, ty):
-            self.goal_target = None
-            return None
-
-        target_cell = world.get_cell(tx, ty)
-
-        if self.current_goal == "EAT" and target_cell.get("food", 0) <= 0:
-            self.goal_target = None
-            return None
-
-        if self.current_goal == "DRINK" and target_cell.get("water", 0) <= 0:
-            self.goal_target = None
-            return None
-
-        x, y = self.pos
-
-        dx = 0
-        dy = 0
-
-        if tx > x:
-            dx = 1
-        elif tx < x:
-            dx = -1
-
-        if ty > y:
-            dy = 1
-        elif ty < y:
-            dy = -1
-
-        return dx, dy
-
     def update(
         self,
         world,
@@ -1294,7 +1097,8 @@ class Agent:
         context_vec = np.asarray(next_features_raw, dtype=np.float32)
         reward = _maybe_mark_language(self, current_cell, tick, context_vec, reward)
         _observe_tokens(self, current_cell, context_vec, reward)
-        _maybe_collect_language_convergence(self, agents, tick)
+        # (Language convergence + token decay are collected world-level in
+        # Simulation.step — they used to hang off agent id==1 here.)
         _compact_material_inventory(self, getattr(self, "_inventory_cap", 24))
 
         cognition_mult = mods.get("cognition", 1.0)
