@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+import pickle
 import random
 from types import SimpleNamespace
 
@@ -10,11 +12,14 @@ import numpy as np
 from artificial_society.agents.perception_v2 import (
     K_GROUND_SLOTS,
     N_SLOTS,
+    NOVELTY_LRU_CAP,
     PERCEPTION_RADIUS,
     SLOT_FEATS,
     SLOT_MASS_NORM_KG,
+    NoveltyBuckets,
     admissible_masks,
     build_slots,
+    resolve_slot_of,
 )
 from artificial_society.environment.phys_objects import ObjectLayer
 from artificial_society.environment.physics.body import Hands
@@ -104,3 +109,57 @@ def test_admissible_masks_c2():
     assert not masks["target"][i_nah] and not masks["target"][i_fern]
     # Nutzlast-Check: 13 Props der Slot-Features stimmen mit IDX2-Layout überein
     assert view.feats[i_hier][IDX2["nutrition"]] == hier.props[IDX2["nutrition"]]
+
+
+def test_resolve_slot_of_ist_id_basiert():
+    layer = _layer()
+    a = make_object("granite", 1.0)
+    b = make_object("granite", 1.0)  # wertgleich, andere Identität
+    layer.add(a, (5, 5), source="spawned")
+    layer.add(b, (5, 6), source="spawned")
+    view = build_slots(_agent(), layer)
+    assert view.objs[resolve_slot_of(view, a)] is a
+    assert view.objs[resolve_slot_of(view, b)] is b
+    assert resolve_slot_of(view, make_object("granite", 1.0)) == -1  # nie gesehen
+
+
+def test_novelty_faellt_mit_1_durch_wurzel_n():
+    """D3 (c): Bucket-Novelty fällt mit 1/√n über wiederholte Wahrnehmung."""
+    layer = _layer()
+    layer.add(make_object("granite", 1.0), (5, 5), source="spawned")
+    view = build_slots(_agent(), layer)
+    buckets = NoveltyBuckets()
+    werte = [buckets.observe_view(view) for _ in range(4)]
+    assert werte == [1.0, 1.0 / math.sqrt(2), 1.0 / math.sqrt(3), 1.0 / math.sqrt(4)]
+
+
+def test_novelty_neuer_eigenschaftspunkt_zahlt_wieder_voll():
+    layer = _layer()
+    layer.add(make_object("granite", 1.0), (5, 5), source="spawned")
+    agent = _agent()
+    buckets = NoveltyBuckets()
+    buckets.observe_view(build_slots(agent, layer))
+    layer.add(make_object("carcass", 25.0), (5, 5), source="from_carcass")
+    assert buckets.observe_view(build_slots(agent, layer)) == 1.0  # neuer Bucket → 1/√1
+
+
+def test_novelty_dedupe_innerhalb_eines_ticks():
+    """Zwei wertgleiche Steine im selben Tick zählen den Bucket nur EINMAL."""
+    layer = _layer()
+    layer.add(make_object("granite", 1.0), (5, 5), source="spawned")
+    layer.add(make_object("granite", 1.0), (5, 6), source="spawned")
+    buckets = NoveltyBuckets()
+    buckets.observe_view(build_slots(_agent(), layer))
+    assert list(buckets.counts.values()) == [1]
+
+
+def test_novelty_lru_kappt_bei_4096_und_ist_picklebar():
+    buckets = NoveltyBuckets(cap=3)
+    for i in range(5):
+        buckets.counts[("k", i)] = 1
+        buckets._enforce_cap()
+    assert len(buckets.counts) == 3
+    assert ("k", 0) not in buckets.counts  # ältester Key flog raus
+    assert NOVELTY_LRU_CAP == 4096
+    wieder = pickle.loads(pickle.dumps(buckets))
+    assert dict(wieder.counts) == dict(buckets.counts)

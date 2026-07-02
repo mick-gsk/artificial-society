@@ -11,6 +11,8 @@ und dem Logging. Dieses Modul kennt weder torch noch das Gehirn.
 
 from __future__ import annotations
 
+import math
+from collections import OrderedDict
 from dataclasses import dataclass
 
 import numpy as np
@@ -100,3 +102,58 @@ def admissible_masks(view: SlotView) -> dict:
         "held": held,
         "target": (ground & view.at_own_pos) | held,
     }
+
+
+def resolve_slot_of(view: SlotView, obj) -> int:
+    """Slot-Index eines Objekts per Identität (id-basiertes Tracking, Spec C1).
+    NUR fürs Causal-Target/Logging — das Gehirn sieht nie Identitäten.
+    -1 = aus der Wahrnehmung gefallen (Causal Model: maskiert, kein Loss)."""
+    for i, o in enumerate(view.objs):
+        if o is obj:
+            return i
+    return -1
+
+
+NOVELTY_BUCKET_WIDTH = 0.25  # key = floor(p/0.25) über 13 Props (Spec C4.3)
+NOVELTY_LRU_CAP = 4096
+
+
+class NoveltyBuckets:
+    """Count-based Novelty über Eigenschafts-Buckets, pro Agent (Spec C4.3).
+
+    novelty = 1/√n(key) beim Wahrnehmen/Halten/Erzeugen; LRU-gekappt (4096
+    Keys). Ideen (Bucket-Counts, 1/√n) aus archive/.../causal_model.py
+    (_bucket_counts/info_gain); zustandsbasiert, keine designer-gewählten
+    Events. Ein OrderedDict ist picklebar (Checkpoint-Verträglichkeit).
+    """
+
+    def __init__(self, cap: int = NOVELTY_LRU_CAP):
+        self.cap = cap
+        self.counts: OrderedDict = OrderedDict()
+
+    def _key(self, props) -> tuple:
+        return tuple(int(min(float(p), 1.0) // NOVELTY_BUCKET_WIDTH) for p in props)
+
+    def _enforce_cap(self) -> None:
+        while len(self.counts) > self.cap:
+            self.counts.popitem(last=False)
+
+    def observe_view(self, view: SlotView) -> float:
+        """Novelty dieses Ticks: max über alle belegten Slots; jeder distinkte
+        Bucket-Key zählt pro Tick genau einmal (zwei wertgleiche Steine sind
+        EIN Punkt im Eigenschaftsraum)."""
+        best = 0.0
+        seen: set = set()
+        for i in range(N_SLOTS):
+            if not view.mask[i]:
+                continue
+            key = self._key(view.objs[i].props)
+            if key in seen:
+                continue
+            seen.add(key)
+            n = self.counts.get(key, 0) + 1
+            self.counts[key] = n
+            self.counts.move_to_end(key)
+            self._enforce_cap()
+            best = max(best, 1.0 / math.sqrt(n))
+        return best
