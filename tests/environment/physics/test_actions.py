@@ -397,3 +397,45 @@ def test_metriken_hooks_zaehlen_ohne_verhalten():
     snap = layer.metrics_snapshot()
     assert snap["ledger"] == layer.ledger and snap["ledger"] is not layer.ledger
     assert snap["fragments_total"] == layer.metrics["fragments_total"]
+
+
+def test_cut_result_traegt_remainder_referenz():
+    """3b (C4): der remainder ist die physische Fortsetzung des Ziels — das
+    Causal-Target folgt ihm. Masse bleibt exakt erhalten."""
+    import random as _random
+
+    from artificial_society.environment.phys_objects import ObjectLayer
+    from artificial_society.environment.physics.actions import do_cut, do_grasp, do_strike
+    from artificial_society.environment.physics.body import BODY_MASS_DEFAULT_KG, Body, Hands
+    from artificial_society.environment.physics.objects import make_object
+    from artificial_society.environment.physics.props import IDX2
+
+    rng = _random.Random(99)
+    layer = ObjectLayer(8, 8, rng=rng)
+    body = Body(body_mass=BODY_MASS_DEFAULT_KG, strength=0.7)
+    hands = Hands()
+    hammer = make_object("granite", 1.0)
+    flint = make_object("flint", 0.8)
+    kadaver = make_object("carcass", 25.0)
+    layer.add(hammer, (4, 4), source="spawned")
+    layer.add(flint, (4, 4), source="spawned")
+    layer.add(kadaver, (4, 4), source="from_carcass")
+    do_grasp(body, hands, layer, (4, 4), hammer)
+    schlag = do_strike(body, hands, layer, (4, 4), hammer, flint, 1.0, rng)
+    klinge = max(schlag.fragments, key=lambda f: float(f.props[IDX2["sharpness"]]))
+    hands.release(hammer)
+    layer.add(hammer, (4, 4))
+    do_grasp(body, hands, layer, (4, 4), klinge)
+
+    schnitt = do_cut(body, hands, layer, (4, 4), klinge, kadaver, 0.8)
+
+    assert schnitt.extracted is not None
+    assert schnitt.remainder is not None
+    assert schnitt.remainder is not kadaver  # neue Instanz — deshalb braucht 3b die Referenz
+    assert schnitt.extracted.mass + schnitt.remainder.mass == kadaver.mass
+    assert layer.position_of(schnitt.remainder) == (4, 4)
+    # Fehlschlag-/No-yield-Pfade tragen remainder=None (Default)
+    granit = make_object("granite", 2.0)
+    layer.add(granit, (4, 4), source="spawned")
+    kein_schnitt = do_cut(body, hands, layer, (4, 4), klinge, granit, 0.8)
+    assert kein_schnitt.remainder is None
