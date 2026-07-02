@@ -50,3 +50,22 @@ def test_release_frees_the_hand():
 def test_release_unheld_object_raises():
     with pytest.raises(ValueError):
         Hands().release(make_object("flint", 0.8))
+
+
+def test_release_with_two_equal_objects_held_removes_the_right_one():
+    # Zwei wertgleiche Steine sind zwei verschiedene physische Objekte.
+    hands = Hands()
+    body = Body(body_mass=70.0, strength=1.0)  # Kapazität 21 kg — zwei 8-kg-Steine passen
+    rock_a = make_object("granite", 8.0)
+    rock_b = make_object("granite", 8.0)
+    assert hands.grasp(rock_a, body) and hands.grasp(rock_b, body)
+    hands.release(rock_b)
+    assert hands.held == [rock_a]
+
+
+def test_release_value_equal_but_not_held_object_raises():
+    hands = Hands()
+    body = Body(body_mass=70.0, strength=1.0)
+    assert hands.grasp(make_object("granite", 8.0), body)
+    with pytest.raises(ValueError):
+        hands.release(make_object("granite", 8.0))  # gleichwertig, aber nie gegriffen

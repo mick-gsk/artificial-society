@@ -16,8 +16,12 @@ from .materials_v2 import MATERIALS_V2
 from .props import N_PROPS_V2
 
 
-@dataclass
+@dataclass(eq=False)
 class PhysObject:
+    """Physische Objekte haben Identität, keine Wert-Gleichheit: zwei gleiche
+    Granitsteine sind zwei verschiedene Objekte (wichtig u.a. für Hands.release).
+    """
+
     props: np.ndarray
     mass: float
     kind: str = "unknown"
