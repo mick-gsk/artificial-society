@@ -15,6 +15,8 @@ economy, technology, evolution, culture, language, trade) produce emergent behav
   - `systems/` — society-level systems: tribes, economy, technology, evolution, language, trade, …
   - `visualization/` — pygame overlays, matplotlib graphs, statistics tracking
 - `tests/` — pytest; `conftest.py` forces headless SDL and adds repo root to `sys.path`
+- `archive/` — abandoned research apparatus (see `archive/README.md`); never import from
+  here, never add to it without explicit owner request
 
 ## Running
 

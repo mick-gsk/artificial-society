@@ -10,6 +10,16 @@ memory, see [`agents/brain.py`](artificial_society/agents/brain.py)), so the sim
 genuinely compute-heavy and benefits from a CUDA GPU — `brain.py` selects the device
 automatically (`cuda` if available, otherwise `cpu`).
 
+## Vision
+
+The goal is a complex world in which agents **learn** capabilities the way humanity did —
+communication and language, tool-making, building, shaping their environment. Nothing is
+pre-granted: the world makes capabilities *possible* and *advantageous*, and agents must
+discover and learn them. Hard-coded "when X, do Y" behaviour is considered a defect
+(see the de-scripting history in [`docs/roadmap.md`](docs/roadmap.md), and the capability
+roadmap in §4b there). An earlier research effort built around this simulation was
+abandoned; its apparatus is preserved under [`archive/`](archive/README.md).
+
 ## Quickstart
 
 Requires **Python 3.9+**. From the repository root:
@@ -81,6 +91,7 @@ artificial_society/
 tests/                   pytest suite (incl. determinism / golden-trajectory contracts)
 docs/                    setup, roadmap and contributor guides
 scripts/                 run-dashboard.{bat,sh}, check.sh, …
+archive/                 abandoned research apparatus (not imported, not tested, not packaged)
 ```
 
 ## Determinism (important)

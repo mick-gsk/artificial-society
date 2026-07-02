@@ -8,6 +8,14 @@ conventions in [../CLAUDE.md](../CLAUDE.md).
 The original architecture analysis that motivated all this is in the plan file
 `~/.claude/plans/ziel-des-projekts-eager-rossum.md` (German).
 
+> **Direction (2026-07):** the research effort (open-ended-innovation paper) is
+> **abandoned and archived** under [`archive/`](../archive/README.md). The project's goal
+> is now the simulation itself: a complex world in which agents **learn** capabilities —
+> communication/language, tool-making, building, shaping their environment — the way
+> humanity did. Nothing is pre-granted or scripted; capabilities must be discovered and
+> learned. See §4b for the capability roadmap and
+> [`docs/superpowers/specs/2026-07-02-foundation-consolidation-design.md`](superpowers/specs/2026-07-02-foundation-consolidation-design.md).
+
 ---
 
 ## 1. Where the project stands (current status)
@@ -40,7 +48,9 @@ random respawn → no selection).
   scripted recipes, so open-ended invention isn't funnelled into the scripted outcomes.
 - **Observability.** Headless ecology graph (population / food / energy over time).
 - **A determinism contract guards all of it:** `tests/test_regression_golden.py` (60-tick
-  golden trajectory) + `tests/test_headless.py` (initial-state digest). **29 tests pass.**
+  golden trajectory) + `tests/test_headless.py` (initial-state digest). **104 tests pass.**
+- **Phases 2–5 are integrated** (Phase-4 physics, Phase-5 de-scripting, Tier-3 brain perf
+  all merged; golden regenerated on `core/foundation` for the combined behaviour change).
 
 **Observed dynamics** (seed 3, 160 ticks): food/capacity falls 0.27→0.13, average energy
 rises to the cap then turns down under scarcity, population grows via births. That is the
@@ -115,7 +125,7 @@ golden test will go red — that is expected; **do not touch it**; note it in yo
 - **Verified:** golden unchanged, full suite green (39 tests), 200-tick health sane,
   `grep apply_emergence_integration` empty.
 
-### Phase 2 remainder — activate the remaining dormant systems  ·  lanes: **core + systems**
+### Phase 2 remainder — activate the remaining dormant systems  ·  ✅ DONE (`core/phase2-activation`)
 Give `_builtins.py` tick hooks (core) or add new systems (systems lane):
 - **stats** — `tick=lambda sim,t: sim.stats.update(t, sim.agents, sim.world, sim.tribes,
   sim.technology)`. **Golden-neutral** (read-only). Quick win; feeds the ecology graph.
@@ -127,7 +137,7 @@ Give `_builtins.py` tick hooks (core) or add new systems (systems lane):
   and it was dead). Needs an environmental infection source, then activate spread.
 - Each: a liveness test under `tests/` asserting the system actually does something.
 
-### Phase 3 — state as a single source of truth  ·  lane: **core**  ·  golden: should stay neutral
+### Phase 3 — state as a single source of truth  ·  ✅ DONE (`core/phase3-ssot`, `core/phase3c`)
 - Make `World` the authoritative state façade; mediate cell mutation through a small API.
 - **Unify agent field init**: today fields are set across the dataclass + `_ensure_new_fields`
   + `_ensure_runtime_fields` + checkpoint migration. Collapse to one `ensure_fields`.
@@ -136,7 +146,7 @@ Give `_builtins.py` tick hooks (core) or add new systems (systems lane):
   — currently only discovery+language reset; `SEQUENCE_LIBRARY` and `RECIPE_DISCOVERY`
   (`systems/goal_stack_ext.py`) still accumulate across in-process runs.
 
-### Phase 4 — physics / biology consistency  ·  lanes: **core (energy) + environment (tuning)**
+### Phase 4 — physics / biology consistency  ·  ✅ DONE (`core/phase4-physics`, merged `1b7330c`)
 - **Energy conservation (core).** Foraging adds energy with no matching cell debit
   (`apply_consumption` is dead code); cooperation/Hamilton/territory **create** energy from
   nothing; `cell['food']` and `cell['plant_food']/['meat_food']` are competing representations
@@ -151,8 +161,8 @@ Give `_builtins.py` tick hooks (core) or add new systems (systems lane):
   biome-specific scarcity; tune so populations reach a resource-limited equilibrium, not
   extinction or explosion.
 
-### Phase 5 — de-script the remaining emergence blockers  ·  lane: **systems (parallel)**
-Each is an independent, behaviour-changing task (golden regen at integration):
+### Phase 5 — de-script the remaining emergence blockers  ·  ✅ DONE (`feat/systems-phase5-descript` + `core/phase5-inventory-essentials`, merged `ed58a90`/`73c9599`)
+Each was an independent, behaviour-changing task (golden regenerated at integration):
 - Open **trade** to discovered materials (not just wood/stone/fiber).
 - **Language**: token creation is gated on specific material properties — loosen to let
   signalling emerge from any usable marker.
@@ -164,23 +174,50 @@ Each is an independent, behaviour-changing task (golden regen at integration):
 
 ---
 
+## 4b. Capability roadmap (the new direction — each slice gets its own spec first)
+
+**The one non-negotiable principle:** agents are never *given* a capability. The world
+makes a capability *possible* and *advantageous*; agents must discover and learn it. If a
+design hands agents a behaviour ("when X, do Y"), it is scripting and gets rejected. The
+right question for every slice is: *what affordance does the world offer, and what pressure
+makes learning it worthwhile?*
+
+1. **Language / communication.** Wake the dormant token substrate
+   (`systems/language.py`, `agents/communication.py` 4-dim `message_vector`). Ground
+   symbols in learned utility: emitting/attending to signals must pay off through the
+   reward channel (found food, avoided danger, coordinated action), never through
+   scripted meanings. Success looks like: stable signal→situation conventions that
+   differ across tribes/lineages.
+2. **Tools / crafting.** Open the combination space: material properties + physical
+   actions (`invention.py` primitives) determine outcomes; no hardcoded recipe list
+   decides what may exist. Composite tools (handle + blade) should be reachable, not
+   enumerated.
+3. **Building / environment shaping.** Persistent world modification driven by learned
+   advantage (shelter → warmth → survival in winter), with structures decaying unless
+   maintained — so building has to *earn* its cost.
+4. **Learning machinery.** The abandoned research's one transferable finding: the learned
+   policy generated *less* novelty than a random-recombination null — the bottleneck is
+   credit assignment, memory, and generation–policy coupling, not the number of world
+   mechanics. Improve the brain's ability to notice, remember, and exploit rare payoffs
+   (better intrinsic motivation, longer credit horizons, richer episodic reuse) so
+   capabilities 1–3 can actually be learned. (Background: `archive/README.md`.)
+
+Sequencing note: slices 1–3 each depend on 4 to some degree; expect to interleave — a thin
+slice of 4 whenever a capability plateaus.
+
+---
+
 ## 5. Parallel task backlog (claim one — one lane per worker)
+
+Tasks A–K are ✅ done (Phases 2, 4 and 5 above). Remaining + new backlog:
 
 | # | Task | Lane | Golden | Depends on |
 |---|------|------|--------|-----------|
-| A | Activate **stats** tick + fix the `life_stage` method/count bug | core | neutral | — |
-| B | Activate **tribes** formation + membership/cleanup tick | core | regen | — |
-| C | Activate **economy** + **technology** update ticks | core | regen | — |
-| ~~D~~ | ~~**Phase 1b** un-monkeypatch (see above)~~ ✅ done (`core/unpatch-phase1b`) | core | neutral | — |
-| E | **Energy conservation** + carcass bug (Phase 4 core) | core | regen | D preferred |
-| F | Temperature/season → regrowth & danger coupling | environment | regen | — |
-| G | Biome-specific scarcity + equilibrium tuning | environment | regen | — |
-| H | Open trade to all materials | systems | regen | D (trade/economy is patched until then) |
-| I | De-script language token requirements | systems | regen | — |
-| J | Emergent disease remedies | systems | regen | — |
-| K | Logic-gate topology generalisation | systems | regen | — |
 | L | Tribe / lineage / discovery overlays | visualization | neutral | — |
 | M | Per-agent inspector overlay (state, brain, memory) | visualization | neutral | — |
+| N | Rebase + integrate live web viz (`feat/infra-live-viz`, predates Phase 1b+) | infra | neutral | — |
+| O | **Capability slice 1: language/communication** (§4b — spec first) | systems + agents | regen | — |
+| P | **Capability slice 4 (thin): intrinsic motivation & credit horizon** (§4b) | agents | regen | — |
 
 Branch naming: `feat/<lane>-<topic>` (or `core/<topic>`). One worktree per branch.
 
