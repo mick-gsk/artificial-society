@@ -1069,7 +1069,10 @@ export class WorldScene {
       // attack lunge: shove the body forward on the lunge frame (attack1), eased
       let lunge = 0;
       if (actKey === "attack") {
-        // triangular ease centred on frame 1 (the lunge) of the 3-frame loop
+        // triangular ease centred on frame 1 (the lunge) of the 3-frame loop.
+        // Deliberately scaled by hpx (not cellPx): the lunge must stay
+        // proportional to the drawn figure even when the MIN_AGENT_PX floor
+        // has lifted it above cell size.
         const phase = (rec.actAge * 1000 / atlas.anim.attack.durMs) % atlas.anim.attack.n;
         lunge = rec.facing * hpx * 0.25 * Math.max(0, 1 - Math.abs(phase - 1));
       }
@@ -1082,12 +1085,15 @@ export class WorldScene {
 
       // --- tool follows the hand ----------------------------------------------
       // hand anchor is figure-local px (children inherit the figure scale + the
-      // facing flip), so set the tool right on it. Mirror the rotation when the
-      // figure faces left. Hidden while asleep.
+      // facing flip), so set the tool right on it. The parent's negative scale.x
+      // already mirrors a child's rotation visually (mirror∘R(θ) = R(−θ)∘mirror),
+      // so the raw h.rot is correct for BOTH facings — multiplying by facing
+      // would cancel the mirror and tilt the tool away from the swing.
+      // Hidden while asleep.
       if (rec.tool.visible) {
         const h = atlas.hand[stageKey][actKey][frameIdx];
         rec.tool.position.set(h.x, h.y);
-        rec.tool.rotation = h.rot * rec.facing;
+        rec.tool.rotation = h.rot;
       }
 
       // grounding shadow under the feet

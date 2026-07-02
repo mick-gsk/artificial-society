@@ -78,17 +78,26 @@ function px(ctx, x, y, w, h, col) {
   ctx.fillRect(x, y, w, h);
 }
 
-// A short 1-px "limb" segment from (x0,y0) toward (x1,y1), plotted as pixels so
-// arms/legs read crisply at NEAREST. Returns the tip [x,y] (used as hand anchor).
-function limb(ctx, x0, y0, x1, y1, col, thick = 1) {
+// A 1-px "limb" (arm) segment from (x0,y0) toward (x1,y1) WITH its 1-px dark
+// outline: first a 3×3 OUTLINE block under every segment pixel, then the 1-px
+// LIMB fill on top — the same outline-under-fill treatment the legs get.
+// Plotted as pixels so arms read crisply at NEAREST. NOTE: the outline extends
+// 1 px beyond the tip in every direction; pose tips must stay ≥1 px inside the
+// atlas cell or the outline bleeds into the neighbouring frame.
+function limb(ctx, x0, y0, x1, y1) {
   const steps = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0), 1);
   for (let i = 0; i <= steps; i++) {
     const t = i / steps;
     const x = Math.round(x0 + (x1 - x0) * t);
     const y = Math.round(y0 + (y1 - y0) * t);
-    px(ctx, x, y, thick, thick, col);
+    px(ctx, x - 1, y - 1, 3, 3, OUTLINE);
   }
-  return [x1, y1];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const x = Math.round(x0 + (x1 - x0) * t);
+    const y = Math.round(y0 + (y1 - y0) * t);
+    px(ctx, x, y, 1, 1, LIMB);
+  }
 }
 
 // -- one figure -------------------------------------------------------------
@@ -163,22 +172,18 @@ function drawFigure(ctx, ox, oy, pose, p) {
     // trailing arm (drawn first, behind)
     if (pose.arms.back) {
       const [ex, ey] = pose.arms.back;
-      limb(ctx, backX, shoulderY, backX + ex, shoulderY + ey, OUTLINE);
-      limb(ctx, backX, shoulderY, backX + ex, shoulderY + ey, LIMB);
+      limb(ctx, backX, shoulderY, backX + ex, shoulderY + ey);
     }
     // leading arm → hand anchor at its tip
     const [ex, ey, rot] = pose.arms.front;
     const tipX = frontX + ex;
     const tipY = shoulderY + ey;
-    limb(ctx, frontX, shoulderY, tipX, tipY, OUTLINE);
-    limb(ctx, frontX, shoulderY, tipX, tipY, LIMB);
+    limb(ctx, frontX, shoulderY, tipX, tipY);
     hand = { x: tipX, y: tipY, rot: rot ?? 0.2 };
   } else {
     // default: both arms hang at the sides
-    limb(ctx, backX, shoulderY, backX - 1, shoulderY + 4, OUTLINE);
-    limb(ctx, backX, shoulderY, backX - 1, shoulderY + 4, LIMB);
-    limb(ctx, frontX, shoulderY, frontX + 1, shoulderY + 4, OUTLINE);
-    limb(ctx, frontX, shoulderY, frontX + 1, shoulderY + 4, LIMB);
+    limb(ctx, backX, shoulderY, backX - 1, shoulderY + 4);
+    limb(ctx, frontX, shoulderY, frontX + 1, shoulderY + 4);
     hand = { x: frontX + 1, y: shoulderY + 4, rot: 0.15 };
   }
 
@@ -238,9 +243,13 @@ const POSES = {
   coop0: { legs: [[-2, 0], [2, 0]], arms: { front: [6, 1, -0.3], back: [-2, 3] } },
   coop1: { legs: [[-2, 0], [2, 0]], stoop: 1, arms: { front: [5, 2, -0.1], back: [-2, 3] } },
 
-  // attack: wind up behind → lunge forward → recover
+  // attack: wind up behind → lunge forward → recover. attack1's thrust must
+  // stay inside the 24-px cell: leading tip x = frontX(ox+15/16+lean) + ex, and
+  // the arm outline adds 1 px — so lean+ex ≤ 6 (elder is the binding stage).
+  // ex 8 overflowed into the attack2 cell; the forward motion comes from the
+  // transform-lunge in world-render, not from arm length.
   attack0: { legs: [[-3, 0], [2, 0]], arms: { front: [-2, -3, -1.4], back: [-3, 1] } },
-  attack1: { legs: [[-4, 0], [4, 0]], lean: 2, arms: { front: [8, -1, 0.4], back: [-3, 2] } },
+  attack1: { legs: [[-4, 0], [4, 0]], lean: 2, arms: { front: [4, -1, 0.4], back: [-3, 2] } },
   attack2: { legs: [[-2, 0], [2, 0]], arms: { front: [4, 2, 0.1], back: [-2, 3] } },
 
   // build: raise tool overhead → mid → strike down (hand arcs top → bottom)
