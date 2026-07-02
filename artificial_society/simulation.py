@@ -62,6 +62,14 @@ DEATH_MATERIAL_TRANSFER_RATIO = 0.4
 SIDEBAR_W = 300
 
 
+class CheckpointIncompatibleError(RuntimeError):
+    """Checkpoint passt nicht zur angeforderten Konfiguration (z. B. physics_v2-Mismatch).
+
+    Wird in _load_checkpoint VOR dem broad-except re-raised: still verschlucken
+    und „frisch starten" wäre stiller Datenverlust (Spec C5).
+    """
+
+
 def _reset_accumulating_singletons() -> None:
     """Reset every global registry that accumulates across in-process runs.
 
@@ -394,6 +402,7 @@ class Simulation:
                     {
                         "agents": self.agents,
                         "tick": self.tick,
+                        "physics_v2": self.physics_v2,
                         "world": self.world,
                         "stats": self.stats,
                         "tribes": self.tribes,
@@ -410,6 +419,12 @@ class Simulation:
         try:
             with open(CHECKPOINT_PATH, "rb") as f:
                 data = pickle.load(f)
+            saved_flag = bool(data.get("physics_v2", False))
+            if saved_flag != self.physics_v2:
+                raise CheckpointIncompatibleError(
+                    f"checkpoint physics_v2={saved_flag} != Simulation physics_v2="
+                    f"{self.physics_v2} — Checkpoint löschen oder Flag angleichen"
+                )
             self.agents = data.get("agents", [])
             self.tick = data.get("tick", 0)
             self.world = data.get("world", self.world)
@@ -425,6 +440,8 @@ class Simulation:
             for agent in self.agents:
                 ensure_fields(agent)
             print(f"[checkpoint] loaded tick={self.tick}, agents={len(self.agents)}")
+        except CheckpointIncompatibleError:
+            raise  # harte Schranke — NICHT vom broad-except verschlucken lassen
         except Exception as e:
             print(f"[checkpoint] load failed: {e} — starting fresh")
             self.spawn_initial_population(self._initial_population)
