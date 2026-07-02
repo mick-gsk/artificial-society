@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from artificial_society.environment.physics import MATERIALS_V2, PROP_DIMS_V2
+from artificial_society.environment.physics.actions import CALIBRATED_ACTION_PARAMS
 from artificial_society.environment.physics.body import CALIBRATED_BODY_PARAMS
 from artificial_society.environment.physics.calibration import (
     CALIBRATION,
@@ -95,3 +96,14 @@ def test_body_mass_default_ist_kalibriert():
     assert BODY_MASS_DEFAULT_KG == 70.0
     assert "body_mass" in CALIBRATED_BODY_PARAMS
     _assert_calibrated("body", "body_mass")
+
+
+def test_every_action_param_is_calibrated():
+    for name in CALIBRATED_ACTION_PARAMS:
+        _assert_calibrated("action", name)
+
+
+def test_no_orphan_action_entries():
+    for kind, name in CALIBRATION:
+        if kind == "action":
+            assert name in CALIBRATED_ACTION_PARAMS, f"verwaister action-Eintrag: {name}"
