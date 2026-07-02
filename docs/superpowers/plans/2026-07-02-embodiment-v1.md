@@ -622,3 +622,14 @@ Verletzbarkeit) → **4. Kultur-Korrektur** (genetischer Prior, lamarckistische 
 → **5. Meilenstein-1-Pilot** (Emergenz-A/B, GPU-PC). Offene Integrations-Checkliste aus dem
 Kern-Review: Energie-Kosten für cut/strike, DiscoveryV2 pro Welt, Runtime-Props-Validierung,
 Registry-Threshold.
+
+**Zusätzliche Checklisten-Punkte aus dem Final-Review dieses Branches (für die Lern-Kopplung
+deliberat zu entscheiden, nicht wiederzuentdecken):** (a) Schlagstein-Masse ist von der
+Schlagenergie entkoppelt — ein 0.05-kg-Kiesel „liefert" 50 J; `strike_energy_j` braucht eine
+Kappung über die Schlagstein-Masse (~½·m·v², Handgeschwindigkeit max ~12–15 m/s), Spec §3 nennt
+beide Faktoren. (b) Mini-Klingen-Exploit: Fragment-Schärfe und Schneide-Ertrag sind energie- und
+werkzeugmasse-unabhängig — 1-J-Tipper auf 0.1-kg-Kiesel liefern Spitzen-Klingen; Kandidat:
+Masse-/Größenterm in `effective_sharpness` bzw. Ertrag (Kern-Physik, Entscheidung im Pilot-Lane).
+(c) `exert_strike` ist nicht an `strike()` gebunden — im Action-Layer MUSS jeder Schlag ermüden,
+sonst ist Arbeit gratis. (d) Überlast-Semantik: Kapazität wird nur beim Greifen geprüft;
+Fallenlassen bei geschrumpfter Kapazität gehört der Action-Schicht.
