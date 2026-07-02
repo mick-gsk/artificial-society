@@ -115,3 +115,30 @@ def test_pickle_erhaelt_explizite_rng_instanz():
     layer2 = pickle.loads(pickle.dumps(layer))
     assert isinstance(layer2.rng, random.Random)
     assert layer2.rng.random() == erwartet  # RNG-Zustand überlebt das Pickling
+
+
+def test_world_traegt_objectlayer_als_schwester_attribut():
+    """Spec B1: world.objects lebt NEBEN world.F/S, nie in den Zell-Arrays."""
+    from artificial_society.world import World
+
+    world = World(12, 9)
+    assert isinstance(world.objects, ObjectLayer)
+    assert world.objects.width == 12 and world.objects.height == 9
+    assert world.objects.total_mass() == 0.0  # Konstruktion spawnt nichts
+
+
+def test_ensure_array_storage_migriert_alte_welten():
+    from artificial_society.world import World
+
+    world = World(6, 5)
+    del world.objects  # simuliert eine Welt aus einem alten Checkpoint
+    world.ensure_array_storage()
+    assert isinstance(world.objects, ObjectLayer)
+
+
+def test_discovery_pro_welt_verschieden():
+    """Spec D2: zwei Welten teilen keinen Discovery-Zustand."""
+    from artificial_society.world import World
+
+    a, b = World(6, 5), World(6, 5)
+    assert a.objects.discovery is not b.objects.discovery

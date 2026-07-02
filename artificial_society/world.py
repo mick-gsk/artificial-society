@@ -6,6 +6,7 @@ import numpy as np
 from artificial_society.cell_store import CellGrid, CellView, build_arrays
 from artificial_society.environment.biomes import BIOME_BASE, biome_color, generate_biome_grid
 from artificial_society.environment.herbs import regrow_herbs
+from artificial_society.environment.phys_objects import ObjectLayer
 from artificial_society.environment.resources import (
     clamp,
     initial_cell_state,
@@ -26,6 +27,10 @@ class World:
             [[initial_cell_state(self.biomes[y][x]) for x in range(width)] for y in range(height)],
         )
         self.cells = CellGrid(self)
+        # Physik-v2-Objektschicht (Spec B1): sparse Schwester-Struktur neben
+        # F/S — NIE in den Zell-Arrays (GPU-Garantie). Konstruktion zieht
+        # keine RNG und bleibt bei physics_v2=False dauerhaft leer.
+        self.objects = ObjectLayer(width, height, rng=random)
         self._init_biome_statics()
         self.land_positions = [
             (x, y) for y in range(height) for x in range(width) if self.biomes[y][x] != "water"
@@ -53,7 +58,8 @@ class World:
         biome_arr = np.array(self.biomes, dtype=object)
         self._bio = {
             "base_temperature": np.array(
-                [[BIOME_BASE[b]["temperature"] for b in row] for row in self.biomes], dtype=np.float64
+                [[BIOME_BASE[b]["temperature"] for b in row] for row in self.biomes],
+                dtype=np.float64,
             ),
             "base_danger": np.array(
                 [[BIOME_BASE[b]["danger"] for b in row] for row in self.biomes], dtype=np.float64
@@ -104,6 +110,8 @@ class World:
             self.cells = CellGrid(self)
         if not hasattr(self, "_bio"):
             self._init_biome_statics()
+        if not hasattr(self, "objects"):
+            self.objects = ObjectLayer(self.width, self.height, rng=random)
 
     def in_bounds(self, x, y):
         return 0 <= x < self.width and 0 <= y < self.height
