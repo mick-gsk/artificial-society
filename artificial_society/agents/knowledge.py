@@ -43,6 +43,11 @@ class NoveltyMemory:
         self.k = k
         self.epsilon = epsilon
         self.buffer: Deque[torch.Tensor] = deque(maxlen=capacity)
+        # NGU-style running mean of past k-NN distances; novelty is scored
+        # relative to it (0.5 = "as far from known states as usual").
+        # Plain floats so checkpoints stay pickle-friendly.
+        self._dist_ema: float | None = None
+        self._ema_decay: float = 0.995
         # --- Tier-3 perf: cache the stacked buffer; rebuild only when it changes.
         # `_version` bumps on every mutation; `stacked()` rebuilds lazily on a miss,
         # so the per-rollout re-stack (and, on GPU, the host->device upload) happens
@@ -76,9 +81,13 @@ class NoveltyMemory:
 
     def novelty(self, obs: torch.Tensor) -> float:
         """
-        Returns novelty in [0, 1).
-        High  = obs is far from everything seen so far.
-        Low   = obs resembles many past states.
+        Returns novelty in [0, 1), normalised against the running mean of
+        past k-NN distances: ~0.5 for "as far from known states as usual",
+        -> 1 for genuine outliers, -> 0 for repetition.
+
+        (The old knn/(knn + 1e-3) saturated at ~1 for any realistic feature
+        distance and carried no signal. Keep the formula in sync with the
+        vectorised planner copy in Brain.imagine_rollout.)
         """
         obs = obs.detach().float()
         if len(self.buffer) < self.k:
@@ -88,8 +97,11 @@ class NoveltyMemory:
         stack = self.stacked(obs.device)                # (N, D)
         dists = torch.norm(stack - obs.unsqueeze(0), dim=-1)  # (N,)
         k_actual = min(self.k, len(dists))
-        knn_dist = dists.topk(k_actual, largest=False).values.mean()
-        score = float(knn_dist / (knn_dist + self.epsilon))
+        knn_dist = float(dists.topk(k_actual, largest=False).values.mean())
+        ema = self._dist_ema if self._dist_ema is not None else knn_dist
+        norm = knn_dist / (ema + self.epsilon)
+        score = norm / (norm + 1.0)
+        self._dist_ema = self._ema_decay * ema + (1.0 - self._ema_decay) * knn_dist
 
         self._remember(obs)
         return score
@@ -117,6 +129,10 @@ class NoveltyMemory:
         self.__dict__.update(state)
         if not hasattr(self, "_version"):
             self._version = 0
+        if not hasattr(self, "_dist_ema"):
+            self._dist_ema = None
+        if not hasattr(self, "_ema_decay"):
+            self._ema_decay = 0.995
         self._cache = None
         self._cache_version = -1
 

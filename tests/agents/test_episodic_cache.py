@@ -109,6 +109,7 @@ def test_act_then_maybe_train_no_inference_error():
             reward=0.1,
             done=False,
             next_obs=[0.06] * INPUT_SIZE,
+            next_hidden=step["next_hidden"],
         )
         h = step["next_hidden"]
     loss = b.maybe_train()  # raises under inference_mode; must return a finite loss

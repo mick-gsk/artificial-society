@@ -274,7 +274,16 @@ class Brain(nn.Module):
                 dists = torch.norm(obs_expanded - stack_expanded, dim=-1)  # (C, N)
                 k = min(self.episodic_memory.k, dists.shape[1])
                 knn = dists.topk(k, largest=False, dim=1).values.mean(dim=1)  # (C,)
-                novelty = knn / (knn + self.episodic_memory.epsilon)
+                # Same NGU normalisation as NoveltyMemory.novelty (keep in
+                # sync) — but read-only: the planner scores hypothetical
+                # states and must not update the EMA. A freshly-loaded old
+                # checkpoint has no EMA yet -> fall back to epsilon (novelty
+                # ~1 for all candidates for one tick, harmless).
+                ema = self.episodic_memory._dist_ema
+                if ema is None:
+                    ema = self.episodic_memory.epsilon
+                norm = knn / (ema + self.episodic_memory.epsilon)
+                novelty = norm / (norm + 1.0)
             else:
                 novelty = torch.ones(a.shape[0], device=device)
 
@@ -419,15 +428,19 @@ class Brain(nn.Module):
         _ensure_2d in predict_world normalisiert beide Faelle.
         """
         with torch.no_grad():
-            pred_next_obs, pred_reward = self.predict_world(
+            pred_next_obs, _ = self.predict_world(
                 _ensure_2d(hidden_in.to(device)),
                 _ensure_2d(action_tensor.to(device)),
             )
             target = torch.tensor(next_obs, dtype=torch.float32, device=device).unsqueeze(0)
 
             obs_err = F.mse_loss(pred_next_obs, target)
-            rew_err = pred_reward.abs().mean()
-            prediction_curiosity = (obs_err + 0.2 * rew_err).clamp(0.0, 2.0)
+            # Curiosity = observation prediction error only. The old extra
+            # 0.2 * |pred_reward| term was a magnitude prior, not an error
+            # (the realized reward doesn't exist yet at this point) — it
+            # rewarded seeking states where the world model predicts high
+            # |reward|, biasing exploration instead of measuring surprise.
+            prediction_curiosity = obs_err.clamp(0.0, 2.0)
 
             episodic_novelty = self.episodic_memory.novelty(target.squeeze(0))
 
@@ -435,7 +448,16 @@ class Brain(nn.Module):
             return float(combined)
 
     def store_transition(
-        self, obs_tensor, hidden_in, action_tensor, log_prob, value, reward, done, next_obs
+        self,
+        obs_tensor,
+        hidden_in,
+        action_tensor,
+        log_prob,
+        value,
+        reward,
+        done,
+        next_obs,
+        next_hidden=None,
     ):
         self.rollout.add(
             {
@@ -447,6 +469,10 @@ class Brain(nn.Module):
                 "reward": max(-REWARD_CLAMP, min(REWARD_CLAMP, reward)),
                 "done": done,
                 "next_obs": torch.tensor(next_obs, dtype=torch.float32, device=device),
+                # Post-step hidden for the bootstrap pairing in maybe_train;
+                # None (legacy callers / old pickled rollouts) falls back to
+                # the pre-step hidden there.
+                "next_hidden": None if next_hidden is None else next_hidden.detach().squeeze(0),
             }
         )
 
@@ -466,9 +492,19 @@ class Brain(nn.Module):
             [1.0 if item["done"] else 0.0 for item in batch], dtype=torch.float32, device=device
         )
         next_obs = torch.stack([item["next_obs"] for item in batch]).to(device)
+        # Bootstrap with the post-step hidden that actually belongs to
+        # next_obs. (.get: entries stored by pre-fix code — the rollout is
+        # pickled as part of Brain in checkpoints — fall back to the pre-step
+        # hidden, the old behaviour.)
+        next_hid = torch.stack(
+            [
+                item["hidden"] if item.get("next_hidden") is None else item["next_hidden"]
+                for item in batch
+            ]
+        ).to(device)
 
         with torch.no_grad():
-            _, _, next_values, _ = self.forward(next_obs, hid)
+            _, _, next_values, _ = self.forward(next_obs, next_hid)
             next_values = next_values.view(-1)
 
         advantages = torch.zeros_like(rewards)

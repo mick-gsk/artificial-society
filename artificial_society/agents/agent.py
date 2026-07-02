@@ -1267,13 +1267,9 @@ class Agent:
             next_features_raw,
         )
         reward += 0.3 * intrinsic
-
-        next_obs_t = torch.tensor(
-            next_features_raw,
-            dtype=torch.float32,
-            device=brain_step["hidden_in"].device,
-        )
-        self.brain.episodic_memory.novelty(next_obs_t)
+        # (intrinsic_reward already registered next_features_raw in the
+        # episodic novelty buffer — a second novelty() call here used to insert
+        # a duplicate every tick, halving the effective capacity.)
 
         context_vec = np.asarray(next_features_raw, dtype=np.float32)
         reward = _maybe_mark_language(self, current_cell, tick, context_vec, reward)
@@ -1292,6 +1288,7 @@ class Agent:
             effective_reward,
             not self.alive,
             next_features_raw,
+            next_hidden=brain_step["next_hidden"],
         )
 
         loss = self.brain.maybe_train()
