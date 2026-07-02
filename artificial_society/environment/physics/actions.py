@@ -10,10 +10,13 @@ v1-Energieskala über SIM_ENERGY_PER_KCAL (1-kg-Fleischmahlzeit ≙ MEAT_ENERGY 
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass, field
 
 from artificial_society.environment.daynight import TICKS_PER_DAY
 
+from .body import Body, Hands
 from .calibration import cal
+from .objects import PhysObject
 
 # --- Energie-Kopplung kcal ↔ Sim-Energie (B5) --------------------------------
 SIM_ENERGY_PER_KCAL = 0.032
@@ -129,3 +132,60 @@ cal(
     "Umgebungstemperatur in ~3–5 Tagen gefährlich (Kappe nach ~5 Tagen ≙ 1200 Ticks)",
     "Lebensmittelhygiene: Verderb roher Tierprodukte ungekühlt",
 )
+
+
+# ---------------------------------------------------------------------------
+# Aktions-Mechanik (B4): eine Manipulation pro Agent und Tick; Ergebnis-Objekt
+# für Logging/Neugier/Tests — kein Zugriff auf Gehirn oder Belohnung.
+# ---------------------------------------------------------------------------
+@dataclass
+class ActionResult:
+    ok: bool
+    verb: str
+    reason: str = ""
+    energy_delta_sim: float = 0.0  # Sim-Energie-Delta des Agenten (Essen +, Arbeit −)
+    health_delta: float = 0.0  # Toxin-Schaden (≤ 0)
+    fragments: list = field(default_factory=list)
+    extracted: PhysObject | None = None
+    bite_kg: float = 0.0
+    work_j: float = 0.0
+
+
+def do_grasp(body: Body, hands: Hands, layer, pos, target: PhysObject) -> ActionResult:
+    """Boden-Objekt im Chebyshev-Radius 1 greifen. Scheitert als No-op bei
+    vollen Händen (MAX_HELD) oder Massen-Budget-Überschreitung."""
+    pos = (int(pos[0]), int(pos[1]))
+    tpos = layer.position_of(target)
+    if tpos is None:
+        return ActionResult(ok=False, verb="grasp", reason="not_on_ground")
+    if max(abs(tpos[0] - pos[0]), abs(tpos[1] - pos[1])) > 1:
+        return ActionResult(ok=False, verb="grasp", reason="out_of_reach")
+    if not hands.can_grasp(target, body):
+        return ActionResult(ok=False, verb="grasp", reason="hands_full_or_too_heavy")
+    layer.remove(target)
+    hands.grasp(target, body)
+    return ActionResult(ok=True, verb="grasp")
+
+
+def do_release(body: Body, hands: Hands, layer, pos, held: PhysObject) -> ActionResult:
+    """Gehaltenes Objekt an der eigenen Position ablegen (ledger-neutral)."""
+    pos = (int(pos[0]), int(pos[1]))
+    if held not in hands.held:
+        return ActionResult(ok=False, verb="release", reason="not_held")
+    hands.release(held)
+    layer.add(held, pos)
+    return ActionResult(ok=True, verb="release")
+
+
+def enforce_carry_budget(body: Body, hands: Hands, layer, pos) -> list:
+    """Überlast-Drop (B4): übersteigt die gehaltene Masse die AKTUELLE
+    Tragkapazität (z. B. weil Ermüdung sie senkt), fällt das jeweils schwerste
+    Objekt, bis das Budget wieder eingehalten ist. Zu Tick-Beginn aufrufen."""
+    pos = (int(pos[0]), int(pos[1]))
+    dropped: list = []
+    while hands.held and hands.carried_mass_kg() > body.carry_capacity_kg():
+        schwerstes = max(hands.held, key=lambda o: o.mass)
+        hands.release(schwerstes)
+        layer.add(schwerstes, pos)
+        dropped.append(schwerstes)
+    return dropped
