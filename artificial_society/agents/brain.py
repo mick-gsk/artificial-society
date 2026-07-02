@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 
 import torch
@@ -88,6 +89,44 @@ EPISODIC_K = 15
 # initiiert Agent aktiv Forschung statt per Zufallswurf.
 RESEARCH_DRIVE_THRESHOLD = 0.4
 
+# ---------------------------------------------------------------------------
+# Physik v2 (Plan 3b, Spec C1–C4): Objekt-Slots, neue Köpfe, PPO-Anpassungen.
+# Die v2-Netz-Teile existieren NUR im v2-Modus (Brain(physics_v2=True)) —
+# v1-Brains bleiben form-identisch zu heute (Golden + alte Checkpoints).
+# ---------------------------------------------------------------------------
+OBJ_SLOTS = 10  # K=8 Boden (Chebyshev r≤4) + 2 Hand (Spec C1)
+SLOT_FEATS_V2 = 17  # 13 Props + mass/25 + dx/4 + dy/4 + held
+SLOT_EMBED_DIM = 32
+QUERY_DIM = 8
+OBJ_CTX_DIM = 2 * SLOT_EMBED_DIM  # attn-Pool ⊕ masked-Max-Pool = 64
+
+ACTION_SIZE_V2 = 29  # 7 v1-Köpfe + 5 Verben + 1 Effort + 8 Target-Query + 8 Tool-Query
+V1_HEAD_DIMS = 7
+RESEARCH_DRIVE_DIM = 6  # v2: aus der log-prob-Summe ausgenommen (tote Kopplung, Spec C2)
+VERB_SLICE = slice(7, 12)
+VERBS_V2 = ("grasp", "release", "strike", "cut", "eat")
+EFFORT_DIM = 12  # tanh-Output ∈ [−1,1] → effort01 = (a+1)/2
+TARGET_QUERY_SLICE = slice(13, 21)
+TOOL_QUERY_SLICE = slice(21, 29)
+VERB_THRESHOLD = 0.5  # Aktivierung > 0.5 = „will"; höchstes Verb gewinnt
+VERB_INIT_BIAS = 0.2  # optimistischer Init-Bias (Manipulations-Babbling-Prior, Spec C2)
+
+GAMMA_V2 = 0.99  # Kredit-Horizont ~100 Ticks (Knapping→Kadaver→Schneiden→Essen)
+PPO_EPOCHS_V2 = 4
+N_MINIBATCHES_V2 = 4
+MINIBATCH_SIZE_V2 = 32  # 4×32 aus dem 128er-Buffer
+KL_EARLY_STOP_V2 = 0.02
+ENTROPY_COEF_NEW = 0.01  # neue Kopf-Gruppe inkl. Kategorial (alte Gruppe: ENTROPY_COEF 0.004)
+LOGSTD_FLOOR_NEW = -0.8  # log_std-Floor der neuen Köpfe
+DEATH_REWARD_V2 = -3.0  # Terminal-Malus (C3), gemünzt in finalize_terminal
+
+# Neugier-Target (C4.1): selbstbezügliche/nichtstationäre Obs-Dims raus —
+# last_reward (26), Causal-Memory (34–36), Episodic-Retrieval (37–48), Hormone (49–56).
+OBS_TARGET_EXCLUDED = frozenset({26} | set(range(34, 57)))
+OBS_TARGET_INCLUDED_IDX = tuple(i for i in range(INPUT_SIZE) if i not in OBS_TARGET_EXCLUDED)
+CURIO_TARGET_DIM = len(OBS_TARGET_INCLUDED_IDX) + OBJ_SLOTS * SLOT_FEATS_V2  # 33 + 170 = 203
+CURIO_STAT_MOMENTUM = 0.01  # laufendes per-Dim Mean+Std (EMA)
+
 
 def _ensure_2d(t: torch.Tensor) -> torch.Tensor:
     """Stellt sicher, dass t mindestens 2D ist (batch-dim vorne)."""
@@ -115,6 +154,7 @@ class Brain(nn.Module):
         hidden_size=HIDDEN_SIZE,
         action_size=ACTION_SIZE,
         plasticity: float = 1.0,
+        physics_v2: bool = False,
     ):
         """
         plasticity-Gen (0.3..1.8) skaliert die Lernrate.
@@ -128,8 +168,16 @@ class Brain(nn.Module):
           4: attack
           5: build
           6: research_drive  <-- NEU: Netz lernt selbst wann es forscht
+
+        physics_v2 (Plan 3b): baut ZUSÄTZLICH (und NACH den v1-Modulen — die
+        Init-RNG-Reihenfolge des v1-Pfads bleibt byte-identisch) den
+        Attention-Set-Encoder und die neuen Köpfe; action_size wird 29,
+        GRU-Input 128+64=192. v1-Brains bleiben form-identisch zu heute.
         """
         super().__init__()
+        self.physics_v2 = bool(physics_v2)
+        if self.physics_v2:
+            action_size = ACTION_SIZE_V2
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.action_size = action_size
@@ -139,7 +187,8 @@ class Brain(nn.Module):
             nn.Linear(160, 128),
             nn.Tanh(),
         )
-        self.gru = nn.GRUCell(128, hidden_size)
+        gru_input = 128 + (OBJ_CTX_DIM if self.physics_v2 else 0)
+        self.gru = nn.GRUCell(gru_input, hidden_size)
         self.policy_mean = nn.Linear(hidden_size, action_size)
         self.policy_logstd = nn.Parameter(torch.full((action_size,), -0.45, dtype=torch.float32))
         self.value_head = nn.Linear(hidden_size, 1)
@@ -151,6 +200,24 @@ class Brain(nn.Module):
         )
         self.next_obs_head = nn.Linear(128, input_size)
         self.reward_head = nn.Linear(128, 1)
+        if self.physics_v2:
+            # Set-Encoder (C1): geteilte Slot-Embeddings + 1-Head-Attention,
+            # Query aus dem GRU-Zustand des VORTICKS.
+            self.slot_embed = nn.Sequential(
+                nn.Linear(SLOT_FEATS_V2, SLOT_EMBED_DIM), nn.LayerNorm(SLOT_EMBED_DIM)
+            )
+            self.attn_query = nn.Linear(hidden_size, SLOT_EMBED_DIM)
+            # Slot-Auswahl (C2): Logits = query · W_sel(embed_i) / sqrt(8)
+            self.w_sel = nn.Linear(SLOT_EMBED_DIM, QUERY_DIM, bias=False)
+            # World-Model-Head über die rohen Slot-Features des nächsten Ticks (C4.1)
+            self.next_slots_head = nn.Linear(128, OBJ_SLOTS * SLOT_FEATS_V2)
+            with torch.no_grad():
+                # Optimistischer Prior: +0.2 auf die Verb-Means (Spec C2) —
+                # struktureller Prior, keine Belohnung.
+                self.policy_mean.bias[VERB_SLICE] = VERB_INIT_BIAS
+            # Laufendes per-Dim Mean+Std des Neugier-Vorhersagefehlers (C4.1)
+            self.register_buffer("curio_err_mean", torch.zeros(CURIO_TARGET_DIM))
+            self.register_buffer("curio_err_var", torch.ones(CURIO_TARGET_DIM))
         effective_lr = LEARNING_RATE * max(0.5, min(2.5, plasticity))
         self.optimizer = optim.Adam(self.parameters(), lr=effective_lr)
         self.rollout = RolloutBuffer()
@@ -178,6 +245,9 @@ class Brain(nn.Module):
                 self.named_parameters(), parent_brain.named_parameters()
             ):
                 if child_param.shape != parent_param.shape:
+                    # Spec C5: still überspringen ist beim Architektur-Wechsel
+                    # v1→v2 GEWOLLT — nur form-gleiche Teile (encoder, value,
+                    # v1-Anteile) werden vererbt, neue Module starten frisch.
                     continue
                 mutation = torch.randn_like(child_param) * mutation_scale
                 child_param.copy_(
@@ -215,6 +285,45 @@ class Brain(nn.Module):
             std = torch.exp(log_std)
             value = self.value_head(next_hidden).squeeze(-1)
         return mean, std, value, next_hidden
+
+    # ------------------------------------------------------------------
+    # Physik v2 (Plan 3b): Attention-Set-Encoder + v2-Forward (Spec C1)
+    # ------------------------------------------------------------------
+    def _clamped_logstd(self):
+        """v1: Clamp (−2.0, 0.7) wie heute. v2: neue Köpfe mit Floor −0.8 (C2)."""
+        if not self.physics_v2:
+            return self.policy_logstd.clamp(-2.0, 0.7)
+        alt = self.policy_logstd[:V1_HEAD_DIMS].clamp(-2.0, 0.7)
+        neu = self.policy_logstd[V1_HEAD_DIMS:].clamp(LOGSTD_FLOOR_NEW, 0.7)
+        return torch.cat([alt, neu])
+
+    def _encode_slots(self, slot_feats, slot_mask, hidden_tensor):
+        """embed_i = LayerNorm(Linear(17→32)); q = Linear(96→32)(h_prev);
+        attn = masked_softmax(q·K^T/√32); obj_ctx = attn-Pool ⊕ masked-Max-Pool (64).
+        Alle Slots maskiert ⇒ obj_ctx = 0 und attn = 0 — kein NaN (Spec C1/D3)."""
+        embeds = self.slot_embed(slot_feats)  # (B, 10, 32)
+        any_slot = slot_mask.any(dim=-1, keepdim=True)  # (B, 1)
+        q = self.attn_query(hidden_tensor)  # (B, 32)
+        scores = torch.einsum("bd,bsd->bs", q, embeds) / math.sqrt(SLOT_EMBED_DIM)
+        scores = scores.masked_fill(~slot_mask, -1e9)
+        attn = torch.softmax(scores, dim=-1) * slot_mask.float()  # all-masked ⇒ exakt 0
+        pooled = torch.einsum("bs,bsd->bd", attn, embeds)  # (B, 32)
+        maxed = embeds.masked_fill(~slot_mask.unsqueeze(-1), float("-inf")).max(dim=1).values
+        maxed = torch.where(any_slot, maxed, torch.zeros_like(maxed))
+        pooled = torch.where(any_slot, pooled, torch.zeros_like(pooled))
+        return torch.cat([pooled, maxed], dim=-1), embeds, attn
+
+    def forward_v2(self, obs_tensor, hidden_tensor, slot_feats, slot_mask):
+        """v2-Forward: GRU-Input = concat(encoder(obs_57), obj_ctx) (128+64=192).
+        Die 57 v1-Obs-Dims bleiben unverändert (Spec C1)."""
+        z = self.encoder(obs_tensor)
+        obj_ctx, embeds, attn = self._encode_slots(slot_feats, slot_mask, hidden_tensor)
+        next_hidden = self.gru(torch.cat([z, obj_ctx], dim=-1), hidden_tensor)
+        mean = torch.tanh(self.policy_mean(next_hidden))
+        log_std = self._clamped_logstd().unsqueeze(0).expand_as(mean)
+        std = torch.exp(log_std)
+        value = self.value_head(next_hidden).squeeze(-1)
+        return mean, std, value, next_hidden, embeds, attn
 
     def predict_world(self, hidden_tensor, action_tensor):
         # Beide Tensoren auf 2D normalisieren, damit torch.cat immer funktioniert
