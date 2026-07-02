@@ -319,12 +319,13 @@ def _decay_obj(obj, layer: ObjectLayer) -> None:
         obj.props[IDX2["toxicity"]] = min(TOX_SPOILAGE_CAP, tox + TOX_SPOILAGE_PER_TICK)
 
 
-def tick_decay(layer: ObjectLayer) -> None:
-    """Ein Verwesungs-Tick über alle Boden-Objekte: Masse und nutrition sinken
-    exponentiell, toxicity steigt bis zur Kappe. Verweste Masse fließt
-    bilanziert in ledger['decayed'] (kein Leck). ε-Cull (F4): Objekte unter
-    EPSILON_CULL_MASS_KG werden bilanziert entfernt — unabhängig vom
-    Verwesungs-Gate (auch Winz-Fragmente aus strike/cut)."""
+def tick_decay(layer: ObjectLayer, hands_list=()) -> None:
+    """Ein Verwesungs-Tick über alle Boden-Objekte UND die Hände lebender
+    Agenten (F5: Frischhalte-Loophole zu — Tragen konserviert nicht). Masse und
+    nutrition sinken exponentiell, toxicity steigt bis zur Kappe; verweste
+    Masse fließt bilanziert in ledger['decayed'] (kein Leck). ε-Cull (F4):
+    Objekte unter EPSILON_CULL_MASS_KG werden bilanziert entfernt — am Boden
+    UND aus der Hand, unabhängig vom Verwesungs-Gate."""
     culls = []
     for obj, _pos in layer.all_objects():
         _decay_obj(obj, layer)
@@ -333,3 +334,9 @@ def tick_decay(layer: ObjectLayer) -> None:
     for obj in culls:
         layer.ledger["decayed"] += obj.mass
         layer.remove(obj)
+    for hands in hands_list:
+        for obj in list(hands.held):
+            _decay_obj(obj, layer)
+            if obj.mass < EPSILON_CULL_MASS_KG:
+                layer.ledger["decayed"] += obj.mass
+                hands.release(obj)

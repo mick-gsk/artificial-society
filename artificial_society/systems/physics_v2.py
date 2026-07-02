@@ -18,7 +18,12 @@ class PhysicsV2ObjectsSystem:
         if not getattr(sim, "physics_v2", False):
             return
         layer = sim.world.objects
-        tick_decay(layer)
+        # F5: gehaltene Objekte verwesen mit (Frischhalte-Loophole zu) — die
+        # Hände aller lebenden v2-Agenten laufen durch denselben Verwesungs-Tick.
+        hands_list = [
+            a.hands for a in sim.agents if a.alive and getattr(a, "hands", None) is not None
+        ]
+        tick_decay(layer, hands_list=hands_list)
         tick_spawn(layer, sim.world.biomes)
 
 
