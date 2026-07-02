@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse  # n
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
-from artificial_society.serve.frame import biome_legend  # noqa: E402
+from artificial_society.serve.frame import behavior_legend, biome_legend  # noqa: E402
 from artificial_society.serve.runner import SimulationRunner  # noqa: E402
 from artificial_society.visualization.ecology_graph import build_ecology_figure  # noqa: E402
 
@@ -113,7 +113,13 @@ async def ws(sock: WebSocket) -> None:
     await sock.accept()
     runner.client_connect()
     try:
-        await sock.send_json({"type": "hello", "biomes": biome_legend()})
+        await sock.send_json(
+            {
+                "type": "hello",
+                "biomes": biome_legend(),
+                "behavior": behavior_legend(),
+            }
+        )
         last_tick = -1
         while True:
             await asyncio.sleep(WS_POLL_INTERVAL)
