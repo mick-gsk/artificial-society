@@ -147,6 +147,7 @@ class Simulation:
         self.running = True
         self.tick = 0
         self.agents = []
+        self._initial_population = initial_population
         if load_checkpoint and os.path.exists(CHECKPOINT_PATH):
             self._load_checkpoint()
         else:
@@ -376,7 +377,7 @@ class Simulation:
             print(f"[checkpoint] loaded tick={self.tick}, agents={len(self.agents)}")
         except Exception as e:
             print(f"[checkpoint] load failed: {e} — starting fresh")
-            self.spawn_initial_population(36)
+            self.spawn_initial_population(self._initial_population)
 
     def _collect_stats(self):
         alive = [a for a in self.agents if a.alive]
