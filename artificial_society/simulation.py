@@ -171,6 +171,11 @@ class Simulation:
         child = self.evolution.make_child(parent, x, y, genes=genes, other_parent=other_parent)
         child.hidden_state = child.brain.initial_hidden()
         child.birth_tick = self.tick
+        # Count offspring at actual birth, not at conception (a pregnancy can
+        # abort if the mother dies); a dead father's counter stays frozen.
+        parent.children += 1
+        if other_parent is not None:
+            other_parent.children += 1
         inherit_strength = max(
             0.20, min(0.75, 0.75 - (child.genes["plasticity"] - 0.3) / (1.8 - 0.3) * 0.55)
         )

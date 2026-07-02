@@ -497,7 +497,7 @@ class Agent:
         child = None
         if self.pregnant:
             self.gestation -= 1
-            self.energy -= 0.03
+            self.energy = max(0.0, self.energy - 0.03)
             if self.gestation <= 0 and self.stored_child_genes is not None:
                 child = self.stored_child_genes
                 self.pregnant = False
@@ -640,10 +640,15 @@ class Agent:
         target.endocrine.apply_attack_received()
         if target.health <= 0:
             target.alive = False
+            # Loot is a transfer, not minted energy: it comes out of the victim.
+            # (The corpse later deposits the fixed world-level CORPSE_ENERGY via
+            # remove_dead — cf. the Phase-4 conservation invariant.)
             loot = target.energy * 0.3
+            target.energy -= loot
             self.energy = min(MAX_ENERGY, self.energy + loot)
             return loot
-        self.endocrine.apply_attack_received()
+        # The target got apply_attack_received above; the attacker gets no
+        # hormonal signal (endocrine has no "attack made" response — follow-up).
         return 0.5
 
     def _cooperate(self, agents, mods, tick):
@@ -743,16 +748,17 @@ class Agent:
         self.stored_child_genes = child_genes
         self._last_mate_id = mate.id
         mate._last_mate_id = self.id
-        self.children += 1
-        mate.children += 1
+        # children counters are incremented at actual birth
+        # (simulation.spawn_child_from_parent), not at conception.
         return None
 
-    def _collect_resources(self, world):
+    def _collect_resources(self, world) -> bool:
         x, y = self.pos
         cell = world.get_cell(x, y)
         slot = cell.setdefault("materials", {})
         tool_bonus = 0.20 if getattr(self, "tool", None) == "sharp_stone" else 0.0
 
+        any_collected = False
         for resource, aliases in _RESOURCE_ALIASES.items():
             collected = 0.0
             target_take = 1.0 + tool_bonus
@@ -771,30 +777,35 @@ class Agent:
                     break
             if collected > 0:
                 self.resources[resource] = float(self.resources.get(resource, 0.0)) + collected
+                any_collected = True
+        return any_collected
 
     def _build(self, world):
         x, y = self.pos
         cell = world.get_cell(x, y)
         result = maybe_build_structure(cell, self.resources)
         if not result:
-            return
+            return None
         if isinstance(BUILD_ENERGY_COST, dict):
             cost = float(BUILD_ENERGY_COST.get(result, 10.0))
         else:
             cost = float(BUILD_ENERGY_COST)
         self.energy = max(0.0, self.energy - cost)
+        return result
 
     def _maybe_craft_tool(self):
-        if self.tool is None:
-            stone = self.material_inventory.get("sharp_stone", 0)
-            if stone < 1:
-                stone = self.resources.get("stone", 0)
-            if stone >= 1:
-                self.tool = "sharp_stone"
-                if "sharp_stone" in self.material_inventory:
-                    self.material_inventory["sharp_stone"] -= 1
-                else:
-                    self.resources["stone"] = max(0, self.resources.get("stone", 0) - 1)
+        # Deduct from the pool that satisfied the requirement. (The old code
+        # could qualify via resources["stone"] but debit a fractional
+        # material_inventory["sharp_stone"] — inventory went negative and the
+        # stone was never paid.)
+        if self.tool is not None:
+            return
+        if self.material_inventory.get("sharp_stone", 0) >= 1:
+            self.tool = "sharp_stone"
+            self.material_inventory["sharp_stone"] -= 1
+        elif self.resources.get("stone", 0) >= 1:
+            self.tool = "sharp_stone"
+            self.resources["stone"] = max(0, self.resources.get("stone", 0) - 1)
 
     def _disease_tick(self, world):
         if self.disease_id is None:
@@ -1185,18 +1196,26 @@ class Agent:
                     mode = "forage"
                     self._collect_herbs(world)
 
+            # mode reflects what actually happened, not what was attempted —
+            # it feeds emotional_memory as the stimulus, and phantom stimuli
+            # would teach associations for actions that had no effect.
             if action["cooperate"] > 0.2:
-                reward += self._cooperate(agents, mods, tick)
-                mode = "cooperate"
+                coop_reward = self._cooperate(agents, mods, tick)
+                reward += coop_reward
+                if coop_reward != 0.0:
+                    mode = "cooperate"
 
             if action["attack"] > 0.5 and stage.get("can_attack", True):
-                reward += self._attack(agents, mods)
-                mode = "attack"
+                attack_reward = self._attack(agents, mods)
+                reward += attack_reward
+                if attack_reward != 0.0:
+                    mode = "attack"
 
             if action["build"] > 0.4 and stage.get("can_build", True):
-                self._collect_resources(world)
-                self._build(world)
-                mode = "build"
+                collected = self._collect_resources(world)
+                built = self._build(world)
+                if collected or built:
+                    mode = "build"
 
             self._maybe_craft_tool()
             self._try_remedy()
