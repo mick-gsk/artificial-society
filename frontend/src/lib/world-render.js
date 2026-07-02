@@ -15,7 +15,15 @@
 
 import { Application, Container, Graphics, Sprite, Text, Texture } from "pixi.js";
 
-const STAGE_SCALE = [0.7, 1.0, 1.22]; // child, adult, elder (core dot size)
+import {
+  makeAgentTexture,
+  makeDecorTextures,
+  makeEmoteTextures,
+  makeSleepingTexture,
+} from "./sprites.js";
+
+const STAGE_SCALE = [0.62, 1.0, 1.06]; // child, adult, elder (figure size)
+const ACT_EMOTE = { 1: "forage", 2: "cooperate", 3: "attack", 4: "build", 5: "sleep" };
 const TRAIL_LEN = 8;
 
 const EVENT_COLORS = {
@@ -71,17 +79,21 @@ export class WorldScene {
     this._jitter = null; // per-cell brightness noise so terrain isn't plastic-flat
 
     this.terrainLayer = new Container();
+    this.decorLayer = new Container();
     this.gridLayer = new Container();
     this.structLayer = new Container();
     this.trailLayer = new Graphics();
     this.fxLayer = new Graphics();
     this.glowLayer = new Container();
-    this.coreLayer = new Container();
+    this.figureLayer = new Container();
+    this.emoteLayer = new Container();
     this.eventLayer = new Container();
 
     this.terrainSprites = [];
-    this.agents = new Map(); // id -> {glow, core, fromX..toY, t, trail, act, actAge, tint}
+    this.agents = new Map(); // id -> {glow, figure, emote, fromX..toY, t, trail, act, actAge, tint}
     this._structKey = "";
+    this._decorKey = "";
+    this._biomeArr = null;
 
     this._glowTex = null;
     this._dotTex = null;
@@ -97,12 +109,14 @@ export class WorldScene {
     this.glowLayer.blendMode = "add";
     this.app.stage.addChild(
       this.terrainLayer,
+      this.decorLayer,
       this.gridLayer,
       this.structLayer,
       this.trailLayer,
       this.fxLayer,
       this.glowLayer,
-      this.coreLayer,
+      this.figureLayer,
+      this.emoteLayer,
       this.eventLayer,
     );
     this._glowTex = makeRadialTexture(64, [
@@ -110,23 +124,26 @@ export class WorldScene {
       [0.4, "rgba(255,255,255,0.45)"],
       [1, "rgba(255,255,255,0)"],
     ]);
-    this._dotTex = makeRadialTexture(32, [
-      [0, "rgba(255,255,255,1)"],
-      [0.55, "rgba(255,255,255,1)"],
-      [1, "rgba(255,255,255,0)"],
-    ]);
+    this._figTex = makeAgentTexture();
+    this._figElderTex = makeAgentTexture({ elder: true });
+    this._sleepTex = makeSleepingTexture();
+    this._emoteTex = makeEmoteTextures();
+    this._decorTex = makeDecorTextures();
     this.app.ticker.add((t) => this._tick(t.deltaMS));
     this.app.renderer.on("resize", () => this._rebuildGrid());
   }
 
   setLegend(biomes) {
     this.biomeTones = {};
+    this._biomeNameByIdx = {};
     for (const b of biomes) {
       const pal = BIOME_PALETTE[b.name];
       const dry = pal ? splitRGB(pal.dry) : quietFallback(b.rgb, 0.85);
       const lush = pal ? splitRGB(pal.lush) : quietFallback(b.rgb, 1.15);
       this.biomeTones[b.idx] = { dry, lush, isWater: b.name === "water" || b.name === "ocean" };
+      this._biomeNameByIdx[b.idx] = b.name;
     }
+    this._decorKey = ""; // legend can arrive after the first frames
   }
 
   update(frame) {
@@ -134,11 +151,77 @@ export class WorldScene {
     const resized = !this.grid || this.grid.w !== g.w || this.grid.h !== g.h;
     this.grid = g;
     this.daylight = frame.daylight ?? 1.0;
+    this._biomeArr = frame.cells.biome;
     if (resized) this._rebuildGrid();
     this._paintTerrain(frame.cells);
+    this._buildDecor();
     this._paintStructures(frame.structures ?? []);
     this._syncAgents(frame.agents);
     this._paintEvents(frame.events);
+  }
+
+  // -- terrain decorations (trees, rocks, tufts) — static per world ------------
+
+  _buildDecor() {
+    if (!this.grid || !this._biomeArr || !Object.keys(this.biomeTones).length) return;
+    const { w, h } = this.grid;
+    const key = `${w}x${h}@${this.cellPx}`;
+    if (key === this._decorKey) return;
+    this._decorKey = key;
+    this.decorLayer.removeChildren().forEach((c) => c.destroy());
+
+    // biome idx -> name (via tones' source order isn't kept; rebuild from legend names)
+    const nameByIdx = this._biomeNameByIdx ?? {};
+    const cp = this.cellPx;
+    // Keep sprite counts sane on big grids.
+    const densityScale = Math.min(1, 9000 / (w * h));
+    const rnd = (i, salt) => {
+      const n = Math.sin(i * 127.1 + salt * 269.5) * 43758.5453;
+      return n - Math.floor(n);
+    };
+    const DECOR = {
+      forest: [
+        ["tree", 0.42],
+        ["pine", 0.22],
+        ["tuft", 0.1],
+      ],
+      grassland: [["tuft", 0.3]],
+      mountain: [["rock", 0.26]],
+      desert: [
+        ["cactus", 0.07],
+        ["rock", 0.05],
+      ],
+      swamp: [
+        ["reed", 0.3],
+        ["tree", 0.08],
+      ],
+      tundra: [["rock", 0.1]],
+    };
+    for (let i = 0; i < this._biomeArr.length; i++) {
+      const name = nameByIdx[this._biomeArr[i]];
+      const spec = DECOR[name];
+      if (!spec) continue;
+      const r = rnd(i, 1);
+      let acc = 0;
+      for (const [kind, p] of spec) {
+        acc += p * densityScale;
+        if (r < acc) {
+          const t = this._decorTex[kind];
+          const s = new Sprite(t);
+          s.anchor.set(0.5, 1);
+          const jx = (rnd(i, 2) - 0.5) * 0.6;
+          const jy = rnd(i, 3) * 0.35;
+          s.x = this.offX + ((i % w) + 0.5 + jx) * cp;
+          s.y = this.offY + (Math.floor(i / w) + 0.92 + jy * 0.2) * cp;
+          const hpx = cp * (kind === "tuft" || kind === "reed" ? 0.75 : 1.35);
+          s.scale.set(hpx / t.height);
+          this.decorLayer.addChild(s);
+          break;
+        }
+      }
+    }
+    // paint order: lower rows in front
+    this.decorLayer.children.sort((a, b) => a.y - b.y);
   }
 
   // -- terrain / grid --------------------------------------------------------
@@ -317,14 +400,19 @@ export class WorldScene {
       let rec = this.agents.get(a.id);
       if (!rec) {
         const glow = new Sprite(this._glowTex);
-        const core = new Sprite(this._dotTex);
+        const figure = new Sprite(this._figTex);
+        const emote = new Sprite(this._emoteTex.forage);
         glow.anchor.set(0.5);
-        core.anchor.set(0.5);
+        figure.anchor.set(0.5, 0.85); // feet on the cell
+        emote.anchor.set(0.5, 1);
+        emote.visible = false;
         this.glowLayer.addChild(glow);
-        this.coreLayer.addChild(core);
+        this.figureLayer.addChild(figure);
+        this.emoteLayer.addChild(emote);
         rec = {
           glow,
-          core,
+          figure,
+          emote,
           fromX: a.x,
           fromY: a.y,
           toX: a.x,
@@ -333,6 +421,7 @@ export class WorldScene {
           trail: [],
           act: 0,
           actAge: 999,
+          facing: 1,
         };
         this.agents.set(a.id, rec);
       } else {
@@ -343,6 +432,8 @@ export class WorldScene {
         rec.t = 0;
         rec.trail.push([a.x, a.y]);
         if (rec.trail.length > TRAIL_LEN) rec.trail.shift();
+        if (a.x > rec.fromX) rec.facing = 1;
+        else if (a.x < rec.fromX) rec.facing = -1;
       }
       if ((a.act ?? 0) !== rec.act) {
         rec.act = a.act ?? 0;
@@ -351,22 +442,43 @@ export class WorldScene {
       const tint = blip(a.col);
       rec.tint = tint;
       rec.energy = a.e;
-      rec.glow.tint = tint;
-      rec.core.tint = brighten(tint);
       const cp = this.cellPx;
       const sleeping = rec.act === ACT.SLEEP;
-      rec.glow.scale.set((cp * 2.4) / 64);
-      rec.glow.alpha = sleeping ? 0.18 : 0.55;
-      rec.core.alpha = sleeping ? 0.45 : 1.0;
-      rec.core.scale.set(((STAGE_SCALE[a.st] ?? 1.0) * (cp * 0.85)) / 32);
+
+      // body: lying when asleep, elder crown for elders, tribe tint, facing flip
+      const tex = sleeping ? this._sleepTex : a.st === 2 ? this._figElderTex : this._figTex;
+      if (rec.figure.texture !== tex) rec.figure.texture = tex;
+      rec.figure.tint = tint;
+      const hpx = (STAGE_SCALE[a.st] ?? 1.0) * cp * (sleeping ? 0.9 : 1.45);
+      rec.figure.scale.set(hpx / tex.height);
+      rec.figure.scale.x *= rec.facing;
+      rec.figure.alpha = sleeping ? 0.75 : 1.0;
+
+      // soft ground glow keeps agents findable at night
+      rec.glow.tint = tint;
+      rec.glow.scale.set((cp * 1.9) / 64);
+      rec.glow.alpha = sleeping ? 0.08 : 0.16 + 0.12 * (1 - this.daylight);
+
+      // emote bubble above the head while acting
+      const emoteName = ACT_EMOTE[rec.act];
+      if (emoteName) {
+        rec.emote.texture = this._emoteTex[emoteName];
+        rec.emote.visible = true;
+        rec.emote.scale.set((cp * 0.85) / 12);
+      } else {
+        rec.emote.visible = false;
+      }
     }
     for (const [id, rec] of this.agents) {
       if (!seen.has(id)) {
         rec.glow.destroy();
-        rec.core.destroy();
+        rec.figure.destroy();
+        rec.emote.destroy();
         this.agents.delete(id);
       }
     }
+    // lower agents render in front (simple painter's order)
+    this.figureLayer.children.sort((a, b) => a.y - b.y);
   }
 
   // -- events ----------------------------------------------------------------
@@ -415,59 +527,41 @@ export class WorldScene {
       const y = rec.fromY + (rec.toY - rec.fromY) * rec.t;
       rec._px = px(x);
       rec._py = py(y);
-      rec.glow.x = rec.core.x = rec._px;
-      rec.glow.y = rec.core.y = rec._py;
 
-      // motion trail
+      // walking bob while between cells; standing still otherwise
+      const moving = rec.t < 1 && (rec.fromX !== rec.toX || rec.fromY !== rec.toY);
+      const bob = moving ? Math.abs(Math.sin(this._pulse * 14 + rec._px)) * cp * 0.08 : 0;
+      rec.glow.x = rec._px;
+      rec.glow.y = rec._py + cp * 0.2;
+      rec.figure.x = rec._px;
+      rec.figure.y = rec._py + cp * 0.35 - bob;
+
+      // emote floats above the head with a gentle bob
+      if (rec.emote.visible) {
+        rec.emote.x = rec._px;
+        rec.emote.y =
+          rec.figure.y - rec.figure.height * 0.95 - cp * 0.1 - Math.sin(this._pulse * 3) * cp * 0.06;
+      }
+
+      // motion trail (footsteps of the recent path)
       const pts = rec.trail;
       if (pts.length > 1 && rec.act !== ACT.SLEEP) {
         for (let i = 1; i < pts.length; i++) {
           this.trailLayer
             .moveTo(px(pts[i - 1][0]), py(pts[i - 1][1]))
             .lineTo(px(pts[i][0]), py(pts[i][1]))
-            .stroke({ width: 1, color: rec.tint, alpha: (i / pts.length) * 0.35 });
+            .stroke({ width: 1, color: rec.tint, alpha: (i / pts.length) * 0.22 });
         }
-        const last = pts[pts.length - 1];
-        this.trailLayer
-          .moveTo(px(last[0]), py(last[1]))
-          .lineTo(px(x), py(y))
-          .stroke({ width: 1, color: rec.tint, alpha: 0.4 });
       }
 
-      // --- action verbs -----------------------------------------------------
-      const col = ACT_COLORS[rec.act];
-      if (rec.act === ACT.FORAGE) {
-        // gentle gathering pulse on the cell
-        const p = 0.5 + 0.5 * Math.sin(this._pulse * 5 + rec._px);
-        this.fxLayer
-          .circle(rec._px, rec._py, cp * (0.55 + 0.2 * p))
-          .stroke({ width: 1.5, color: col, alpha: 0.35 + 0.4 * p });
-      } else if (rec.act === ACT.ATTACK) {
-        // sharp expanding burst, retriggering while the fight lasts
+      // attack stays dramatic beyond the emote: sharp expanding burst
+      if (rec.act === ACT.ATTACK) {
         const t = rec.actAge % 0.6;
         const rr = cp * (0.4 + t * 2.2);
+        const col = ACT_COLORS[ACT.ATTACK];
         this.fxLayer
           .circle(rec._px, rec._py, rr)
           .stroke({ width: 2, color: col, alpha: Math.max(0, 0.85 - t * 1.4) });
-        this.fxLayer
-          .moveTo(rec._px - rr, rec._py)
-          .lineTo(rec._px + rr, rec._py)
-          .moveTo(rec._px, rec._py - rr)
-          .lineTo(rec._px, rec._py + rr)
-          .stroke({ width: 1, color: col, alpha: Math.max(0, 0.5 - t * 0.9) });
-      } else if (rec.act === ACT.BUILD) {
-        // rising construction square
-        const t = rec.actAge % 0.9;
-        const rr = cp * (0.35 + t * 0.8);
-        this.fxLayer
-          .rect(rec._px - rr, rec._py - rr, rr * 2, rr * 2)
-          .stroke({ width: 1.5, color: col, alpha: Math.max(0, 0.8 - t) });
-      } else if (rec.act === ACT.SLEEP) {
-        // drifting Z-dots above the sleeper
-        const t = (this._pulse * 0.6 + rec._px * 0.01) % 1;
-        this.fxLayer
-          .circle(rec._px + cp * 0.35, rec._py - cp * (0.5 + t * 0.7), Math.max(1, cp * 0.07 * (1 - t) + 0.5))
-          .fill({ color: ACT_COLORS[ACT.SLEEP], alpha: 0.7 * (1 - t) });
       }
     }
 

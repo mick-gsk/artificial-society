@@ -3,11 +3,25 @@
   import Controls from "./components/Controls.svelte";
   import Cards from "./components/Cards.svelte";
   import World from "./components/World.svelte";
+  import Feed from "./components/Feed.svelte";
+  import { createFeedDiffer } from "./lib/feed.js";
 
   // Aggregate run status + device come from a light REST poll; the live field
   // and stat values come from WebSocket frames.
   let snap = $state({ status: "idle", device: null, stats: {} });
   let frame = $state(null);
+  let feed = $state([]);
+  const differ = createFeedDiffer();
+  let feedSeq = 0;
+
+  function onFrame(f) {
+    frame = f;
+    const fresh = differ(f);
+    if (fresh.length) {
+      for (const e of fresh) e.key = feedSeq++;
+      feed = [...fresh.reverse(), ...feed].slice(0, 80);
+    }
+  }
 
   onMount(() => {
     const poll = async () => {
@@ -40,5 +54,29 @@
 </header>
 
 <Controls {snap} />
-<World onFrame={(f) => (frame = f)} />
+<div class="stage">
+  <World {onFrame} />
+  <Feed entries={feed} />
+</div>
 <Cards {stats} />
+
+<style>
+  .stage {
+    display: flex;
+    gap: 12px;
+    align-items: stretch;
+  }
+  .stage :global(.viewport) {
+    flex: 1;
+    min-width: 0;
+  }
+  @media (max-width: 900px) {
+    .stage {
+      flex-direction: column;
+    }
+    .stage :global(.feed) {
+      width: 100%;
+      max-height: 220px;
+    }
+  }
+</style>
