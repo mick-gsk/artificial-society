@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-VALID_KINDS = ("dim", "material", "process", "body")
+VALID_KINDS = ("dim", "material", "process", "body", "spawn", "action")
 
 
 @dataclass(frozen=True)
@@ -129,6 +129,8 @@ _KIND_TITLES = {
     "material": "Startmaterialien",
     "process": "Prozesse",
     "body": "Körper-Parameter",
+    "spawn": "Spawn-Parameter (Vorkommen)",
+    "action": "Aktions- & Kopplungs-Parameter",
 }
 
 _DOC_HEADER = (

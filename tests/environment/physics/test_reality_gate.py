@@ -69,3 +69,29 @@ def test_kalibrierung_doc_is_in_sync():
     assert doc.read_text(encoding="utf-8") == render_markdown(), (
         "kalibrierung.md ist veraltet — scripts/gen_kalibrierung.py neu laufen lassen"
     )
+
+
+def test_neue_kinds_spawn_und_action_sind_gueltig():
+    """B2/B4: Spawn- und Aktions-Konstanten bekommen eigene Kalibrierungs-Kinds."""
+    from artificial_society.environment.physics.calibration import VALID_KINDS, cal
+
+    assert "spawn" in VALID_KINDS
+    assert "action" in VALID_KINDS
+    # cal() akzeptiert die neuen Kinds (Aufräumen: Test-Eintrag wieder entfernen,
+    # sonst schlägt die Orphan-Prüfung späterer Tasks im selben Prozess an).
+    try:
+        cal("spawn", "_test_eintrag", "Test-Anker", "Test-Quelle")
+        assert ("spawn", "_test_eintrag") in CALIBRATION
+    finally:
+        CALIBRATION.pop(("spawn", "_test_eintrag"), None)
+
+
+def test_body_mass_default_ist_kalibriert():
+    from artificial_society.environment.physics.body import (
+        BODY_MASS_DEFAULT_KG,
+        CALIBRATED_BODY_PARAMS,
+    )
+
+    assert BODY_MASS_DEFAULT_KG == 70.0
+    assert "body_mass" in CALIBRATED_BODY_PARAMS
+    _assert_calibrated("body", "body_mass")

@@ -48,7 +48,18 @@
 
 | Name | Realer Anker | Quelle |
 |---|---|---|
+| `body_mass` | Default-Körpermasse 70 kg (erwachsener Mensch, Referenzperson); bestimmt Tragkapazität (~30 % davon) und die Kadaver-Masse beim Tod (Spec B3/B5: 70-kg-Kadaver ≈ 1250 Sim-Energie ≈ 5× MAX_ENERGY) | Anthropometrie: ICRP-Referenzperson ~70 kg |
 | `carry_capacity` | Dauer-Tragfähigkeit ≈ 30 % des Körpergewichts (Trekking-Richtwert 20–25 %, militärisches Marschgepäck 30–45 % mit Ermüdungsfolgen); skaliert mit Kraft, gedämpft durch Ermüdung | Ergonomie-/Militär-Richtwerte zum Lastentragen |
 | `fatigue` | Ermüdung/Erholung, Größenordnungen: ~200 kräftige Schläge bis deutliche Erschöpfung (geübte Steinschläger arbeiten stundenlang); Dauerlast an der Traggrenze über Hunderte Ticks tragbar; Erholung in Ruhe über Dutzende Ticks. [Zeitskala Sim-Tick↔Realzeit bewusst qualitativ, bis die Sim-Integration sie fixiert] | Arbeitsphysiologie (Ermüdung/Erholung beim Lastentragen und repetitiver Arbeit) |
 | `hands` | Zwei Hände, je Hand ein gehaltenes Objekt; Gesamtlast innerhalb der Tragkapazität. Ohne erfundene Behälter ist Transport damit auf 2 Objekte pro Weg begrenzt — der reale Druck, aus dem Behälter/Bündel entstanden sind | Menschliche Anatomie; Archäologie früher Trage-/Behältertechnik |
 | `strike_energy` | Schlagenergie eines Handschlags mit Werkzeugstein 5–50 J (deckungsgleich mit dem Anker des Prozesses strike: kräftiger Handschlag 10–50 J); skaliert mit Kraft, gedämpft durch Ermüdung | Biomechanik des Hammerschlags; experimentelle Archäologie |
+
+## Spawn-Parameter (Vorkommen)
+
+| Name | Realer Anker | Quelle |
+|---|---|---|
+
+## Aktions- & Kopplungs-Parameter
+
+| Name | Realer Anker | Quelle |
+|---|---|---|
