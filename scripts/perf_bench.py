@@ -115,6 +115,26 @@ def micro_gpu() -> None:
     )
 
 
+def bench_scale() -> None:
+    """Target-scale baseline for the GPU-resident-engine design note (Tier 5).
+
+    Fixed configurations — rerun after the engine lands for the before/after contract
+    (docs/superpowers/specs/2026-07-02-gpu-resident-engine-design-note.md).
+    """
+    for pop, gw, gh, warm, ticks in ((36, 60, 40, 5, 60), (8, 200, 200, 2, 12), (200, 200, 200, 2, 12), (500, 200, 200, 1, 8)):
+        sim = build(pop, gw, gh)
+        for _ in range(warm):
+            sim.step()
+        t0 = time.perf_counter()
+        for _ in range(ticks):
+            sim.step()
+        ms = (time.perf_counter() - t0) / ticks * 1000.0
+        print(
+            f"SCALE pop={pop:>4} grid={gw}x{gh:<4} ({gw * gh:>6} cells): {ms:8.1f} ms/tick  "
+            f"{1000 / ms:6.2f} ticks/s  100k ticks = {ms * 100_000 / 3_600_000.0:6.2f} h"
+        )
+
+
 def main() -> None:
     mode = sys.argv[1] if len(sys.argv) > 1 else "sim"
     print(f"torch {torch.__version__}  cuda_available={torch.cuda.is_available()}  mode={mode}")
@@ -128,8 +148,10 @@ def main() -> None:
         profile(8)
     elif mode == "gpu":
         micro_gpu()
+    elif mode == "scale":
+        bench_scale()
     else:
-        print(f"unknown mode {mode!r}; use 'sim' or 'gpu'")
+        print(f"unknown mode {mode!r}; use 'sim', 'gpu' or 'scale'")
 
 
 if __name__ == "__main__":

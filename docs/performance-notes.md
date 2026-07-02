@@ -92,6 +92,20 @@ Run all agents' brains in one batched call instead of a Python loop of batch-1 c
 over stacked per-agent params. ~21× fewer forward calls; cuts the 1.86 ms/agent term. Do this on
 **CPU** (Tier 2). Only meaningful once Tier 1 has removed the world bottleneck.
 
+### Tier 5 — GPU-resident big-world engine *(decided 2026-07-02, scheduled after capability slice 1)*
+
+The owner's target scale (hundreds of agents, 200×200+ grid, 100k+ tick runs) is out of reach
+even for Tiers 1-4 (~6-10×). Decision: a torch-resident hybrid engine — world fields as GPU
+tensors (regrowth = elementwise ops, diffusion = convolution), agents as struct-of-arrays,
+brains in one vmapped batched pass, event-driven social systems stay Python. Own golden
+baseline (GPU numerics ≠ v1 bytes). Full rationale, baseline table and acceptance criteria:
+[`docs/superpowers/specs/2026-07-02-gpu-resident-engine-design-note.md`](superpowers/specs/2026-07-02-gpu-resident-engine-design-note.md).
+
+**Target-scale baseline (measured 2026-07-02, GPU-PC CPU path, main @ 7b69f8e,
+`perf_bench.py scale`):** 36 @ 60×40 = 137.5 ms/tick; 8 @ 200×200 = 1421.6; 200 @ 200×200 =
+1725.3; 500 @ 200×200 = **2104.8 ms/tick (100k ticks ≈ 58.5 h)**. World term ≈ 1.41 s/tick at
+the target grid (linear in cell count), brains ≈ 1.4 ms/agent.
+
 ### Process
 
 Profile before/after every change (`scripts/perf_bench.py`). Tier 1 and Tier 2 change numerics →

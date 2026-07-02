@@ -218,6 +218,7 @@ Tasks A–K are ✅ done (Phases 2, 4 and 5 above). Remaining + new backlog:
 | N | Rebase + integrate live web viz (`feat/infra-live-viz`, predates Phase 1b+) | infra | neutral | — |
 | O | **Capability slice 1: tools/crafting — Physik v2 Kern** (Spec + Plan 2026-07-02) | environment | neutral | — |
 | P | **Capability slice 4 (thin): intrinsic motivation & credit horizon** (§4b) | agents | regen | — |
+| Q | **GPU-resident big-world engine** (Tier 5; target 200-1000 agents / 200×200+ / 100k+ ticks; design note 2026-07-02) | core | own baseline | O (ports v2 physics) |
 
 Branch naming: `feat/<lane>-<topic>` (or `core/<topic>`). One worktree per branch.
 
