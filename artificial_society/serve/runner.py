@@ -65,6 +65,12 @@ class SimulationRunner:
         self._last_frame: dict[str, Any] | None = None
         self._ws_clients = 0
         self._last_frame_t = 0.0
+        # Connection-scoped inspection requests: WS token -> agent id the client
+        # wants a deep ``detail`` blob for. Guarded by ``self._lock``; the worker
+        # reads the union of values once per tick to drive ``build_frame``.
+        # Deliberately *not* reset by ``start()`` so registrations survive a run
+        # restart (a client keeps inspecting agent N across a fresh run).
+        self._inspect: dict[int, int] = {}
 
     # -- introspection ------------------------------------------------------
 
@@ -113,6 +119,21 @@ class SimulationRunner:
     def client_disconnect(self) -> None:
         with self._lock:
             self._ws_clients = max(0, self._ws_clients - 1)
+
+    def set_inspect(self, token: int, agent_id: int | None) -> None:
+        """Register (or, with ``agent_id=None``, clear) the agent one WS client
+        is inspecting. The worker attaches a ``detail`` blob for every id in the
+        union of all clients' registrations on the next frame it builds."""
+        with self._lock:
+            if agent_id is None:
+                self._inspect.pop(token, None)
+            else:
+                self._inspect[token] = int(agent_id)
+
+    def clear_client(self, token: int) -> None:
+        """Drop a client's inspection registration on disconnect (idempotent)."""
+        with self._lock:
+            self._inspect.pop(token, None)
 
     # -- control ------------------------------------------------------------
 
@@ -175,11 +196,16 @@ class SimulationRunner:
                     self._last_stats = dict(sim.stats.last)
                     self._history = {k: list(getattr(sim.stats, k, [])) for k in HISTORY_KEYS}
                     want_frame = self._ws_clients > 0
+                    # Snapshot the inspect union *inside* the lock (a plain copy);
+                    # build_frame then runs lock-free — the lock is never held
+                    # across it, so the event loop's set_inspect never blocks on
+                    # the sim thread and vice versa.
+                    inspect_ids = frozenset(self._inspect.values())
                 # Build a live frame at most every FRAME_INTERVAL, and only when a
                 # dashboard is watching. build_frame is read-only and only this
                 # thread touches the sim, so it is safe outside the lock.
                 if want_frame and (time.monotonic() - self._last_frame_t) >= FRAME_INTERVAL:
-                    frame = build_frame(sim)
+                    frame = build_frame(sim, inspect_ids)
                     with self._lock:
                         self._last_frame = frame
                         self._last_frame_t = time.monotonic()

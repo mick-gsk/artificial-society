@@ -71,3 +71,52 @@ def test_failed_run_sets_status_without_killing_runner(monkeypatch):
 def test_device_info_reports_a_type():
     info = SimulationRunner().device_info()
     assert info["type"] in {"cuda", "cpu", "unknown"}
+
+
+def _inspect_union(r):
+    """The set of agent ids the worker would pass to build_frame right now."""
+    with r._lock:
+        return frozenset(r._inspect.values())
+
+
+def test_inspect_registry_union_and_clear():
+    r = SimulationRunner()
+    assert _inspect_union(r) == frozenset()
+
+    r.set_inspect(1, 5)
+    r.set_inspect(2, 9)
+    assert _inspect_union(r) == {5, 9}
+
+    # None removes just that token's entry, leaving the other client's intact.
+    r.set_inspect(1, None)
+    assert _inspect_union(r) == {9}
+
+    # clear_client (disconnect) drops the remaining registration.
+    r.clear_client(2)
+    assert _inspect_union(r) == frozenset()
+
+    # clear_client is idempotent — a second call on an unknown token is a no-op.
+    r.clear_client(2)
+    r.clear_client(999)
+    assert _inspect_union(r) == frozenset()
+
+
+def test_two_clients_inspecting_same_agent_collapse_in_union():
+    r = SimulationRunner()
+    r.set_inspect(1, 7)
+    r.set_inspect(2, 7)
+    assert _inspect_union(r) == {7}
+    # one client leaving still leaves the agent inspected by the other
+    r.clear_client(1)
+    assert _inspect_union(r) == {7}
+
+
+def test_start_preserves_inspect_registrations():
+    r = SimulationRunner()
+    r.set_inspect(1, 3)
+    r.set_inspect(2, 4)
+    # A fresh run (start clears run state) must NOT wipe connection-scoped
+    # inspect registrations — a client keeps inspecting across a run restart.
+    r.start({**SMALL, "ticks": 3})
+    assert _wait(lambda: r.snapshot()["status"] == "finished"), r.snapshot()
+    assert _inspect_union(r) == {3, 4}

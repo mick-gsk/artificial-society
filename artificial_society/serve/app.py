@@ -10,7 +10,9 @@ Run with ``python -m artificial_society.serve`` (see ``__main__``).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
+import itertools
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +34,14 @@ from artificial_society.visualization.ecology_graph import build_ecology_figure 
 WS_POLL_INTERVAL = 0.05
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# Monotonic, per-process connection tokens for the WS back-channel. A counter is
+# strictly collision-free for the process lifetime, unlike ``id(ws)`` which can be
+# recycled once a socket is garbage-collected — a reused address could otherwise
+# leak a stale inspect registration into a fresh connection. ``next()`` on an
+# ``itertools.count`` is atomic under the GIL, and WS handlers run on the single
+# event-loop thread anyway, so no lock is needed.
+_ws_tokens = itertools.count()
 
 app = FastAPI(title="Artificial Society Dashboard")
 runner = SimulationRunner()
@@ -101,17 +111,44 @@ def graph_png() -> Response:
     return StreamingResponse(buf, media_type="image/png")
 
 
+async def _ws_reader(sock: WebSocket, token: int) -> None:
+    """Back-channel: read client requests and hand them to the runner.
+
+    Runs as a sibling task to the sender loop. The only understood message today
+    is ``{"type": "inspect", "id": <int|null>}`` — ``id`` selects the agent the
+    client wants a deep ``detail`` blob for on the next frame, ``null`` clears it.
+    Unknown types are silently ignored (forward-compat: e.g. a future
+    ``"layers"`` message). Any receive/decode error (client disconnect, malformed
+    JSON) simply ends this task; it never propagates to kill the sender.
+    """
+    try:
+        while True:
+            msg = await sock.receive_json()
+            if not isinstance(msg, dict):
+                continue  # arrays/scalars aren't commands — ignore
+            if msg.get("type") == "inspect":
+                runner.set_inspect(token, msg.get("id"))
+            # other types: forward-compat no-op
+    except Exception:
+        # WebSocketDisconnect, JSONDecodeError, RuntimeError on a closed socket —
+        # end the reader quietly; the finally in the handler does the cleanup.
+        pass
+
+
 @app.websocket("/ws")
 async def ws(sock: WebSocket) -> None:
     """Push live frames to the dashboard ~20 Hz while connected.
 
-    The endpoint only reads the runner's pre-built ``_last_frame`` (never the sim
-    directly), so it never races the worker thread's lock-free ``sim.step``. A
+    The sender loop only reads the runner's pre-built ``_last_frame`` (never the
+    sim directly), so it never races the worker thread's lock-free ``sim.step``. A
     ``hello`` message carries the stable biome legend once; ``frame`` messages
-    follow, deduplicated by tick.
+    follow, deduplicated by tick. A sibling ``_ws_reader`` task carries the
+    back-channel (inspect requests) so the sender cadence stays untouched.
     """
     await sock.accept()
+    token = next(_ws_tokens)
     runner.client_connect()
+    reader = asyncio.create_task(_ws_reader(sock, token))
     try:
         await sock.send_json(
             {
@@ -130,6 +167,15 @@ async def ws(sock: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        # Cancel the back-channel task and await it so it fully unwinds before we
+        # drop the registration — no leak even if the client aborts mid-send. The
+        # reader catches Exception itself; the CancelledError from .cancel() (not
+        # an Exception in 3.9) surfaces here and is suppressed alongside any late
+        # error that raced the cancel.
+        reader.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await reader
+        runner.clear_client(token)
         runner.client_disconnect()
 
 
