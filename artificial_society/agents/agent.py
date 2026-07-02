@@ -170,7 +170,10 @@ def ensure_fields(agent) -> None:
     if not hasattr(agent, "_inventory_cap"):
         agent._inventory_cap = 24
     if not hasattr(agent, "_cached_nearby_agents"):
-        agent._cached_nearby_agents = []
+        # None = "no snapshot yet"; update() resets this every tick. (The old []
+        # default was a permanently-valid empty cache that silently disabled
+        # social learning, trade and ToM for the agent's whole life.)
+        agent._cached_nearby_agents = None
     if not hasattr(agent, "_cached_nearby_radius"):
         agent._cached_nearby_radius = 2
     if not hasattr(agent, "_disease_immunity"):
@@ -368,6 +371,12 @@ class Agent:
         return self.pos[1]
 
     def _nearby_cached(self, agents, radius=2):
+        """Per-tick neighbor snapshot, lazily computed by the first consumer.
+
+        update() invalidates the snapshot at the start of every tick; all
+        consumers (social_learning, economy.maybe_trade, the ToM loop) run
+        after primitive_move, so they share one post-move snapshot per tick.
+        """
         cached = getattr(self, "_cached_nearby_agents", None)
         cached_radius = getattr(self, "_cached_nearby_radius", None)
         if cached is not None and cached_radius == radius:
@@ -1050,6 +1059,9 @@ class Agent:
             return None
 
         ensure_fields(self)
+        # One neighbor snapshot per tick: drop last tick's snapshot; the first
+        # consumer after primitive_move recomputes it (see _nearby_cached).
+        self._cached_nearby_agents = None
 
         self.endocrine.update(self, world)
         mods = self.endocrine.modifiers()
@@ -1092,7 +1104,6 @@ class Agent:
             self.alive = False
             return None
 
-        nearby_agents = self._nearby_cached(agents, 2)
         features = self.local_features(world, agents)
         if self.hidden_state is None:
             self.hidden_state = self.brain.initial_hidden()
@@ -1194,37 +1205,40 @@ class Agent:
         self.last_action_mode = mode
         reward += territory_reward_for_agent(self, world)
 
-        if stage.get("can_reproduce", True):
+        # Sleep gates every *active* behaviour below (reproduction, social
+        # learning, invention, cooking, trade); gestation keeps progressing and
+        # perception (_observe_tokens, ToM) stays on — sleeping is not a coma.
+        if stage.get("can_reproduce", True) and not self.is_sleeping:
             self._try_reproduce(agents)
         child_genes = self.progress_pregnancy()
 
-        if tick % 3 == 0:
+        if tick % 3 == 0 and not self.is_sleeping:
             reward += social_learning_step(self, agents, tick)
 
-        if self._need_inv_cooldown <= 0:
+        if self._need_inv_cooldown > 0:
+            self._need_inv_cooldown -= 1
+        elif not self.is_sleeping:
             compute_need_vector(self, current_cell)
             inv_result = agent_invent_from_need(self, world, *self.pos, tick)
             if inv_result:
                 reward += 0.5
                 self.endocrine.apply_discovery(1.0)
             self._need_inv_cooldown = NEED_INVENTION_INTERVAL
-        else:
-            self._need_inv_cooldown -= 1
 
         inv_prob = INVENTION_BASE_PROB + INVENTION_CURIOSITY_MULT * self.genes.get("curiosity", 0.5)
-        if tick % 3 == 0 and random.random() < inv_prob:
+        if tick % 3 == 0 and not self.is_sleeping and random.random() < inv_prob:
             invented = agent_try_invention(self, world, *self.pos)
             if invented:
                 reward += 1.0
                 self.endocrine.apply_discovery(1.0)
 
-        if tick % 4 == 0 and random.random() < 0.18:
+        if tick % 4 == 0 and not self.is_sleeping and random.random() < 0.18:
             cooked = agent_try_cook(self, world, *self.pos)
             if cooked:
                 reward += 0.3
                 self.endocrine.apply_substance("cooked_meat", 1.0)
 
-        if economy is not None:
+        if economy is not None and not self.is_sleeping:
             economy.maybe_trade(self, agents)
 
         next_features_raw = self.local_features(world, agents)
@@ -1268,7 +1282,7 @@ class Agent:
         self.last_reward = effective_reward
         self.reproduction_cooldown = max(0, self.reproduction_cooldown - 1)
 
-        for other in nearby_agents:
+        for other in self._nearby_cached(agents, 2):
             self.tom.observe_agent(other, tick)
 
         h = self.endocrine.h
