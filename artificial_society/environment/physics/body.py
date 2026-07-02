@@ -9,7 +9,7 @@ Lern-Kopplungs-Plan.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .calibration import cal
 
@@ -24,7 +24,7 @@ CARRY_FATIGUE_PER_TICK_AT_CAPACITY = (
 )
 
 # Vom Realitäts-Gate geprüfte Körper-Parameter (wächst mit Tasks 2/3).
-CALIBRATED_BODY_PARAMS = ("carry_capacity", "strike_energy", "fatigue")
+CALIBRATED_BODY_PARAMS = ("carry_capacity", "strike_energy", "fatigue", "hands")
 
 
 @dataclass
@@ -74,6 +74,34 @@ class Body:
         self.fatigue = min(1.0, self.fatigue + CARRY_FATIGUE_PER_TICK_AT_CAPACITY * load)
 
 
+MAX_HELD = 2  # zwei Hände; je Hand ein gehaltenes Objekt
+
+
+@dataclass
+class Hands:
+    """Was der Körper ohne erfundene Behälter transportieren kann: höchstens
+    zwei gehaltene Objekte, deren Gesamtmasse in die Tragkapazität passt."""
+
+    held: list = field(default_factory=list)
+
+    def carried_mass_kg(self) -> float:
+        return sum(obj.mass for obj in self.held)
+
+    def can_grasp(self, obj, body: Body) -> bool:
+        if len(self.held) >= MAX_HELD:
+            return False
+        return self.carried_mass_kg() + obj.mass <= body.carry_capacity_kg()
+
+    def grasp(self, obj, body: Body) -> bool:
+        if not self.can_grasp(obj, body):
+            return False
+        self.held.append(obj)
+        return True
+
+    def release(self, obj) -> None:
+        self.held.remove(obj)
+
+
 cal(
     "body",
     "carry_capacity",
@@ -98,4 +126,12 @@ cal(
     "Hunderte Ticks tragbar; Erholung in Ruhe über Dutzende Ticks. [Zeitskala "
     "Sim-Tick↔Realzeit bewusst qualitativ, bis die Sim-Integration sie fixiert]",
     "Arbeitsphysiologie (Ermüdung/Erholung beim Lastentragen und repetitiver Arbeit)",
+)
+cal(
+    "body",
+    "hands",
+    "Zwei Hände, je Hand ein gehaltenes Objekt; Gesamtlast innerhalb der Tragkapazität. "
+    "Ohne erfundene Behälter ist Transport damit auf 2 Objekte pro Weg begrenzt — der "
+    "reale Druck, aus dem Behälter/Bündel entstanden sind",
+    "Menschliche Anatomie; Archäologie früher Trage-/Behältertechnik",
 )
