@@ -21,18 +21,22 @@
 import { Application, Container, Graphics, Sprite, Texture } from "pixi.js";
 
 import {
-  makeAgentTextures,
   makeDecorTextures,
   makeEmoteTextures,
   makeItemTextures,
-  makeSleepingTexture,
   makeStructureTextures,
   makeToolTextures,
 } from "./sprites.js";
 
+import { ACT_KEY, buildFigureAtlas } from "./figures.js";
+
 import { buildTerrainMesh, makeDataTexture, makeLutTexture } from "./terrain-shader.js";
 
 const STAGE_SCALE = [0.62, 1.0, 1.06]; // child, adult, elder (figure size)
+const STAGE_KEY = ["child", "adult", "elder"]; // st index → atlas stage key
+// Agents never shrink below this many on-screen px tall — figures stay legible
+// as points on huge grids / when zoomed out. Applied AFTER zoom in _tick.
+const MIN_AGENT_PX = 14;
 const ACT_EMOTE = { 1: "forage", 2: "cooperate", 3: "attack", 4: "build", 5: "sleep" };
 const TRAIL_LEN = 8;
 const ZOOM_MIN = 1;
@@ -189,9 +193,11 @@ export class WorldScene {
       [0.4, "rgba(255,255,255,0.45)"],
       [1, "rgba(255,255,255,0)"],
     ]);
-    this._figSet = makeAgentTextures();
-    this._figElderSet = makeAgentTextures({ elder: true });
-    this._sleepTex = makeSleepingTexture();
+    // 20×28 animated figure atlas: 17 poses × 3 stages in one texture source,
+    // sliced into per-frame Textures so every agent batches in one draw call.
+    // frames[stage][actKey] = [Texture,...]; hand[...] = matching hand anchors
+    // (figure-local px); anim[actKey] = {durMs, n}. See figures.js.
+    this._atlas = buildFigureAtlas();
     this._emoteTex = makeEmoteTextures();
     this._decorTex = makeDecorTextures();
     this._itemTex = makeItemTextures();
@@ -282,12 +288,15 @@ export class WorldScene {
     const wx = (sx - this.worldRoot.x) / this._zoom;
     const wy = (sy - this.worldRoot.y) / this._zoom;
     let best = null;
-    let bestD = this.cellPx * this.cellPx;
+    // hit radius tracks the on-screen figure size (rec.hpx already respects the
+    // MIN_AGENT_PX floor), so click-selection keeps working when zoomed out.
+    let bestD = Infinity;
     for (const [id, rec] of this.agents) {
       const dx = rec._px - wx;
       const dy = rec._py - wy;
       const d = dx * dx + dy * dy;
-      if (d < bestD) {
+      const r = (rec.hpx ?? this.cellPx) * 0.7;
+      if (d < r * r && d < bestD) {
         bestD = d;
         best = id;
       }
@@ -843,18 +852,17 @@ export class WorldScene {
       let rec = this.agents.get(a.id);
       if (!rec) {
         const glow = new Sprite(this._glowTex);
-        const figure = new Sprite(this._figSet.stand);
+        const figure = new Sprite(this._atlas.frames.adult.idle[0]);
         const emote = new Sprite(this._emoteTex.forage);
         glow.anchor.set(0.5);
-        figure.anchor.set(0.5, 0.85); // feet on the cell
+        figure.anchor.set(0.5, this._atlas.anchorY); // feet on the cell
         emote.anchor.set(0.5, 1);
         emote.visible = false;
         // tool in the hand + carry bundle at the hip, in figure-local pixels
-        // (children inherit scale, walking bob and the facing flip)
+        // (children inherit scale, breathing/bob and the facing flip). The tool
+        // is re-anchored to the active frame's hand anchor every tick.
         const tool = new Sprite(this._toolTex.blunt);
         tool.anchor.set(0.5, 1);
-        tool.position.set(5.5, -3.5);
-        tool.rotation = 0.3;
         tool.visible = false;
         const bundle = new Sprite(this._toolTex.bundle);
         bundle.anchor.set(0.5, 0.5);
@@ -908,29 +916,27 @@ export class WorldScene {
       const tint = blip(a.col);
       rec.tint = tint;
       rec.energy = a.e;
-      const cp = this.cellPx;
+      rec.cg = a.cg ?? 0;
       const sleeping = rec.act === ACT.SLEEP;
 
+      // frame-data-driven state only. All SIZES (figure/glow/emote/shadow/ring)
+      // depend on the zoom-aware rec.hpx and are set in _tick.
       rec.figure.tint = tint;
-      rec.hpx = (STAGE_SCALE[rec.st] ?? 1.0) * cp * (sleeping ? 0.9 : 1.45);
       rec.figure.alpha = sleeping ? 0.75 : 1.0;
+      rec.glow.tint = tint;
+      rec.glow.alpha = sleeping ? 0.08 : 0.16 + 0.12 * (1 - this.daylight);
 
       // what the body carries: blade/stone in hand, bundle at the hip
       rec.tool.visible = !sleeping && rec.tl > 0;
       if (rec.tl > 0) rec.tool.texture = rec.tl === 2 ? this._toolTex.sharp : this._toolTex.blunt;
-      rec.bundle.visible = !sleeping && (a.cg ?? 0) >= 2;
+      rec.bundle.visible = !sleeping && rec.cg >= 2;
 
-      // soft ground glow keeps agents findable at night
-      rec.glow.tint = tint;
-      rec.glow.scale.set((cp * 1.9) / 64);
-      rec.glow.alpha = sleeping ? 0.08 : 0.16 + 0.12 * (1 - this.daylight);
-
-      // emote bubble above the head while acting
+      // emote bubble above the head while acting (texture + visibility here;
+      // its size/offset track rec.hpx in _tick)
       const emoteName = ACT_EMOTE[rec.act];
       if (emoteName) {
         rec.emote.texture = this._emoteTex[emoteName];
         rec.emote.visible = true;
-        rec.emote.scale.set((cp * 0.85) / 12);
       } else {
         rec.emote.visible = false;
       }
@@ -1002,6 +1008,7 @@ export class WorldScene {
     const coop = [];
     for (const rec of this.agents.values()) if (rec.act === ACT.COOPERATE) coop.push(rec);
 
+    const atlas = this._atlas;
     for (const rec of this.agents.values()) {
       if (rec.t < 1) rec.t = Math.min(1, rec.t + step);
       rec.actAge += dt;
@@ -1012,34 +1019,87 @@ export class WorldScene {
 
       const sleeping = rec.act === ACT.SLEEP;
       const moving = rec.t < 1 && (rec.fromX !== rec.toX || rec.fromY !== rec.toY);
+      const stageKey = STAGE_KEY[rec.st] ?? "adult";
+      const st = STAGE_SCALE[rec.st] ?? 1.0;
 
-      // body texture: lying asleep / two-frame walk / stand
-      const set = rec.st === 2 ? this._figElderSet : this._figSet;
-      let tex;
-      if (sleeping) tex = this._sleepTex;
-      else if (moving) tex = Math.floor(this._pulse * 7 + rec._px * 0.11) & 1 ? set.walkA : set.walkB;
-      else tex = set.stand;
+      // zoom-aware size: never smaller than MIN_AGENT_PX on screen. worldRoot is
+      // scaled by _zoom, so hpx world-px renders at hpx*_zoom screen-px → the
+      // floor is MIN_AGENT_PX / _zoom in world units. Everything below (shadow,
+      // glow, emote, selection ring) derives from hpx so it all grows together.
+      const hpx = Math.max(st * cp * (sleeping ? 0.9 : 1.45), MIN_AGENT_PX / this._zoom);
+      rec.hpx = hpx;
+
+      // --- animation driver: action loop > walk > idle -------------------------
+      // Action animation has priority; walk plays only when there is no action
+      // animation AND the agent is moving; otherwise idle (breathing transform).
+      let actKey, frameIdx;
+      if (sleeping) {
+        actKey = "sleep";
+        frameIdx = 0;
+      } else {
+        const codeKey = ACT_KEY[rec.act] ?? "idle";
+        const A = atlas.anim[codeKey];
+        if (A && A.durMs > 0 && A.n > 1) {
+          // a real per-action pose loop (forage/cooperate/attack/build)
+          actKey = codeKey;
+          frameIdx = Math.floor(rec.actAge * 1000 / A.durMs) % A.n;
+        } else if (moving) {
+          const w = atlas.anim.walk;
+          actKey = "walk";
+          frameIdx = Math.floor(rec.actAge * 1000 / w.durMs) % w.n;
+        } else {
+          actKey = "idle";
+          frameIdx = 0;
+        }
+      }
+      const tex = atlas.frames[stageKey][actKey][frameIdx];
       if (rec.figure.texture !== tex) rec.figure.texture = tex;
-      rec.figure.scale.set(rec.hpx / tex.height);
-      rec.figure.scale.x *= rec.facing;
+
+      // base scale from height; idle breathes via a tiny scale.y wobble (no
+      // extra textures); facing mirrors via negative scale.x (flips children).
+      const base = hpx / tex.height;
+      const breathe = actKey === "idle" && !sleeping ? 1 + 0.015 * Math.sin(this._pulse * 4 + rec._px) : 1;
+      rec.figure.scale.set(base);
+      rec.figure.scale.y = base * breathe;
+      rec.figure.scale.x = base * rec.facing;
 
       // walking bob while between cells; standing still otherwise
-      const bob = moving ? Math.abs(Math.sin(this._pulse * 14 + rec._px)) * cp * 0.08 : 0;
+      const bob = moving ? Math.abs(Math.sin(this._pulse * 14 + rec._px)) * hpx * 0.055 : 0;
+
+      // attack lunge: shove the body forward on the lunge frame (attack1), eased
+      let lunge = 0;
+      if (actKey === "attack") {
+        // triangular ease centred on frame 1 (the lunge) of the 3-frame loop
+        const phase = (rec.actAge * 1000 / atlas.anim.attack.durMs) % atlas.anim.attack.n;
+        lunge = rec.facing * hpx * 0.25 * Math.max(0, 1 - Math.abs(phase - 1));
+      }
+
       rec.glow.x = rec._px;
-      rec.glow.y = rec._py + cp * 0.2;
-      rec.figure.x = rec._px;
-      rec.figure.y = rec._py + cp * 0.35 - bob;
+      rec.glow.y = rec._py + hpx * 0.14;
+      rec.glow.scale.set((hpx * 1.3) / 64);
+      rec.figure.x = rec._px + lunge;
+      rec.figure.y = rec._py + hpx * 0.24 - bob;
+
+      // --- tool follows the hand ----------------------------------------------
+      // hand anchor is figure-local px (children inherit the figure scale + the
+      // facing flip), so set the tool right on it. Mirror the rotation when the
+      // figure faces left. Hidden while asleep.
+      if (rec.tool.visible) {
+        const h = atlas.hand[stageKey][actKey][frameIdx];
+        rec.tool.position.set(h.x, h.y);
+        rec.tool.rotation = h.rot * rec.facing;
+      }
 
       // grounding shadow under the feet
       this.shadowLayer
-        .ellipse(rec._px, rec._py + cp * 0.38, cp * (sleeping ? 0.42 : 0.28), cp * 0.1)
+        .ellipse(rec._px, rec._py + hpx * 0.3, hpx * (sleeping ? 0.34 : 0.22), hpx * 0.08)
         .fill({ color: 0x000000, alpha: 0.17 });
 
       // emote floats above the head with a gentle bob
       if (rec.emote.visible) {
+        rec.emote.scale.set((hpx * 0.5) / 12);
         rec.emote.x = rec._px;
-        rec.emote.y =
-          rec.figure.y - rec.figure.height * 0.95 - cp * 0.1 - Math.sin(this._pulse * 3) * cp * 0.06;
+        rec.emote.y = rec.figure.y - hpx * 0.85 - Math.sin(this._pulse * 3) * hpx * 0.05;
       }
 
       // motion trail (footsteps of the recent path)
@@ -1053,10 +1113,10 @@ export class WorldScene {
         }
       }
 
-      // attack stays dramatic beyond the emote: sharp expanding burst
+      // attack stays dramatic beyond the pose: sharp expanding burst
       if (rec.act === ACT.ATTACK) {
         const t = rec.actAge % 0.6;
-        const rr = cp * (0.4 + t * 2.2);
+        const rr = hpx * (0.28 + t * 1.5);
         const col = ACT_COLORS[ACT.ATTACK];
         this.fxLayer
           .circle(rec._px, rec._py, rr)
@@ -1064,15 +1124,38 @@ export class WorldScene {
       }
     }
 
-    // selection ring for the inspector
+    // cooperate: turn each cooperating agent toward its nearest coop partner so
+    // the extended arm reads as reaching for someone (the coop[] array already
+    // exists for the link lines below).
+    for (let i = 0; i < coop.length; i++) {
+      const a = coop[i];
+      let bx = null;
+      let bestD = Infinity;
+      for (let j = 0; j < coop.length; j++) {
+        if (j === i) continue;
+        const dx = coop[j].toX - a.toX;
+        const dy = coop[j].toY - a.toY;
+        const d = dx * dx + dy * dy;
+        if (d < bestD) {
+          bestD = d;
+          bx = coop[j].toX;
+        }
+      }
+      if (bx != null && bx !== a.toX) {
+        a.facing = bx > a.toX ? 1 : -1;
+        a.figure.scale.x = Math.abs(a.figure.scale.x) * a.facing;
+      }
+    }
+
+    // selection ring for the inspector (sized off the figure, not the cell)
     if (this.selectedId != null) {
       const rec = this.agents.get(this.selectedId);
       if (rec) {
         this.fxLayer
-          .circle(rec._px, rec._py, cp * 0.85)
+          .circle(rec._px, rec._py, rec.hpx * 0.58)
           .stroke({ width: 1.6 * lw, color: 0xffffff, alpha: 0.85 });
         this.fxLayer
-          .circle(rec._px, rec._py, cp * 1.05)
+          .circle(rec._px, rec._py, rec.hpx * 0.72)
           .stroke({ width: lw, color: rec.tint ?? 0xffffff, alpha: 0.5 });
       }
     }

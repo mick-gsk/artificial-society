@@ -25,60 +25,9 @@ function makeCanvas(w, h) {
 }
 
 // -- agents -------------------------------------------------------------------
-
-const OUTLINE = "#12161d"; // stays near-black under any tribe tint (multiply)
-
-// Body drawn in whites/grays for tinting, with a dark 1px outline so figures
-// read against any terrain. 12x15; three frames: stand + two walk poses.
-export function makeAgentTextures({ elder = false } = {}) {
-  const frame = (legs) => {
-    const [c, ctx] = makeCanvas(12, 15);
-    // outline silhouette first, body pixels on top
-    px(ctx, 3, 0, 6, 5, OUTLINE); // head block
-    px(ctx, 2, 4, 8, 8, OUTLINE); // torso block
-    // head — brightest, so tint reads lighter here
-    px(ctx, 4, 1, 4, 4, "rgba(255,255,255,1)");
-    if (elder) px(ctx, 3, 1, 6, 1, "rgba(185,185,185,1)"); // gray hair crown
-    // tunic
-    px(ctx, 3, 5, 6, 6, "rgba(205,205,205,1)");
-    px(ctx, 3, 9, 6, 2, "rgba(180,180,180,1)"); // hem shading
-    // arms
-    px(ctx, 2, 6, 1, 4, "rgba(228,228,228,1)");
-    px(ctx, 9, 6, 1, 4, "rgba(228,228,228,1)");
-    // legs (pose-specific), with outline under them
-    for (const [lx, ly, lw, lh] of legs) {
-      px(ctx, lx - 1, ly, lw + 2, lh + 1, OUTLINE);
-    }
-    for (const [lx, ly, lw, lh] of legs) {
-      px(ctx, lx, ly, lw, lh, "rgba(160,160,160,1)");
-    }
-    return tex(c);
-  };
-  return {
-    stand: frame([
-      [4, 11, 2, 4],
-      [7, 11, 2, 4],
-    ]),
-    walkA: frame([
-      [3, 11, 2, 4],
-      [8, 11, 2, 3],
-    ]),
-    walkB: frame([
-      [5, 11, 2, 4],
-      [6, 11, 2, 3],
-    ]),
-  };
-}
-
-// Lying (sleeping) figure — horizontal, closed silhouette.
-export function makeSleepingTexture() {
-  const [c, ctx] = makeCanvas(15, 9);
-  px(ctx, 0, 2, 15, 6, OUTLINE);
-  px(ctx, 1, 3, 4, 4, "rgba(255,255,255,1)"); // head
-  px(ctx, 5, 4, 9, 3, "rgba(190,190,190,1)"); // body under blanket
-  px(ctx, 5, 3, 9, 1, "rgba(150,150,150,1)"); // blanket edge
-  return tex(c);
-}
+//
+// Agent FIGURE textures moved to figures.js (the 20×28 animated atlas with a
+// pose loop per action). Structures/decor/items/emotes/tools below stay here.
 
 // -- structures ----------------------------------------------------------------
 
