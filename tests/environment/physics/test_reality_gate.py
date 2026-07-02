@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from artificial_society.environment.physics import MATERIALS_V2, PROP_DIMS_V2
+from artificial_society.environment.physics.body import CALIBRATED_BODY_PARAMS
 from artificial_society.environment.physics.calibration import (
     CALIBRATION,
     entry_for,
@@ -42,6 +43,11 @@ def test_every_process_is_calibrated():
         _assert_calibrated("process", name)
 
 
+def test_every_body_param_is_calibrated():
+    for name in CALIBRATED_BODY_PARAMS:
+        _assert_calibrated("body", name)
+
+
 def test_no_orphan_calibration_entries():
     # Ein Eintrag ohne zugehörigen Baustein = Umbenennung ohne Tabellenpflege.
     for kind, name in CALIBRATION:
@@ -51,6 +57,8 @@ def test_no_orphan_calibration_entries():
             assert name in MATERIALS_V2, f"verwaister material-Eintrag: {name}"
         elif kind == "process":
             assert name in PROCESSES, f"verwaister process-Eintrag: {name}"
+        elif kind == "body":
+            assert name in CALIBRATED_BODY_PARAMS, f"verwaister body-Eintrag: {name}"
 
 
 def test_kalibrierung_doc_is_in_sync():
