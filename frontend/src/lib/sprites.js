@@ -26,31 +26,107 @@ function makeCanvas(w, h) {
 
 // -- agents -------------------------------------------------------------------
 
-// A small standing figure, drawn in whites/grays for tinting.
-// 10x14: head (brighter), tunic, legs. `elder` gets a gray crown.
-export function makeAgentTexture({ elder = false } = {}) {
-  const [c, ctx] = makeCanvas(10, 14);
-  // head — brightest, so tint reads lighter here
-  px(ctx, 3, 0, 4, 4, "rgba(255,255,255,1)");
-  if (elder) px(ctx, 2, 0, 6, 1, "rgba(190,190,190,1)"); // gray hair crown
-  // tunic
-  px(ctx, 2, 4, 6, 6, "rgba(205,205,205,1)");
-  // arms
-  px(ctx, 1, 5, 1, 4, "rgba(225,225,225,1)");
-  px(ctx, 8, 5, 1, 4, "rgba(225,225,225,1)");
-  // legs
-  px(ctx, 3, 10, 2, 4, "rgba(160,160,160,1)");
-  px(ctx, 6, 10, 2, 4, "rgba(160,160,160,1)");
-  return tex(c);
+const OUTLINE = "#12161d"; // stays near-black under any tribe tint (multiply)
+
+// Body drawn in whites/grays for tinting, with a dark 1px outline so figures
+// read against any terrain. 12x15; three frames: stand + two walk poses.
+export function makeAgentTextures({ elder = false } = {}) {
+  const frame = (legs) => {
+    const [c, ctx] = makeCanvas(12, 15);
+    // outline silhouette first, body pixels on top
+    px(ctx, 3, 0, 6, 5, OUTLINE); // head block
+    px(ctx, 2, 4, 8, 8, OUTLINE); // torso block
+    // head — brightest, so tint reads lighter here
+    px(ctx, 4, 1, 4, 4, "rgba(255,255,255,1)");
+    if (elder) px(ctx, 3, 1, 6, 1, "rgba(185,185,185,1)"); // gray hair crown
+    // tunic
+    px(ctx, 3, 5, 6, 6, "rgba(205,205,205,1)");
+    px(ctx, 3, 9, 6, 2, "rgba(180,180,180,1)"); // hem shading
+    // arms
+    px(ctx, 2, 6, 1, 4, "rgba(228,228,228,1)");
+    px(ctx, 9, 6, 1, 4, "rgba(228,228,228,1)");
+    // legs (pose-specific), with outline under them
+    for (const [lx, ly, lw, lh] of legs) {
+      px(ctx, lx - 1, ly, lw + 2, lh + 1, OUTLINE);
+    }
+    for (const [lx, ly, lw, lh] of legs) {
+      px(ctx, lx, ly, lw, lh, "rgba(160,160,160,1)");
+    }
+    return tex(c);
+  };
+  return {
+    stand: frame([
+      [4, 11, 2, 4],
+      [7, 11, 2, 4],
+    ]),
+    walkA: frame([
+      [3, 11, 2, 4],
+      [8, 11, 2, 3],
+    ]),
+    walkB: frame([
+      [5, 11, 2, 4],
+      [6, 11, 2, 3],
+    ]),
+  };
 }
 
 // Lying (sleeping) figure — horizontal, closed silhouette.
 export function makeSleepingTexture() {
-  const [c, ctx] = makeCanvas(14, 8);
-  px(ctx, 0, 2, 4, 4, "rgba(255,255,255,1)"); // head
-  px(ctx, 4, 3, 9, 4, "rgba(190,190,190,1)"); // body under blanket
-  px(ctx, 4, 2, 9, 1, "rgba(150,150,150,1)"); // blanket edge
+  const [c, ctx] = makeCanvas(15, 9);
+  px(ctx, 0, 2, 15, 6, OUTLINE);
+  px(ctx, 1, 3, 4, 4, "rgba(255,255,255,1)"); // head
+  px(ctx, 5, 4, 9, 3, "rgba(190,190,190,1)"); // body under blanket
+  px(ctx, 5, 3, 9, 1, "rgba(150,150,150,1)"); // blanket edge
   return tex(c);
+}
+
+// -- structures ----------------------------------------------------------------
+
+export function makeStructureTextures() {
+  const out = {};
+
+  // camp: a hide tent
+  {
+    const [c, ctx] = makeCanvas(14, 12);
+    // canvas triangle, built up in pixel rows
+    for (let r = 0; r < 9; r++) {
+      const half = Math.floor((r * 7) / 9) + 1;
+      px(ctx, 7 - half, 2 + r, half * 2, 1, r < 2 ? "#8a5f36" : "#b07c46");
+    }
+    px(ctx, 6, 0, 2, 3, "#6b4a2b"); // pole tip
+    px(ctx, 6, 6, 2, 5, "#4a3018"); // door slit
+    px(ctx, 2, 10, 10, 1, "#3a2a16"); // ground line
+    out.camp = tex(c);
+  }
+  // farm: tilled plot with sprouting rows
+  {
+    const [c, ctx] = makeCanvas(14, 11);
+    px(ctx, 0, 1, 14, 10, "#4a3620");
+    for (let r = 0; r < 3; r++) {
+      px(ctx, 1, 2 + r * 3, 12, 2, "#5e4526");
+      px(ctx, 1, 3 + r * 3, 12, 1, "#3d2c18"); // furrow shadow
+    }
+    // sprouts
+    for (const [sx, sy] of [[2, 1], [6, 1], [10, 1], [4, 4], [8, 4], [12, 4], [2, 7], [7, 7], [11, 7]]) {
+      px(ctx, sx, sy, 1, 2, "#5fae57");
+      px(ctx, sx + 1, sy, 1, 1, "#79c46e");
+    }
+    out.farm = tex(c);
+  }
+  // well: stone ring, dark water, wooden crossbar
+  {
+    const [c, ctx] = makeCanvas(12, 12);
+    px(ctx, 2, 5, 8, 6, "#7d8790"); // stone ring body
+    px(ctx, 1, 6, 10, 4, "#7d8790");
+    px(ctx, 3, 4, 6, 2, "#8f99a2"); // rim highlight
+    px(ctx, 4, 6, 4, 3, "#16324a"); // water
+    px(ctx, 5, 6, 1, 1, "#5aa9d6"); // glint
+    px(ctx, 2, 0, 1, 6, "#6b4a2b"); // posts + crossbar
+    px(ctx, 9, 0, 1, 6, "#6b4a2b");
+    px(ctx, 2, 0, 8, 1, "#7c5a34");
+    out.well = tex(c);
+  }
+  return out;
 }
 
 // -- emotes (action bubbles above the head) ------------------------------------

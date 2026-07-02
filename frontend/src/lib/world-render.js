@@ -1,32 +1,40 @@
 // PixiJS (WebGL) renderer for the live simulation world.
 //
 // Design language: a living landscape under an observation instrument. Terrain
-// reads as actual land — forest, grassland, desert, water — modulated by food
-// (lushness), moisture and the day/night cycle. Life on top stays luminous:
-// agents are glowing blips with motion trails, and every non-idle action has a
-// legible visual verb (forage pulse, attack burst, build flash, cooperation
-// links, sleep dimming). Structures persist as small icons.
+// is a single subpixel-painted texture (3x3 texels per cell) with dithered
+// biome transitions, shimmering water, shore foam and a warm dawn/dusk tint.
+// Life on top is pictorial: outlined pixel figures with a two-frame walk,
+// shadows, tools in hands, carry bundles, emote bubbles; materials, decor and
+// real building sprites populate the ground. Weather is visible weather —
+// rain falls inside storm radii, fires glow and flicker.
+//
+// The whole world lives in `worldRoot`, which the user can zoom (wheel) and
+// pan (drag); a click picks the nearest agent for the inspector panel.
 //
 // Layers, back to front:
-//   terrain → grid → structures → trails → fx (action effects) → glow → cores → events
+//   terrain → decor → grid → items → structures → shadows → trails → fx →
+//   glow → figures → emotes → events
 //
 // Frames arrive ~20 Hz; the ticker runs at display rate and eases agent motion
 // between frames so movement stays fluid.
 
-import { Application, Container, Graphics, Sprite, Text, Texture } from "pixi.js";
+import { Application, Container, Graphics, Sprite, Texture } from "pixi.js";
 
 import {
-  makeAgentTexture,
+  makeAgentTextures,
   makeDecorTextures,
   makeEmoteTextures,
   makeItemTextures,
   makeSleepingTexture,
+  makeStructureTextures,
   makeToolTextures,
 } from "./sprites.js";
 
 const STAGE_SCALE = [0.62, 1.0, 1.06]; // child, adult, elder (figure size)
 const ACT_EMOTE = { 1: "forage", 2: "cooperate", 3: "attack", 4: "build", 5: "sleep" };
 const TRAIL_LEN = 8;
+const ZOOM_MIN = 1;
+const ZOOM_MAX = 8;
 
 const EVENT_COLORS = {
   drought: 0xf0b030,
@@ -62,11 +70,7 @@ const BIOME_PALETTE = {
 const COLORS = {
   gridLine: 0x0e1620,
   gridTick: 0x3a536f,
-  tickText: 0x6c8bb0,
   eventDefault: 0xf0b030,
-  camp: 0xffb54d,
-  farm: 0x74c69d,
-  well: 0x64b5f6,
 };
 
 export class WorldScene {
@@ -80,11 +84,14 @@ export class WorldScene {
     this.daylight = 1.0;
     this._jitter = null; // per-cell brightness noise so terrain isn't plastic-flat
 
+    // everything world-positioned goes under worldRoot: zoom/pan = one transform
+    this.worldRoot = new Container();
     this.terrainLayer = new Container();
     this.decorLayer = new Container();
     this.gridLayer = new Container();
     this.itemLayer = new Container();
     this.structLayer = new Container();
+    this.shadowLayer = new Graphics();
     this.trailLayer = new Graphics();
     this.fxLayer = new Graphics();
     this.glowLayer = new Container();
@@ -92,7 +99,6 @@ export class WorldScene {
     this.emoteLayer = new Container();
     this.eventLayer = new Container();
 
-    this.terrainSprites = [];
     this.agents = new Map(); // id -> {glow, figure, emote, tool, bundle, fromX..toY, t, trail, act, actAge, tint}
     this._structKey = "";
     this._decorKey = "";
@@ -101,9 +107,26 @@ export class WorldScene {
     this._fireSprites = [];
     this._bursts = []; // {cx, cy, age, color} — knapping sparks, discoveries, fire
     this._biomeArr = null;
+    this._events = [];
+
+    // terrain texture state (subpixel canvas)
+    this._terCanvas = null;
+    this._terCtx = null;
+    this._terImg = null;
+    this._terTex = null;
+    this._terSprite = null;
+    this._baseRGB = null; // per-cell day-lit base color, for neighbour blending
+    this._isWater = null;
+    this._frameNo = 0;
+    this._phase = 0; // water shimmer phase
+
+    // view state
+    this._zoom = 1;
+    this._drag = null;
+    this.onPick = null; // (agentId | null) => void
+    this.selectedId = null;
 
     this._glowTex = null;
-    this._dotTex = null;
     this._pulse = 0;
     this._fps = 60;
     this._hudAccum = 0;
@@ -114,12 +137,13 @@ export class WorldScene {
     await this.app.init({ background: 0x05070b, antialias: true, resizeTo: host });
     host.appendChild(this.app.canvas);
     this.glowLayer.blendMode = "add";
-    this.app.stage.addChild(
+    this.worldRoot.addChild(
       this.terrainLayer,
       this.decorLayer,
       this.gridLayer,
       this.itemLayer,
       this.structLayer,
+      this.shadowLayer,
       this.trailLayer,
       this.fxLayer,
       this.glowLayer,
@@ -127,20 +151,117 @@ export class WorldScene {
       this.emoteLayer,
       this.eventLayer,
     );
+    this.app.stage.addChild(this.worldRoot);
     this._glowTex = makeRadialTexture(64, [
       [0, "rgba(255,255,255,1)"],
       [0.4, "rgba(255,255,255,0.45)"],
       [1, "rgba(255,255,255,0)"],
     ]);
-    this._figTex = makeAgentTexture();
-    this._figElderTex = makeAgentTexture({ elder: true });
+    this._figSet = makeAgentTextures();
+    this._figElderSet = makeAgentTextures({ elder: true });
     this._sleepTex = makeSleepingTexture();
     this._emoteTex = makeEmoteTextures();
     this._decorTex = makeDecorTextures();
     this._itemTex = makeItemTextures();
     this._toolTex = makeToolTextures();
+    this._structTex = makeStructureTextures();
+    this._bindViewControls();
     this.app.ticker.add((t) => this._tick(t.deltaMS));
     this.app.renderer.on("resize", () => this._rebuildGrid());
+  }
+
+  // -- zoom / pan / pick -------------------------------------------------------
+
+  _bindViewControls() {
+    const canvas = this.app.canvas;
+    canvas.style.cursor = "grab";
+    canvas.style.touchAction = "none";
+    // offsetX/offsetY is 0 on synthetic events and flaky across browsers —
+    // derive canvas-local coordinates from clientX/Y instead.
+    const local = (e) => {
+      const r = canvas.getBoundingClientRect();
+      return { x: e.clientX - r.left, y: e.clientY - r.top };
+    };
+    canvas.addEventListener(
+      "wheel",
+      (e) => {
+        e.preventDefault();
+        const z = clampNum(this._zoom * Math.exp(-e.deltaY * 0.0018), ZOOM_MIN, ZOOM_MAX);
+        const p = local(e);
+        this._applyZoom(z, p.x, p.y);
+      },
+      { passive: false },
+    );
+    canvas.addEventListener("pointerdown", (e) => {
+      this._drag = { x: e.clientX, y: e.clientY, moved: 0 };
+      try {
+        canvas.setPointerCapture(e.pointerId);
+      } catch {
+        /* synthetic events have no active pointer */
+      }
+      canvas.style.cursor = "grabbing";
+    });
+    canvas.addEventListener("pointermove", (e) => {
+      if (!this._drag) return;
+      const dx = e.clientX - this._drag.x;
+      const dy = e.clientY - this._drag.y;
+      this._drag.x = e.clientX;
+      this._drag.y = e.clientY;
+      this._drag.moved += Math.abs(dx) + Math.abs(dy);
+      this.worldRoot.x += dx;
+      this.worldRoot.y += dy;
+      this._clampPan();
+    });
+    const endDrag = (e) => {
+      if (this._drag && this._drag.moved < 5) {
+        const p = local(e);
+        this._pick(p.x, p.y);
+      }
+      this._drag = null;
+      canvas.style.cursor = "grab";
+    };
+    canvas.addEventListener("pointerup", endDrag);
+    canvas.addEventListener("pointercancel", () => (this._drag = null));
+    canvas.addEventListener("dblclick", () => {
+      this._zoom = 1;
+      this.worldRoot.scale.set(1);
+      this.worldRoot.position.set(0, 0);
+    });
+  }
+
+  _applyZoom(z, cx, cy) {
+    const k = z / this._zoom;
+    this.worldRoot.x = cx - (cx - this.worldRoot.x) * k;
+    this.worldRoot.y = cy - (cy - this.worldRoot.y) * k;
+    this._zoom = z;
+    this.worldRoot.scale.set(z);
+    this._clampPan();
+  }
+
+  _clampPan() {
+    const W = this.app.renderer.width;
+    const H = this.app.renderer.height;
+    const z = this._zoom;
+    this.worldRoot.x = clampNum(this.worldRoot.x, W - W * z, 0);
+    this.worldRoot.y = clampNum(this.worldRoot.y, H - H * z, 0);
+  }
+
+  _pick(sx, sy) {
+    const wx = (sx - this.worldRoot.x) / this._zoom;
+    const wy = (sy - this.worldRoot.y) / this._zoom;
+    let best = null;
+    let bestD = this.cellPx * this.cellPx;
+    for (const [id, rec] of this.agents) {
+      const dx = rec._px - wx;
+      const dy = rec._py - wy;
+      const d = dx * dx + dy * dy;
+      if (d < bestD) {
+        bestD = d;
+        best = id;
+      }
+    }
+    this.selectedId = best;
+    this.onPick?.(best);
   }
 
   setLegend(biomes) {
@@ -162,13 +283,141 @@ export class WorldScene {
     this.grid = g;
     this.daylight = frame.daylight ?? 1.0;
     this._biomeArr = frame.cells.biome;
+    this._events = frame.events ?? [];
     if (resized) this._rebuildGrid();
+    this._frameNo++;
     this._paintTerrain(frame.cells);
     this._buildDecor();
     this._paintItems(frame.items ?? []);
     this._paintStructures(frame.structures ?? []);
     this._syncAgents(frame.agents);
-    this._paintEvents(frame.events);
+    this._paintEvents(this._events);
+  }
+
+  // -- terrain: one subpixel-painted texture ------------------------------------
+
+  _ensureTerrain() {
+    const { w, h } = this.grid;
+    if (this._terCanvas && this._terCanvas.width === w * 3) return;
+    this._terCanvas = document.createElement("canvas");
+    this._terCanvas.width = w * 3;
+    this._terCanvas.height = h * 3;
+    this._terCtx = this._terCanvas.getContext("2d");
+    this._terImg = this._terCtx.createImageData(w * 3, h * 3);
+    if (this._terTex) this._terTex.destroy(true);
+    this._terTex = Texture.from(this._terCanvas);
+    this._terTex.source.scaleMode = "nearest";
+    if (!this._terSprite) {
+      this._terSprite = new Sprite(this._terTex);
+      this.terrainLayer.addChild(this._terSprite);
+    } else {
+      this._terSprite.texture = this._terTex;
+    }
+    this._baseRGB = new Uint8ClampedArray(w * h * 3);
+    this._isWater = new Uint8Array(w * h);
+  }
+
+  _paintTerrain(cells) {
+    if (!this.grid) return;
+    const { w, h } = this.grid;
+    // big worlds repaint every 3rd frame — terrain moves slowly anyway
+    if (w * h > 20000 && this._frameNo % 3) return;
+    this._ensureTerrain();
+
+    const { food, water, biome } = cells;
+    const dl = this.daylight;
+    const day = 0.45 + 0.55 * dl;
+    // dawn/dusk: a warm band while the light passes ~0.35
+    const dusk = Math.max(0, 1 - Math.abs(dl - 0.35) / 0.25);
+    const warmR = 1 + dusk * 0.22;
+    const warmB = 1 - dusk * 0.18;
+    const nightBlue = (1 - dl) * 10;
+
+    // pass 1: per-cell day-lit base color
+    const base = this._baseRGB;
+    const isW = this._isWater;
+    for (let i = 0; i < biome.length; i++) {
+      const tone = this.biomeTones[biome[i]];
+      let r, g, b;
+      if (!tone) {
+        r = 20;
+        g = 26;
+        b = 34;
+        isW[i] = 0;
+      } else if (tone.isWater) {
+        const wn = Math.min(1, water[i] / 100);
+        r = lerp(tone.dry.r, tone.lush.r, wn);
+        g = lerp(tone.dry.g, tone.lush.g, wn);
+        b = lerp(tone.dry.b, tone.lush.b, wn);
+        isW[i] = 1;
+      } else {
+        const fn = Math.min(1, food[i] / 90);
+        r = lerp(tone.dry.r, tone.lush.r, fn);
+        g = lerp(tone.dry.g, tone.lush.g, fn);
+        b = lerp(tone.dry.b, tone.lush.b, fn);
+        isW[i] = 0;
+      }
+      const j = this._jitter ? this._jitter[i] : 1;
+      base[i * 3] = r * j * day * warmR;
+      base[i * 3 + 1] = g * j * day;
+      base[i * 3 + 2] = b * j * day * warmB + nightBlue;
+    }
+
+    // pass 2: 3x3 subpixels — dithered biome edges, water shimmer + shore foam
+    this._phase = (this._phase + 1) & 1023;
+    const ph = this._phase;
+    const d = this._terImg.data;
+    const W3 = w * 3;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        const bi = biome[i];
+        const r0 = base[i * 3];
+        const g0 = base[i * 3 + 1];
+        const b0 = base[i * 3 + 2];
+        const wtr = isW[i];
+        for (let sy = 0; sy < 3; sy++) {
+          for (let sx = 0; sx < 3; sx++) {
+            let r = r0;
+            let g = g0;
+            let b = b0;
+            // edge dithering toward a differing neighbour (checker pattern)
+            let n = -1;
+            if (sx === 0 && x > 0 && biome[i - 1] !== bi) n = i - 1;
+            else if (sx === 2 && x < w - 1 && biome[i + 1] !== bi) n = i + 1;
+            else if (sy === 0 && y > 0 && biome[i - w] !== bi) n = i - w;
+            else if (sy === 2 && y < h - 1 && biome[i + w] !== bi) n = i + w;
+            if (n >= 0 && (x * 3 + sx + y * 3 + sy) & 1) {
+              if (wtr && !this._isWater[n]) {
+                // shoreline: land meets water as pale foam, not land-colored dither
+                r = r0 + 55;
+                g = g0 + 60;
+                b = b0 + 65;
+              } else {
+                r = (r + base[n * 3]) >> 1;
+                g = (g + base[n * 3 + 1]) >> 1;
+                b = (b + base[n * 3 + 2]) >> 1;
+              }
+            } else if (wtr) {
+              // moving sparse highlights make water read as liquid
+              const t = x * 3 + sx + (y * 3 + sy) * 2 + (ph >> 2);
+              if (t % 11 === 0) {
+                r += 14;
+                g += 20;
+                b += 26;
+              }
+            }
+            const p = ((y * 3 + sy) * W3 + x * 3 + sx) * 4;
+            d[p] = r;
+            d[p + 1] = g;
+            d[p + 2] = b;
+            d[p + 3] = 255;
+          }
+        }
+      }
+    }
+    this._terCtx.putImageData(this._terImg, 0, 0);
+    this._terTex.source.update();
   }
 
   // -- terrain decorations (trees, rocks, tufts) — static per world ------------
@@ -181,7 +430,6 @@ export class WorldScene {
     this._decorKey = key;
     this.decorLayer.removeChildren().forEach((c) => c.destroy());
 
-    // biome idx -> name (via tones' source order isn't kept; rebuild from legend names)
     const nameByIdx = this._biomeNameByIdx ?? {};
     const cp = this.cellPx;
     // Keep sprite counts sane on big grids.
@@ -307,15 +555,14 @@ export class WorldScene {
       this._jitter[i] = 0.94 + (n - Math.floor(n)) * 0.12; // 0.94 .. 1.06
     }
 
-    this._ensurePool(this.terrainLayer, this.terrainSprites, w * h);
-    for (let i = 0; i < w * h; i++) {
-      const s = this.terrainSprites[i];
-      s.x = this.offX + (i % w) * this.cellPx;
-      s.y = this.offY + Math.floor(i / w) * this.cellPx;
-      s.width = this.cellPx;
-      s.height = this.cellPx;
-    }
+    this._ensureTerrain();
+    this._terSprite.x = this.offX;
+    this._terSprite.y = this.offY;
+    this._terSprite.width = w * this.cellPx;
+    this._terSprite.height = h * this.cellPx;
+
     this._structKey = ""; // force structure re-layout at the new scale
+    this._itemKey = "";
     this._drawGrid();
   }
 
@@ -338,76 +585,13 @@ export class WorldScene {
       const py = y0 + y * cp;
       g.moveTo(x0, py).lineTo(x1, py);
     }
-    g.stroke({ width: 1, color: COLORS.gridLine, alpha: 0.35 });
+    g.stroke({ width: 1, color: COLORS.gridLine, alpha: 0.22 });
     g.rect(x0, y0, w * cp, h * cp).stroke({
       width: 1,
       color: COLORS.gridTick,
-      alpha: 0.55,
+      alpha: 0.5,
     });
     this.gridLayer.addChild(g);
-
-    const mk = (label, px, py, anchorX, anchorY) => {
-      const t = new Text({
-        text: label,
-        style: {
-          fontFamily: "ui-monospace, Menlo, monospace",
-          fontSize: 10,
-          fill: COLORS.tickText,
-        },
-      });
-      t.anchor.set(anchorX, anchorY);
-      t.x = px;
-      t.y = py;
-      this.gridLayer.addChild(t);
-    };
-    for (let x = 0; x <= w; x += step) mk(String(x), x0 + x * cp, y0 - 4, 0.5, 1);
-    for (let y = 0; y <= h; y += step) mk(String(y), x0 - 6, y0 + y * cp, 1, 0.5);
-  }
-
-  _ensurePool(layer, arr, n) {
-    while (arr.length < n) {
-      const s = new Sprite(Texture.WHITE);
-      layer.addChild(s);
-      arr.push(s);
-    }
-    while (arr.length > n) {
-      const s = arr.pop();
-      layer.removeChild(s);
-      s.destroy();
-    }
-  }
-
-  _paintTerrain(cells) {
-    const { food, water, biome } = cells;
-    // Night dims and cools the land; water keeps a bit more of its light.
-    const day = 0.45 + 0.55 * this.daylight;
-    const nightBlue = 1.0 - (1.0 - this.daylight) * 0.25;
-    for (let i = 0; i < biome.length; i++) {
-      const tone = this.biomeTones[biome[i]];
-      let r, g, b;
-      if (!tone) {
-        r = 20;
-        g = 26;
-        b = 34;
-      } else if (tone.isWater) {
-        // moisture/water level makes water breathe between shallow and deep
-        const wn = Math.min(1, water[i] / 100);
-        r = lerp(tone.dry.r, tone.lush.r, wn);
-        g = lerp(tone.dry.g, tone.lush.g, wn);
-        b = lerp(tone.dry.b, tone.lush.b, wn);
-      } else {
-        // food lushness moves land between parched and verdant
-        const fn = Math.min(1, food[i] / 90);
-        r = lerp(tone.dry.r, tone.lush.r, fn);
-        g = lerp(tone.dry.g, tone.lush.g, fn);
-        b = lerp(tone.dry.b, tone.lush.b, fn);
-      }
-      const j = this._jitter ? this._jitter[i] : 1;
-      r = clamp(r * j * day);
-      g = clamp(g * j * day);
-      b = clamp(b * j * (day + (1 - day) * (1 - nightBlue) * 2) * nightBlue + (1 - this.daylight) * 10);
-      this.terrainSprites[i].tint = (r << 16) | (g << 8) | b;
-    }
   }
 
   // -- structures --------------------------------------------------------------
@@ -420,39 +604,16 @@ export class WorldScene {
     this.structLayer.removeChildren().forEach((c) => c.destroy());
     const cp = this.cellPx;
     for (const s of structures) {
-      const cx = this.offX + (s.x + 0.5) * cp;
-      const cy = this.offY + (s.y + 0.5) * cp;
-      const r = cp * 0.42;
-      const g = new Graphics();
-      if (s.k === "camp") {
-        // tent: triangle + door slit
-        g.moveTo(cx, cy - r)
-          .lineTo(cx + r, cy + r * 0.8)
-          .lineTo(cx - r, cy + r * 0.8)
-          .closePath()
-          .stroke({ width: 1.5, color: COLORS.camp, alpha: 0.95 });
-        g.moveTo(cx, cy + r * 0.8)
-          .lineTo(cx, cy + r * 0.1)
-          .stroke({ width: 1, color: COLORS.camp, alpha: 0.7 });
-      } else if (s.k === "farm") {
-        // tilled plot: square with furrow lines
-        g.rect(cx - r, cy - r * 0.8, r * 2, r * 1.6).stroke({
-          width: 1.5,
-          color: COLORS.farm,
-          alpha: 0.95,
-        });
-        for (let k = -1; k <= 1; k++) {
-          g.moveTo(cx - r * 0.7, cy + k * r * 0.45)
-            .lineTo(cx + r * 0.7, cy + k * r * 0.45)
-            .stroke({ width: 1, color: COLORS.farm, alpha: 0.6 });
-        }
-      } else if (s.k === "well") {
-        // well: ring + water dot
-        g.circle(cx, cy, r * 0.8).stroke({ width: 1.5, color: COLORS.well, alpha: 0.95 });
-        g.circle(cx, cy, r * 0.25).fill({ color: COLORS.well, alpha: 0.8 });
-      }
-      this.structLayer.addChild(g);
+      const t = this._structTex[s.k];
+      if (!t) continue;
+      const spr = new Sprite(t);
+      spr.anchor.set(0.5, 1);
+      spr.x = this.offX + (s.x + 0.5) * cp;
+      spr.y = this.offY + (s.y + 0.98) * cp;
+      spr.scale.set((cp * 1.15) / t.height);
+      this.structLayer.addChild(spr);
     }
+    this.structLayer.children.sort((a, b) => a.y - b.y);
   }
 
   // -- agents ----------------------------------------------------------------
@@ -464,7 +625,7 @@ export class WorldScene {
       let rec = this.agents.get(a.id);
       if (!rec) {
         const glow = new Sprite(this._glowTex);
-        const figure = new Sprite(this._figTex);
+        const figure = new Sprite(this._figSet.stand);
         const emote = new Sprite(this._emoteTex.forage);
         glow.anchor.set(0.5);
         figure.anchor.set(0.5, 0.85); // feet on the cell
@@ -474,12 +635,12 @@ export class WorldScene {
         // (children inherit scale, walking bob and the facing flip)
         const tool = new Sprite(this._toolTex.blunt);
         tool.anchor.set(0.5, 1);
-        tool.position.set(4.5, -3.5);
+        tool.position.set(5.5, -3.5);
         tool.rotation = 0.3;
         tool.visible = false;
         const bundle = new Sprite(this._toolTex.bundle);
         bundle.anchor.set(0.5, 0.5);
-        bundle.position.set(-4, -6.5);
+        bundle.position.set(-4.5, -6.5);
         bundle.visible = false;
         figure.addChild(bundle);
         figure.addChild(tool);
@@ -493,6 +654,7 @@ export class WorldScene {
           tool,
           bundle,
           tl: a.tl ?? 0,
+          st: a.st ?? 1,
           fromX: a.x,
           fromY: a.y,
           toX: a.x,
@@ -514,29 +676,25 @@ export class WorldScene {
         if (rec.trail.length > TRAIL_LEN) rec.trail.shift();
         if (a.x > rec.fromX) rec.facing = 1;
         else if (a.x < rec.fromX) rec.facing = -1;
+        // the knapping moment: hands were empty or blunt, now hold a sharp blade
+        if ((a.tl ?? 0) === 2 && rec.tl !== 2) {
+          this._bursts.push({ cx: a.x, cy: a.y, age: 0, color: 0xffd166 });
+        }
       }
+      rec.tl = a.tl ?? 0;
+      rec.st = a.st ?? 1;
       if ((a.act ?? 0) !== rec.act) {
         rec.act = a.act ?? 0;
         rec.actAge = 0; // restart the action animation
       }
-      // the knapping moment: hands were empty or blunt, now hold a sharp blade
-      if ((a.tl ?? 0) === 2 && rec.tl !== 2) {
-        this._bursts.push({ cx: a.x, cy: a.y, age: 0, color: 0xffd166 });
-      }
-      rec.tl = a.tl ?? 0;
       const tint = blip(a.col);
       rec.tint = tint;
       rec.energy = a.e;
       const cp = this.cellPx;
       const sleeping = rec.act === ACT.SLEEP;
 
-      // body: lying when asleep, elder crown for elders, tribe tint, facing flip
-      const tex = sleeping ? this._sleepTex : a.st === 2 ? this._figElderTex : this._figTex;
-      if (rec.figure.texture !== tex) rec.figure.texture = tex;
       rec.figure.tint = tint;
-      const hpx = (STAGE_SCALE[a.st] ?? 1.0) * cp * (sleeping ? 0.9 : 1.45);
-      rec.figure.scale.set(hpx / tex.height);
-      rec.figure.scale.x *= rec.facing;
+      rec.hpx = (STAGE_SCALE[rec.st] ?? 1.0) * cp * (sleeping ? 0.9 : 1.45);
       rec.figure.alpha = sleeping ? 0.75 : 1.0;
 
       // what the body carries: blade/stone in hand, bundle at the hip
@@ -565,6 +723,10 @@ export class WorldScene {
         rec.figure.destroy({ children: true }); // takes tool + bundle with it
         rec.emote.destroy();
         this.agents.delete(id);
+        if (this.selectedId === id) {
+          this.selectedId = null;
+          this.onPick?.(null);
+        }
       }
     }
     // lower agents render in front (simple painter's order)
@@ -576,20 +738,21 @@ export class WorldScene {
   _paintEvents(events) {
     for (const c of this.eventLayer.removeChildren()) c.destroy();
     const cp = this.cellPx;
+    const lw = 1 / this._zoom;
     for (const e of events) {
       const cx = this.offX + (e.x + 0.5) * cp;
       const cy = this.offY + (e.y + 0.5) * cp;
       const col = EVENT_COLORS[e.kind] ?? COLORS.eventDefault;
       const rad = Math.max(1, e.r) * cp;
       const g = new Graphics();
-      g.circle(cx, cy, rad).stroke({ width: 1.5, color: col, alpha: 0.7 });
-      g.circle(cx, cy, rad * 0.6).stroke({ width: 1, color: col, alpha: 0.4 });
+      g.circle(cx, cy, rad).stroke({ width: 1.5 * lw, color: col, alpha: 0.7 });
+      g.circle(cx, cy, rad * 0.6).stroke({ width: lw, color: col, alpha: 0.4 });
       const m = rad + 4;
       g.moveTo(cx - m, cy).lineTo(cx - m + 6, cy);
       g.moveTo(cx + m - 6, cy).lineTo(cx + m, cy);
       g.moveTo(cx, cy - m).lineTo(cx, cy - m + 6);
       g.moveTo(cx, cy + m - 6).lineTo(cx, cy + m);
-      g.stroke({ width: 1, color: col, alpha: 0.7 });
+      g.stroke({ width: lw, color: col, alpha: 0.7 });
       this.eventLayer.addChild(g);
     }
   }
@@ -600,11 +763,14 @@ export class WorldScene {
     const step = deltaMS / 90;
     const dt = deltaMS / 1000;
     const cp = this.cellPx;
+    const z = this._zoom;
+    const lw = 1 / z; // constant on-screen line width while zoomed
     const px = (cx) => this.offX + (cx + 0.5) * cp;
     const py = (cy) => this.offY + (cy + 0.5) * cp;
 
     this.trailLayer.clear();
     this.fxLayer.clear();
+    this.shadowLayer.clear();
 
     // cooperation links: connect cooperating agents that are near each other
     const coop = [];
@@ -618,13 +784,30 @@ export class WorldScene {
       rec._px = px(x);
       rec._py = py(y);
 
-      // walking bob while between cells; standing still otherwise
+      const sleeping = rec.act === ACT.SLEEP;
       const moving = rec.t < 1 && (rec.fromX !== rec.toX || rec.fromY !== rec.toY);
+
+      // body texture: lying asleep / two-frame walk / stand
+      const set = rec.st === 2 ? this._figElderSet : this._figSet;
+      let tex;
+      if (sleeping) tex = this._sleepTex;
+      else if (moving) tex = Math.floor(this._pulse * 7 + rec._px * 0.11) & 1 ? set.walkA : set.walkB;
+      else tex = set.stand;
+      if (rec.figure.texture !== tex) rec.figure.texture = tex;
+      rec.figure.scale.set(rec.hpx / tex.height);
+      rec.figure.scale.x *= rec.facing;
+
+      // walking bob while between cells; standing still otherwise
       const bob = moving ? Math.abs(Math.sin(this._pulse * 14 + rec._px)) * cp * 0.08 : 0;
       rec.glow.x = rec._px;
       rec.glow.y = rec._py + cp * 0.2;
       rec.figure.x = rec._px;
       rec.figure.y = rec._py + cp * 0.35 - bob;
+
+      // grounding shadow under the feet
+      this.shadowLayer
+        .ellipse(rec._px, rec._py + cp * 0.38, cp * (sleeping ? 0.42 : 0.28), cp * 0.1)
+        .fill({ color: 0x000000, alpha: 0.17 });
 
       // emote floats above the head with a gentle bob
       if (rec.emote.visible) {
@@ -640,7 +823,7 @@ export class WorldScene {
           this.trailLayer
             .moveTo(px(pts[i - 1][0]), py(pts[i - 1][1]))
             .lineTo(px(pts[i][0]), py(pts[i][1]))
-            .stroke({ width: 1, color: rec.tint, alpha: (i / pts.length) * 0.22 });
+            .stroke({ width: lw, color: rec.tint, alpha: (i / pts.length) * 0.2 });
         }
       }
 
@@ -651,7 +834,20 @@ export class WorldScene {
         const col = ACT_COLORS[ACT.ATTACK];
         this.fxLayer
           .circle(rec._px, rec._py, rr)
-          .stroke({ width: 2, color: col, alpha: Math.max(0, 0.85 - t * 1.4) });
+          .stroke({ width: 2 * lw, color: col, alpha: Math.max(0, 0.85 - t * 1.4) });
+      }
+    }
+
+    // selection ring for the inspector
+    if (this.selectedId != null) {
+      const rec = this.agents.get(this.selectedId);
+      if (rec) {
+        this.fxLayer
+          .circle(rec._px, rec._py, cp * 0.85)
+          .stroke({ width: 1.6 * lw, color: 0xffffff, alpha: 0.85 });
+        this.fxLayer
+          .circle(rec._px, rec._py, cp * 1.05)
+          .stroke({ width: lw, color: rec.tint ?? 0xffffff, alpha: 0.5 });
       }
     }
 
@@ -660,7 +856,7 @@ export class WorldScene {
       const a = coop[i];
       this.fxLayer
         .circle(a._px, a._py, cp * 0.7)
-        .stroke({ width: 1, color: ACT_COLORS[ACT.COOPERATE], alpha: 0.5 });
+        .stroke({ width: lw, color: ACT_COLORS[ACT.COOPERATE], alpha: 0.5 });
       for (let j = i + 1; j < coop.length; j++) {
         const b = coop[j];
         const dx = a.toX - b.toX;
@@ -669,8 +865,35 @@ export class WorldScene {
           this.fxLayer
             .moveTo(a._px, a._py)
             .lineTo(b._px, b._py)
-            .stroke({ width: 1, color: ACT_COLORS[ACT.COOPERATE], alpha: 0.45 });
+            .stroke({ width: lw, color: ACT_COLORS[ACT.COOPERATE], alpha: 0.45 });
         }
+      }
+    }
+
+    // weather is visible weather: rain inside storms, glow + haze for the rest
+    for (const e of this._events) {
+      const ex = px(e.x);
+      const ey = py(e.y);
+      const rad = Math.max(1, e.r) * cp;
+      if (e.kind === "storm") {
+        const drops = Math.min(70, Math.ceil(e.r * e.r * 1.5));
+        for (let i = 0; i < drops; i++) {
+          const ang = Math.random() * Math.PI * 2;
+          const rr = Math.sqrt(Math.random()) * rad;
+          const dx = ex + Math.cos(ang) * rr;
+          const dy = ey + Math.sin(ang) * rr;
+          this.fxLayer
+            .moveTo(dx, dy)
+            .lineTo(dx - cp * 0.12, dy + cp * 0.4)
+            .stroke({ width: lw, color: 0x9fd4ff, alpha: 0.35 });
+        }
+      } else if (e.kind === "fire") {
+        const fl = 0.06 + 0.05 * Math.sin(this._pulse * 11 + e.x);
+        this.fxLayer.circle(ex, ey, rad).fill({ color: 0xff7a3c, alpha: fl });
+      } else if (e.kind === "drought") {
+        this.fxLayer.circle(ex, ey, rad).fill({ color: 0xf0b030, alpha: 0.05 });
+      } else if (e.kind === "blight") {
+        this.fxLayer.circle(ex, ey, rad).fill({ color: 0xc774f0, alpha: 0.05 });
       }
     }
 
@@ -692,11 +915,11 @@ export class WorldScene {
           this.fxLayer
             .moveTo(bx + Math.cos(ang) * r0, by + Math.sin(ang) * r0)
             .lineTo(bx + Math.cos(ang) * r1, by + Math.sin(ang) * r1)
-            .stroke({ width: 1.5, color: b.color, alpha });
+            .stroke({ width: 1.5 * lw, color: b.color, alpha });
         }
         this.fxLayer
           .circle(bx, by, r0 * 0.9)
-          .stroke({ width: 1, color: 0xffffff, alpha: alpha * 0.7 });
+          .stroke({ width: lw, color: 0xffffff, alpha: alpha * 0.7 });
       }
       this._bursts = keep;
     }
@@ -716,7 +939,11 @@ export class WorldScene {
     this._hudAccum += deltaMS;
     if (this._hudAccum >= 300) {
       this._hudAccum = 0;
-      this.onHud?.({ fps: Math.round(this._fps), agents: this.agents.size });
+      this.onHud?.({
+        fps: Math.round(this._fps),
+        agents: this.agents.size,
+        zoom: Math.round(this._zoom * 10) / 10,
+      });
     }
   }
 
@@ -752,15 +979,12 @@ function blip(hexStr) {
   return (clamp(r * 0.7 + 26) << 16) | (clamp(g * 0.7 + 86) << 8) | clamp(b * 0.7 + 104);
 }
 
-function brighten(int) {
-  const r = (int >> 16) & 255;
-  const g = (int >> 8) & 255;
-  const b = int & 255;
-  return (clamp(r * 0.5 + 128) << 16) | (clamp(g * 0.5 + 128) << 8) | clamp(b * 0.5 + 130);
-}
-
 function clamp(v) {
   return Math.max(0, Math.min(255, Math.round(v)));
+}
+
+function clampNum(v, lo, hi) {
+  return Math.max(lo, Math.min(hi, v));
 }
 
 function makeRadialTexture(size, stops) {

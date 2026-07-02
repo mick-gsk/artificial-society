@@ -10,18 +10,43 @@
   let closeWS;
 
   let online = $state(false);
-  let hud = $state({ tick: 0, agents: 0, w: 0, h: 0, fps: 0, events: 0 });
+  let hud = $state({ tick: 0, agents: 0, w: 0, h: 0, fps: 0, events: 0, zoom: 1 });
+  let sel = $state(null); // live data of the inspected agent
+
+  const ACT_NAME = ["unterwegs", "sammelt", "kooperiert", "kämpft", "baut", "schläft"];
+  const STAGE_NAME = ["Kind", "Erwachsen", "Ältester"];
+  const TOOL_NAME = ["—", "Stein", "scharfe Klinge"];
+
+  let selectedId = null;
+
+  function refreshSel(f) {
+    if (selectedId == null) return;
+    const a = f.agents.find((x) => x.id === selectedId);
+    if (!a) {
+      selectedId = null;
+      sel = null;
+      if (scene) scene.selectedId = null;
+      return;
+    }
+    sel = a;
+  }
 
   onMount(async () => {
     scene = new WorldScene();
     await scene.init(host);
     scene.onHud = (h) => (hud = { ...hud, ...h });
+    scene.onPick = (id) => {
+      selectedId = id;
+      if (id == null) sel = null;
+    };
+    window.__scene = scene; // debug/testing hook
     closeWS = connectWS({
       onOpen: () => (online = true),
       onClose: () => (online = false),
       onHello: (m) => scene.setLegend(m.biomes),
       onFrame: (f) => {
         scene.update(f);
+        refreshSel(f);
         hud = {
           ...hud,
           tick: f.tick,
@@ -34,6 +59,12 @@
       },
     });
   });
+
+  function closeInspector() {
+    selectedId = null;
+    sel = null;
+    if (scene) scene.selectedId = null;
+  }
 
   onDestroy(() => {
     closeWS?.();
@@ -72,7 +103,52 @@
     <span class="hud-sep">·</span>
     <span class="hud-label">FPS</span>
     <span class="hud-val">{hud.fps}</span>
+    {#if hud.zoom > 1}
+      <span class="hud-sep">·</span>
+      <span class="hud-label">ZOOM</span>
+      <span class="hud-val">{hud.zoom}×</span>
+    {/if}
   </div>
+
+  {#if sel}
+    <div class="inspector">
+      <div class="ins-head">
+        <span class="ins-dot" style="--c:{sel.col}"></span>
+        <span class="ins-title">Agent {sel.id}</span>
+        <button class="ins-close" onclick={closeInspector}>×</button>
+      </div>
+      <div class="ins-row">
+        <span class="ins-k">Status</span>
+        <span class="ins-v">{STAGE_NAME[sel.st] ?? "?"} · {ACT_NAME[sel.act] ?? "?"}</span>
+      </div>
+      <div class="ins-row">
+        <span class="ins-k">Stamm</span>
+        <span class="ins-v">{sel.tribe ?? "—"}</span>
+      </div>
+      <div class="ins-row">
+        <span class="ins-k">Energie</span>
+        <span class="ins-bar"><span class="ins-fill e" style="width:{Math.min(100, (sel.e / 240) * 100)}%"></span></span>
+        <span class="ins-num">{sel.e}</span>
+      </div>
+      <div class="ins-row">
+        <span class="ins-k">Gesundheit</span>
+        <span class="ins-bar"><span class="ins-fill h" style="width:{Math.min(100, sel.hp)}%"></span></span>
+        <span class="ins-num">{sel.hp}</span>
+      </div>
+      <div class="ins-row">
+        <span class="ins-k">Werkzeug</span>
+        <span class="ins-v">{TOOL_NAME[sel.tl ?? 0]}</span>
+      </div>
+      <div class="ins-row">
+        <span class="ins-k">Traglast</span>
+        <span class="ins-v">{sel.cg > 0 ? "█".repeat(Math.min(9, sel.cg)) : "leer"}</span>
+      </div>
+      <div class="ins-row">
+        <span class="ins-k">Position</span>
+        <span class="ins-v">({sel.x}, {sel.y})</span>
+      </div>
+    </div>
+  {/if}
 
   <div class="legend" aria-hidden="true">
     <span class="lg-group">
@@ -94,6 +170,8 @@
       <span class="glyph" style="--c:#ff8a3c">▲</span><span class="lg-label">feuer</span>
       <span class="glyph" style="--c:#c084fc">◆</span><span class="lg-label">entdeckung</span>
     </span>
+    <span class="lg-sep">·</span>
+    <span class="lg-hint">rad&nbsp;zoomen · ziehen&nbsp;schwenken · agent&nbsp;anklicken</span>
   </div>
 </div>
 
@@ -261,6 +339,100 @@
     color: var(--c);
     font-size: 10px;
     line-height: 1;
+  }
+  .lg-hint {
+    color: #3d4a63;
+    text-transform: uppercase;
+  }
+
+  .inspector {
+    position: absolute;
+    top: 34px;
+    right: 12px;
+    width: 208px;
+    background: rgba(5, 8, 13, 0.92);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 8px 10px 10px;
+    font-size: 11px;
+    backdrop-filter: blur(2px);
+  }
+  .ins-head {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding-bottom: 6px;
+    margin-bottom: 6px;
+    border-bottom: 1px solid var(--line);
+  }
+  .ins-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--c);
+    box-shadow: 0 0 6px var(--c);
+  }
+  .ins-title {
+    color: var(--text);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-size: 11px;
+    flex: 1;
+  }
+  .ins-close {
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-size: 14px;
+    cursor: pointer;
+    padding: 0 2px;
+    line-height: 1;
+  }
+  .ins-close:hover {
+    color: var(--text);
+  }
+  .ins-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2.5px 0;
+  }
+  .ins-k {
+    color: var(--muted);
+    width: 72px;
+    flex: none;
+    text-transform: uppercase;
+    font-size: 9.5px;
+    letter-spacing: 0.08em;
+  }
+  .ins-v {
+    color: var(--text);
+  }
+  .ins-bar {
+    flex: 1;
+    height: 5px;
+    background: #101724;
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .ins-fill {
+    display: block;
+    height: 100%;
+    border-radius: 2px;
+  }
+  .ins-fill.e {
+    background: #ffd166;
+  }
+  .ins-fill.h {
+    background: #49d17c;
+  }
+  .ins-num {
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    width: 26px;
+    text-align: right;
+    flex: none;
+    font-size: 10px;
   }
 
   @media (prefers-reduced-motion: reduce) {
