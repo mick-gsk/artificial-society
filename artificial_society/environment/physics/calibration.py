@@ -124,7 +124,11 @@ cal(
     "Petrologie: Kryptokristallinität von Silex — Grundlage des Feuersteinschlagens",
 )
 
-_KIND_TITLES = {"dim": "Eigenschafts-Dimensionen", "material": "Startmaterialien", "process": "Prozesse"}
+_KIND_TITLES = {
+    "dim": "Eigenschafts-Dimensionen",
+    "material": "Startmaterialien",
+    "process": "Prozesse",
+}
 
 _DOC_HEADER = (
     "# Kalibrierungstabelle Physik v2\n\n"

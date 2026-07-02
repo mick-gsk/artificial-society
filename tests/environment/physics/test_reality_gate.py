@@ -55,7 +55,9 @@ def test_no_orphan_calibration_entries():
 
 def test_kalibrierung_doc_is_in_sync():
     doc = REPO_ROOT / "docs" / "physics" / "kalibrierung.md"
-    assert doc.exists(), "docs/physics/kalibrierung.md fehlt — scripts/gen_kalibrierung.py laufen lassen"
+    assert doc.exists(), (
+        "docs/physics/kalibrierung.md fehlt — scripts/gen_kalibrierung.py laufen lassen"
+    )
     assert doc.read_text(encoding="utf-8") == render_markdown(), (
         "kalibrierung.md ist veraltet — scripts/gen_kalibrierung.py neu laufen lassen"
     )

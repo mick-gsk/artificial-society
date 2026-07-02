@@ -12,7 +12,7 @@ from artificial_society.environment.physics.props import IDX2, N_PROPS_V2, PROP_
 def test_schema_has_13_unique_dims():
     assert N_PROPS_V2 == 13
     assert len(set(PROP_DIMS_V2)) == 13
-    assert IDX2 == {name: i for i, name in enumerate(PROP_DIMS_V2)}
+    assert {name: i for i, name in enumerate(PROP_DIMS_V2)} == IDX2
 
 
 def test_pv_builds_float32_vector_with_zero_defaults():

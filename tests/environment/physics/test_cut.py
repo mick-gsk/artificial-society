@@ -36,7 +36,9 @@ def test_cut_does_not_change_properties():
 
 
 def test_dull_granite_fragment_cuts_barely_better_than_hand():
-    dull_result = strike(make_object("granite", 0.8), make_object("granite", 1.2), 45.0, random.Random(42))
+    dull_result = strike(
+        make_object("granite", 0.8), make_object("granite", 1.2), 45.0, random.Random(42)
+    )
     dull = max(dull_result.fragments, key=lambda f: float(f.props[IDX2["sharpness"]]))
     blade_cut = cut(make_object("carcass", 20.0), _sharpest_flint_fragment())
     dull_cut = cut(make_object("carcass", 20.0), dull)
