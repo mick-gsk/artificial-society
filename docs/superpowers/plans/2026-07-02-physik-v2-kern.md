@@ -393,8 +393,6 @@ Kein Startmaterial ist ein Rezept-Endprodukt, keines startet mit sharpness > 0
 
 from __future__ import annotations
 
-import numpy as np
-
 from .calibration import cal
 from .props import pv
 
@@ -565,9 +563,6 @@ cal(
     "durch Zerteilen (Schneiden) erschließbar",
     "Zoologie/Jagdpraxis: Zerwirken",
 )
-
-# numpy nur für Typklarheit der Dict-Werte importiert
-assert all(isinstance(v, np.ndarray) for v in MATERIALS_V2.values())
 ```
 
 - [ ] **Step 4: Test laufen lassen — muss grün sein**
