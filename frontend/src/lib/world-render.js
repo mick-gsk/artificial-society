@@ -40,7 +40,18 @@ const MIN_AGENT_PX = 14;
 const ACT_EMOTE = { 1: "forage", 2: "cooperate", 3: "attack", 4: "build", 5: "sleep" };
 const TRAIL_LEN = 8;
 const ZOOM_MIN = 1;
-const ZOOM_MAX = 8;
+// ZOOM_MAX is dynamic (R4) — recomputed in _rebuildGrid from the current
+// cellPx so a huge grid (small cellPx) can still zoom in to real screen-size
+// cells. ZOOM_MAX_FLOOR is the absolute minimum ceiling (matches the old
+// static constant) so small grids don't lose max-zoom headroom.
+const ZOOM_MAX_FLOOR = 8;
+// Zoom-LOD (R4): three detail tiers driven by on-screen cell size
+// s = cellPx * zoom, with ±10% hysteresis at both boundaries so a slow zoom
+// across a threshold doesn't flicker. Base thresholds per the spec:
+//   FAR  s < 8      MID  8 <= s < 24      NEAR s >= 24
+const LOD_FAR_MID = 8;
+const LOD_MID_NEAR = 24;
+const LOD_HYST = 0.1;
 
 const EVENT_COLORS = {
   drought: 0xf0b030,
@@ -158,9 +169,15 @@ export class WorldScene {
 
     // view state
     this._zoom = 1;
+    this._zoomMax = ZOOM_MAX_FLOOR; // recomputed per grid in _rebuildGrid
     this._drag = null;
     this.onPick = null; // (agentId | null) => void
     this.selectedId = null;
+
+    // Zoom-LOD (R4): 'far' | 'mid' | 'near', driven by on-screen cell size with
+    // hysteresis. Recomputed on zoom change and grid rebuild; a change triggers
+    // one pass over agent records to set visibility flags (see _applyLod).
+    this._lod = "mid";
 
     this._glowTex = null;
     this._pulse = 0;
@@ -224,7 +241,7 @@ export class WorldScene {
       "wheel",
       (e) => {
         e.preventDefault();
-        const z = clampNum(this._zoom * Math.exp(-e.deltaY * 0.0018), ZOOM_MIN, ZOOM_MAX);
+        const z = clampNum(this._zoom * Math.exp(-e.deltaY * 0.0018), ZOOM_MIN, this._zoomMax);
         const p = local(e);
         this._applyZoom(z, p.x, p.y);
       },
@@ -264,6 +281,7 @@ export class WorldScene {
       this._zoom = 1;
       this.worldRoot.scale.set(1);
       this.worldRoot.position.set(0, 0);
+      this._updateLod();
     });
   }
 
@@ -274,6 +292,7 @@ export class WorldScene {
     this._zoom = z;
     this.worldRoot.scale.set(z);
     this._clampPan();
+    this._updateLod();
   }
 
   _clampPan() {
@@ -303,6 +322,56 @@ export class WorldScene {
     }
     this.selectedId = best;
     this.onPick?.(best);
+  }
+
+  // -- zoom-LOD (R4) -----------------------------------------------------------
+  //
+  // s = on-screen cell size. Three tiers with ±10% hysteresis at both
+  // boundaries: once in a tier, s has to cross the boundary by 10% before the
+  // tier changes, so a slow zoom back and forth across a threshold doesn't
+  // flicker. Called on zoom change and grid rebuild (cellPx change) — NOT
+  // every tick.
+  _lodForScale(s, current) {
+    const midUp = LOD_FAR_MID * (1 + LOD_HYST); // 8.8
+    const midDown = LOD_FAR_MID * (1 - LOD_HYST); // 7.2
+    const nearUp = LOD_MID_NEAR * (1 + LOD_HYST); // 26.4
+    const nearDown = LOD_MID_NEAR * (1 - LOD_HYST); // 21.6
+    if (current === "far") {
+      if (s >= midUp) return s >= nearUp ? "near" : "mid";
+      return "far";
+    }
+    if (current === "near") {
+      if (s < nearDown) return s < midDown ? "far" : "mid";
+      return "near";
+    }
+    // current === "mid"
+    if (s < midDown) return "far";
+    if (s >= nearUp) return "near";
+    return "mid";
+  }
+
+  _updateLod() {
+    const s = this.cellPx * this._zoom;
+    const next = this._lodForScale(s, this._lod);
+    if (next !== this._lod) {
+      this._lod = next;
+      this._applyLod();
+    }
+  }
+
+  // One pass over agent records setting visible flags per the new LOD tier —
+  // not per-tick branching. FAR hides tool/bundle/emote/per-agent-shadow (and
+  // switches to the pawn silhouette + no breathing, handled in _tick's texture
+  // lookup); trails + coop-links are gated by a single top-level check in
+  // _tick (they're per-frame Graphics redraws, not persistent sprites, so
+  // there is nothing to toggle here). Glow stays visible at every tier.
+  _applyLod() {
+    const detail = this._lod !== "far";
+    for (const rec of this.agents.values()) {
+      rec.tool.visible = detail && !!rec.toolOn;
+      rec.bundle.visible = detail && !!rec.bundleOn;
+      rec.emote.visible = detail && !!rec.emoteOn;
+    }
   }
 
   setLegend(biomes) {
@@ -760,6 +829,17 @@ export class WorldScene {
     this.offX = Math.floor((W - this.cellPx * w) / 2);
     this.offY = Math.floor((H - this.cellPx * h) / 2);
 
+    // dynamic ZOOM_MAX (R4): a big grid has a small cellPx, so a fixed zoom
+    // ceiling would never let it reach a readable on-screen cell size. Scale
+    // the ceiling up so cellPx * zoomMax reaches ~64 screen-px, never below
+    // the old static floor.
+    this._zoomMax = Math.max(ZOOM_MAX_FLOOR, 64 / this.cellPx);
+    if (this._zoom > this._zoomMax) {
+      this._zoom = this._zoomMax;
+      this.worldRoot.scale.set(this._zoom);
+      this._clampPan();
+    }
+
     // deterministic per-cell brightness jitter (hash of index) — breaks up
     // flat color fields into something that reads as ground
     this._jitter = new Float32Array(w * h);
@@ -785,6 +865,7 @@ export class WorldScene {
     this._structKey = ""; // force structure re-layout at the new scale
     this._itemKey = "";
     this._drawGrid();
+    this._updateLod();
   }
 
   // Debug-only alignment grid. Off by default — the default landscape shows no
@@ -890,6 +971,12 @@ export class WorldScene {
           act: 0,
           actAge: 999,
           facing: 1,
+          // data-driven "wants to be shown" flags — combined with the current
+          // LOD tier (see _applyLod) to get the sprite's actual .visible. A
+          // brand-new agent inherits whatever LOD is currently active.
+          toolOn: false,
+          bundleOn: false,
+          emoteOn: false,
         };
         this.agents.set(a.id, rec);
       } else {
@@ -926,20 +1013,28 @@ export class WorldScene {
       rec.glow.tint = tint;
       rec.glow.alpha = sleeping ? 0.08 : 0.16 + 0.12 * (1 - this.daylight);
 
-      // what the body carries: blade/stone in hand, bundle at the hip
-      rec.tool.visible = !sleeping && rec.tl > 0;
+      // what the body carries: blade/stone in hand, bundle at the hip. Store
+      // the data-driven desire in *On, then combine with the LOD tier (FAR
+      // hides all three regardless of data) for the sprite's real .visible —
+      // this keeps _applyLod's LOD-only pass and this data-only pass from
+      // fighting each other.
+      const detail = this._lod !== "far";
+      rec.toolOn = !sleeping && rec.tl > 0;
+      rec.tool.visible = detail && rec.toolOn;
       if (rec.tl > 0) rec.tool.texture = rec.tl === 2 ? this._toolTex.sharp : this._toolTex.blunt;
-      rec.bundle.visible = !sleeping && rec.cg >= 2;
+      rec.bundleOn = !sleeping && rec.cg >= 2;
+      rec.bundle.visible = detail && rec.bundleOn;
 
       // emote bubble above the head while acting (texture + visibility here;
       // its size/offset track rec.hpx in _tick)
       const emoteName = ACT_EMOTE[rec.act];
       if (emoteName) {
         rec.emote.texture = this._emoteTex[emoteName];
-        rec.emote.visible = true;
+        rec.emoteOn = true;
       } else {
-        rec.emote.visible = false;
+        rec.emoteOn = false;
       }
+      rec.emote.visible = detail && rec.emoteOn;
     }
     for (const [id, rec] of this.agents) {
       if (!seen.has(id)) {
@@ -1004,6 +1099,11 @@ export class WorldScene {
     this.fxLayer.clear();
     this.shadowLayer.clear();
 
+    // Trails + coop-links are NEAR-only (single top-level flag, checked once
+    // per frame — not a per-sprite branch). Both are per-frame Graphics
+    // redraws, so "hiding" them just means skipping the draw calls this tick.
+    const nearOnly = this._lod === "near";
+
     // cooperation links: connect cooperating agents that are near each other
     const coop = [];
     for (const rec of this.agents.values()) if (rec.act === ACT.COOPERATE) coop.push(rec);
@@ -1032,8 +1132,15 @@ export class WorldScene {
       // --- animation driver: action loop > walk > idle -------------------------
       // Action animation has priority; walk plays only when there is no action
       // animation AND the agent is moving; otherwise idle (breathing transform).
+      // FAR-LOD is a texture-lookup override: one static silhouette frame, no
+      // per-action pose loop, no breathing/lunge (a single branch here, not a
+      // separate per-tick pass over all sprites).
+      const far = this._lod === "far";
       let actKey, frameIdx;
-      if (sleeping) {
+      if (far) {
+        actKey = "pawn";
+        frameIdx = 0;
+      } else if (sleeping) {
         actKey = "sleep";
         frameIdx = 0;
       } else {
@@ -1056,19 +1163,21 @@ export class WorldScene {
       if (rec.figure.texture !== tex) rec.figure.texture = tex;
 
       // base scale from height; idle breathes via a tiny scale.y wobble (no
-      // extra textures); facing mirrors via negative scale.x (flips children).
+      // extra textures, skipped at FAR — the pawn silhouette doesn't breathe);
+      // facing mirrors via negative scale.x (flips children).
       const base = hpx / tex.height;
-      const breathe = actKey === "idle" && !sleeping ? 1 + 0.015 * Math.sin(this._pulse * 4 + rec._px) : 1;
+      const breathe =
+        !far && actKey === "idle" && !sleeping ? 1 + 0.015 * Math.sin(this._pulse * 4 + rec._px) : 1;
       rec.figure.scale.set(base);
       rec.figure.scale.y = base * breathe;
       rec.figure.scale.x = base * rec.facing;
 
-      // walking bob while between cells; standing still otherwise
-      const bob = moving ? Math.abs(Math.sin(this._pulse * 14 + rec._px)) * hpx * 0.055 : 0;
+      // walking bob while between cells; standing still otherwise (none at FAR)
+      const bob = !far && moving ? Math.abs(Math.sin(this._pulse * 14 + rec._px)) * hpx * 0.055 : 0;
 
       // attack lunge: shove the body forward on the lunge frame (attack1), eased
       let lunge = 0;
-      if (actKey === "attack") {
+      if (!far && actKey === "attack") {
         // triangular ease centred on frame 1 (the lunge) of the 3-frame loop.
         // Deliberately scaled by hpx (not cellPx): the lunge must stay
         // proportional to the drawn figure even when the MIN_AGENT_PX floor
@@ -1096,10 +1205,12 @@ export class WorldScene {
         rec.tool.rotation = h.rot;
       }
 
-      // grounding shadow under the feet
-      this.shadowLayer
-        .ellipse(rec._px, rec._py + hpx * 0.3, hpx * (sleeping ? 0.34 : 0.22), hpx * 0.08)
-        .fill({ color: 0x000000, alpha: 0.17 });
+      // grounding shadow under the feet — hidden at FAR (per-agent-shadow)
+      if (!far) {
+        this.shadowLayer
+          .ellipse(rec._px, rec._py + hpx * 0.3, hpx * (sleeping ? 0.34 : 0.22), hpx * 0.08)
+          .fill({ color: 0x000000, alpha: 0.17 });
+      }
 
       // emote floats above the head with a gentle bob
       if (rec.emote.visible) {
@@ -1108,9 +1219,9 @@ export class WorldScene {
         rec.emote.y = rec.figure.y - hpx * 0.85 - Math.sin(this._pulse * 3) * hpx * 0.05;
       }
 
-      // motion trail (footsteps of the recent path)
+      // motion trail (footsteps of the recent path) — NEAR only
       const pts = rec.trail;
-      if (pts.length > 1 && rec.act !== ACT.SLEEP) {
+      if (nearOnly && pts.length > 1 && rec.act !== ACT.SLEEP) {
         for (let i = 1; i < pts.length; i++) {
           this.trailLayer
             .moveTo(px(pts[i - 1][0]), py(pts[i - 1][1]))
@@ -1166,21 +1277,23 @@ export class WorldScene {
       }
     }
 
-    // cooperation: link nearby cooperating agents + halo
-    for (let i = 0; i < coop.length; i++) {
-      const a = coop[i];
-      this.fxLayer
-        .circle(a._px, a._py, cp * 0.7)
-        .stroke({ width: lw, color: ACT_COLORS[ACT.COOPERATE], alpha: 0.5 });
-      for (let j = i + 1; j < coop.length; j++) {
-        const b = coop[j];
-        const dx = a.toX - b.toX;
-        const dy = a.toY - b.toY;
-        if (dx * dx + dy * dy <= 16) {
-          this.fxLayer
-            .moveTo(a._px, a._py)
-            .lineTo(b._px, b._py)
-            .stroke({ width: lw, color: ACT_COLORS[ACT.COOPERATE], alpha: 0.45 });
+    // cooperation: link nearby cooperating agents + halo — NEAR only
+    if (nearOnly) {
+      for (let i = 0; i < coop.length; i++) {
+        const a = coop[i];
+        this.fxLayer
+          .circle(a._px, a._py, cp * 0.7)
+          .stroke({ width: lw, color: ACT_COLORS[ACT.COOPERATE], alpha: 0.5 });
+        for (let j = i + 1; j < coop.length; j++) {
+          const b = coop[j];
+          const dx = a.toX - b.toX;
+          const dy = a.toY - b.toY;
+          if (dx * dx + dy * dy <= 16) {
+            this.fxLayer
+              .moveTo(a._px, a._py)
+              .lineTo(b._px, b._py)
+              .stroke({ width: lw, color: ACT_COLORS[ACT.COOPERATE], alpha: 0.45 });
+          }
         }
       }
     }

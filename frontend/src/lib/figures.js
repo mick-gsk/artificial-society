@@ -25,7 +25,9 @@ const CX = 12; // horizontal centre of a cell, in cell px
 const GROUND = 29; // feet line (0.90625 of CELL_H → sprite anchor y)
 export const ANCHOR_Y = GROUND / CELL_H;
 
-// One column per pose, one row per life stage.
+// One column per pose, one row per life stage. `pawn` is appended at the end
+// (R4, zoom-LOD) — a new column, existing indices untouched — as the FAR-zoom
+// silhouette: one static frame, no animation, no hand anchor tool.
 const POSE_COLS = [
   "idle", // 0
   "walk0", "walk1", "walk2", "walk3", // 1..4  contact/pass/contact/pass
@@ -34,9 +36,10 @@ const POSE_COLS = [
   "attack0", "attack1", "attack2", // 10..12 wind-up → lunge → recover
   "build0", "build1", "build2", // 13..15 raise → mid → strike down
   "sleep", // 16
+  "pawn", // 17  FAR-zoom silhouette
 ];
 const COL = Object.fromEntries(POSE_COLS.map((k, i) => [k, i]));
-const N_COLS = POSE_COLS.length; // 17
+const N_COLS = POSE_COLS.length; // 18
 const STAGES = ["child", "adult", "elder"]; // rows 0,1,2
 
 // Which frames belong to each action key, plus loop timing. `n` is derived so
@@ -49,6 +52,7 @@ const FRAME_KEYS = {
   attack: ["attack0", "attack1", "attack2"],
   build: ["build0", "build1", "build2"],
   sleep: ["sleep"],
+  pawn: ["pawn"],
 };
 const DUR_MS = {
   idle: 0,
@@ -58,6 +62,7 @@ const DUR_MS = {
   attack: 120,
   build: 160,
   sleep: 0,
+  pawn: 0,
 };
 
 // -- palette (white/gray so the tribe tint reads on top) ----------------------
@@ -125,6 +130,10 @@ function drawFigure(ctx, ox, oy, pose, p) {
   const isSleep = pose === "sleep";
   if (isSleep) {
     return drawSleeper(ctx, ox, oy, p);
+  }
+  const isPawn = pose === "pawn";
+  if (isPawn) {
+    return drawPawn(ctx, ox, oy, p);
   }
 
   // --- legs (pose-specific stance) ---
@@ -209,6 +218,38 @@ function drawSleeper(ctx, ox, oy, p) {
   return { x: ox + CX, y: y0, rot: 0 };
 }
 
+// FAR-zoom silhouette — a single filled cone-with-head shape, no limbs/tunic
+// detail, no animation. Drawn white/gray so the per-sprite tribe `tint` reads
+// on top, same as the full figure; feet sit on the same GROUND line so the
+// sprite anchor (CX, GROUND) lines up exactly with the full-detail poses. No
+// hand anchor — the tool is hidden at this LOD tier.
+function drawPawn(ctx, ox, oy, p) {
+  const cx = ox + CX;
+  const headR = Math.max(2, Math.round(p.headW * 0.55));
+  const headCY = oy + p.headTop + headR;
+  const bodyTop = headCY + headR - 1;
+  const bodyBot = oy + GROUND;
+  const bodyHalfW = Math.max(2, Math.round(p.bodyW * 0.6));
+  // outline: head disc + body cone, 1px dark border
+  px(ctx, cx - headR - 1, headCY - headR - 1, headR * 2 + 2, headR * 2 + 2, OUTLINE);
+  px(ctx, cx - bodyHalfW - 1, bodyTop - 1, bodyHalfW * 2 + 2, bodyBot - bodyTop + 2, OUTLINE);
+  // filled cone body (tapers from shoulders down to a slightly wider base)
+  const rows = bodyBot - bodyTop;
+  for (let i = 0; i < rows; i++) {
+    const t = rows <= 1 ? 0 : i / (rows - 1);
+    const halfW = Math.round(bodyHalfW * (0.7 + 0.3 * t));
+    px(ctx, cx - halfW, bodyTop + i, halfW * 2, 1, SKIN);
+  }
+  // filled head disc
+  for (let dy = -headR; dy <= headR; dy++) {
+    const w = Math.round(Math.sqrt(Math.max(0, headR * headR - dy * dy)));
+    if (w > 0) px(ctx, cx - w, headCY + dy, w * 2, 1, SKIN);
+  }
+  // no hand anchor at this LOD (tool/bundle/emote are hidden) — return the
+  // default resting position so the table stays well-formed if ever read.
+  return { x: cx, y: bodyBot, rot: 0 };
+}
+
 // -- pose definitions per action ----------------------------------------------
 //
 // Each pose = { legs?, arms? }. `legs`: array of [dx, extraLen] offsets from the
@@ -258,6 +299,9 @@ const POSES = {
   build2: { legs: [[-2, 0], [3, 0]], stoop: 1, arms: { front: [5, 6, 0.9], back: [-1, 4] } },
 
   sleep: "sleep",
+
+  // pawn: FAR-zoom silhouette (R4) — filled head+cone shape, no limbs.
+  pawn: "pawn",
 };
 
 // -- stage proportions --------------------------------------------------------
@@ -326,7 +370,7 @@ export function buildFigureAtlas() {
         lean: props.lean + ((pose && pose.lean) || 0),
         stoop: props.stoop + ((pose && pose.stoop) || 0),
       };
-      const h = drawFigure(ctx, ox, oy, pose === "sleep" ? "sleep" : pose, merged);
+      const h = drawFigure(ctx, ox, oy, pose, merged);
       handByCell[row][col] = h;
     }
   }
