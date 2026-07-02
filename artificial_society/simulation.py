@@ -351,6 +351,9 @@ class Simulation:
         # investment (tribe ties + number of children). Energy only ever moves
         # *within* a tribe, so total energy is conserved (the MAX_ENERGY clamp can
         # only sink energy, never create it).
+        if self.physics_v2:
+            # v2 (B6/Architekturtabelle): keine Verwandten-Energie-Umverteilung.
+            return
         if self.tick % HAMILTON_TICK_INTERVAL != 0:
             return
         tribe_members = {}

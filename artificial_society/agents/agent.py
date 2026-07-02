@@ -548,7 +548,10 @@ class Agent:
         # recomputes from the sources every tick -- so debiting `food` directly was
         # wiped out next tick and effectively minted energy. The energy gained now
         # equals the food removed (1:1), a genuine transfer from the world.
-        if diet < 0:
+        if diet < 0 or self.physics_v2:
+            # Herbivore (v1) bzw. Physik-v2-Modus: nur Pflanzen-Zell-Foraging.
+            # v2 (B6): Zell-Fleisch/Aas-Pools sind AUS — Fleisch existiert nur
+            # noch als Kadaver-OBJEKT (B3); ein einziger Pfad je Kalorienquelle.
             # Herbivore: plant-food only.
             plant_available = cell.get("plant_food", 0.0)
             if plant_available > 0:
@@ -1167,7 +1170,7 @@ class Agent:
         reward = 0.0
         mode = "idle"
 
-        if getattr(self, "goal_stack", None) is not None:
+        if not self.physics_v2 and getattr(self, "goal_stack", None) is not None:
             goal_action, goal_shaping = agent_tick_with_goals(
                 self,
                 current_cell,
@@ -1241,24 +1244,27 @@ class Agent:
         if tick % 3 == 0:
             reward += social_learning_step(self, agents, tick)
 
-        if self._need_inv_cooldown <= 0:
-            compute_need_vector(self, current_cell)
-            inv_result = agent_invent_from_need(self, world, *self.pos, tick)
-            if inv_result:
-                reward += 0.5
-                self.endocrine.apply_discovery(1.0)
-            self._need_inv_cooldown = NEED_INVENTION_INTERVAL
-        else:
-            self._need_inv_cooldown -= 1
+        if not self.physics_v2:
+            # v2 (B6): v1-Erfindung AUS — beide Trigger-Pfade entfallen mitsamt
+            # ihren Boni; Entdecken läuft künftig über die Objekt-Physik (3b).
+            if self._need_inv_cooldown <= 0:
+                compute_need_vector(self, current_cell)
+                inv_result = agent_invent_from_need(self, world, *self.pos, tick)
+                if inv_result:
+                    reward += 0.5
+                    self.endocrine.apply_discovery(1.0)
+                self._need_inv_cooldown = NEED_INVENTION_INTERVAL
+            else:
+                self._need_inv_cooldown -= 1
 
         inv_prob = INVENTION_BASE_PROB + INVENTION_CURIOSITY_MULT * self.genes.get("curiosity", 0.5)
-        if tick % 3 == 0 and random.random() < inv_prob:
+        if not self.physics_v2 and tick % 3 == 0 and random.random() < inv_prob:
             invented = agent_try_invention(self, world, *self.pos)
             if invented:
                 reward += 1.0
                 self.endocrine.apply_discovery(1.0)
 
-        if tick % 4 == 0 and random.random() < 0.18:
+        if not self.physics_v2 and tick % 4 == 0 and random.random() < 0.18:
             cooked = agent_try_cook(self, world, *self.pos)
             if cooked:
                 reward += 0.3
