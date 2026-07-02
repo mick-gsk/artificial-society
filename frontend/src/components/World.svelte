@@ -73,6 +73,22 @@
     <span class="hud-label">FPS</span>
     <span class="hud-val">{hud.fps}</span>
   </div>
+
+  <div class="legend" aria-hidden="true">
+    <span class="lg-group">
+      <span class="chip" style="--c:#49d17c"></span><span class="lg-label">sammeln</span>
+      <span class="chip" style="--c:#3fc5f0"></span><span class="lg-label">kooperieren</span>
+      <span class="chip" style="--c:#ff5d6c"></span><span class="lg-label">kampf</span>
+      <span class="chip" style="--c:#ffb54d"></span><span class="lg-label">bauen</span>
+      <span class="chip" style="--c:#9b8cff"></span><span class="lg-label">schlafen</span>
+    </span>
+    <span class="lg-sep">·</span>
+    <span class="lg-group">
+      <span class="icon tri" style="--c:#ffb54d"></span><span class="lg-label">camp</span>
+      <span class="icon sq" style="--c:#74c69d"></span><span class="lg-label">farm</span>
+      <span class="icon ring" style="--c:#64b5f6"></span><span class="lg-label">brunnen</span>
+    </span>
+  </div>
 </div>
 
 <style>
@@ -181,6 +197,59 @@
   }
   .amber {
     color: var(--amber) !important;
+  }
+
+  .legend {
+    position: absolute;
+    bottom: 10px;
+    left: 28px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    pointer-events: none;
+    text-shadow: 0 0 6px rgba(0, 0, 0, 0.9);
+    opacity: 0.85;
+  }
+  .lg-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .lg-label {
+    color: var(--muted);
+    margin-right: 6px;
+    text-transform: uppercase;
+  }
+  .lg-sep {
+    color: #2c3650;
+  }
+  .chip {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--c);
+    box-shadow: 0 0 5px var(--c);
+  }
+  .icon {
+    width: 8px;
+    height: 8px;
+    display: inline-block;
+  }
+  .icon.tri {
+    width: 0;
+    height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-bottom: 8px solid var(--c);
+  }
+  .icon.sq {
+    border: 1.5px solid var(--c);
+  }
+  .icon.ring {
+    border: 1.5px solid var(--c);
+    border-radius: 50%;
   }
 
   @media (prefers-reduced-motion: reduce) {

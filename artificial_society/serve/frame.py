@@ -34,6 +34,11 @@ _BIOME_INDEX: dict[str, int] = {name: i for i, name in enumerate(_BIOME_NAMES)}
 # Agent life-stage -> small int (mirrors Agent.life_stage()).
 _STAGE_IDX: dict[str, int] = {"child": 0, "adult": 1, "elder": 2}
 
+# Agent action mode -> small int (mirrors Agent.last_action_mode; 5 = sleeping,
+# which overrides the mode because a sleeping agent executes no actions).
+_ACT_IDX: dict[str, int] = {"idle": 0, "forage": 1, "cooperate": 2, "attack": 3, "build": 4}
+ACT_SLEEP = 5
+
 
 def biome_legend() -> list[dict[str, Any]]:
     """Stable ``name -> {idx, rgb}`` legend; sent once in the WS hello frame."""
@@ -53,12 +58,14 @@ def build_frame(sim) -> dict[str, Any]:
     """Read-only snapshot of the spatial state for one render tick.
 
     Layout (all JSON-native):
-        ``tick``  : int
-        ``grid``  : {w, h}
-        ``cells`` : {food[w*h], water[w*h], biome[w*h]} — row-major, quantized ints
-        ``agents``: [{id, x, y, e, st, tribe, col}]
-        ``events``: [{kind, x, y, r, i}]
-        ``stats`` : the aggregate dict the cards already use (``sim.stats.last``)
+        ``tick``      : int
+        ``grid``      : {w, h}
+        ``daylight``  : float 0..1 (world.day_state light level)
+        ``cells``     : {food[w*h], water[w*h], biome[w*h]} — row-major, quantized ints
+        ``structures``: [{x, y, k}] sparse; k ∈ {camp, farm, well}
+        ``agents``    : [{id, x, y, e, hp, st, act, tribe, col}]
+        ``events``    : [{kind, x, y, r, i}]
+        ``stats``     : the aggregate dict the cards already use (``sim.stats.last``)
     """
     world = sim.world
     w, h = world.width, world.height
@@ -75,13 +82,25 @@ def build_frame(sim) -> dict[str, Any]:
         ]
         _BIOME_IDX_CACHE[world] = biome_idx
 
+    # Structures are rare — ship them sparse straight off the S arrays.
+    structures = []
+    for kind in ("camp", "farm", "well"):
+        arr = world.S.get(kind)
+        if arr is not None:
+            for sy, sx in np.argwhere(arr != 0.0):
+                structures.append({"x": int(sx), "y": int(sy), "k": kind})
+
     agents = [
         {
             "id": a.id,
             "x": a.x,
             "y": a.y,
             "e": round(a.energy),
+            "hp": round(a.health),
             "st": _STAGE_IDX.get(a.life_stage(), 1),
+            "act": ACT_SLEEP
+            if getattr(a, "is_sleeping", False)
+            else _ACT_IDX.get(getattr(a, "last_action_mode", "idle"), 0),
             "tribe": a.tribe_id,
             "col": _hex(a.display_color()),
         }
@@ -103,7 +122,9 @@ def build_frame(sim) -> dict[str, Any]:
         "type": "frame",
         "tick": sim.tick,
         "grid": {"w": w, "h": h},
+        "daylight": round(float(getattr(world, "day_state", {}).get("light", 1.0)), 3),
         "cells": {"food": food, "water": water, "biome": biome_idx},
+        "structures": structures,
         "agents": agents,
         "events": events,
         "stats": dict(getattr(sim.stats, "last", {})),
