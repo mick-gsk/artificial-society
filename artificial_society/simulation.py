@@ -6,6 +6,7 @@ import pygame
 
 import artificial_society.systems._builtins  # noqa: F401  (registers built-in systems)
 from artificial_society.agents.agent import (
+    BIRTH_ENERGY_FLOOR,
     CORPSE_ENERGY,
     MAX_ENERGY,
     Agent,
@@ -206,6 +207,12 @@ class Simulation:
         child = self.evolution.make_child(parent, x, y, genes=genes, other_parent=other_parent)
         child.hidden_state = child.brain.initial_hidden()
         child.birth_tick = self.tick
+        # Birth is an energy TRANSFER from the mother, not minting: the child
+        # keeps at most its default start energy, the mother keeps at least
+        # BIRTH_ENERGY_FLOOR — a starving mother bears a weak child.
+        transfer = min(child.energy, max(0.0, parent.energy - BIRTH_ENERGY_FLOOR))
+        child.energy = transfer
+        parent.energy -= transfer
         if self.physics_v2:
             # strength wird über den eigenen v2-Pfad vererbt (inherit_genes
             # überspringt es — Golden), DANN baut attach_body den Body daraus.
