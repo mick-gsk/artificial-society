@@ -10,6 +10,8 @@ import pytest
 from artificial_society.agents.agent import MEAT_ENERGY
 from artificial_society.environment.phys_objects import ObjectLayer
 from artificial_society.environment.physics.actions import (
+    CUT_WORK_J_BASE,
+    CUT_WORK_J_PER_EFFORT,
     DECAY_RATE,
     KCAL_PER_KG_PER_NUTRITION,
     SIM_ENERGY_PER_KCAL,
@@ -17,6 +19,8 @@ from artificial_society.environment.physics.actions import (
     TOX_SPOILAGE_PER_TICK,
     V_MAX_STRIKE,
     WORK_SIM_ENERGY_PER_JOULE,
+    blade_factor,
+    do_cut,
     do_grasp,
     do_release,
     do_strike,
@@ -24,8 +28,8 @@ from artificial_society.environment.physics.actions import (
 )
 from artificial_society.environment.physics.body import FATIGUE_PER_JOULE, Body, Hands
 from artificial_society.environment.physics.materials_v2 import MATERIALS_V2
-from artificial_society.environment.physics.objects import make_object
-from artificial_society.environment.physics.props import IDX2
+from artificial_society.environment.physics.objects import PhysObject, make_object
+from artificial_society.environment.physics.props import IDX2, pv
 
 
 def test_energie_kopplung_produkt_anker():
@@ -191,3 +195,112 @@ def test_strike_ungueltige_ziele_sind_noop_ohne_exert():
     layer.add(ziel, (5, 5), source="spawned")
     assert not do_strike(body, hands, layer, (5, 5), nicht_gehalten, ziel, 1.0, random.Random(1)).ok
     assert body.fatigue == 0.0  # kein ausgeführter Schlag → keine Ermüdung
+
+
+# --- Schneiden (do_cut) -------------------------------------------------------
+
+
+def _klinge(mass: float) -> PhysObject:
+    """Klinge mit FIXEN Props (Schärfe 0.8, Härte 0.7) — nur die Masse variiert,
+    damit der Massen-Faktor isoliert messbar ist."""
+    return PhysObject(props=pv(sharpness=0.8, hardness=0.7), mass=mass, kind="test_blade")
+
+
+def test_blade_factor_beidseitig_begrenzt():
+    """D2: 20-g-Splitter < 40 % eines 300-g-Abschlags UND 4-kg-Brocken < 300-g-Abschlag."""
+    f20g = blade_factor(_klinge(0.02))
+    f300g = blade_factor(_klinge(0.3))
+    f4kg = blade_factor(_klinge(4.0))
+    assert f20g < 0.4 * f300g
+    assert f4kg < f300g
+    assert f4kg == pytest.approx(0.2)  # das „8-kg-Skalpell" ist zu
+    assert blade_factor(None) == 1.0  # bloße Hand hat keinen Massen-Faktor
+
+
+def test_cut_ertrag_skaliert_mit_klingen_faktor():
+    # Effort konstant (0.5) — der Effort-Faktor kürzt sich aus den Verhältnissen heraus.
+    for masse in (0.02, 0.3, 4.0):
+        body, hands, layer = _setup()
+        klinge = _klinge(masse)
+        layer.add(klinge, (5, 5), source="spawned")
+        do_grasp(body, hands, layer, (5, 5), klinge)
+        kadaver = make_object("carcass", 20.0)
+        layer.add(kadaver, (5, 5), source="spawned")
+        res = do_cut(body, hands, layer, (5, 5), klinge, kadaver, effort=0.5)
+        assert res.ok and res.extracted is not None
+        if masse == 0.3:
+            ertrag_300g = res.extracted.mass
+        elif masse == 0.02:
+            ertrag_20g = res.extracted.mass
+        else:
+            ertrag_4kg = res.extracted.mass
+    assert ertrag_20g < 0.4 * ertrag_300g
+    assert ertrag_4kg < ertrag_300g
+
+
+def test_cut_ertrag_skaliert_mit_effort():
+    """Spec B4 (Rev. 4): yield × (0.5 + 0.5·effort) — Effort 1.0 extrahiert exakt 2×
+    soviel je Schnitt wie Effort 0.0, bei gleichem Werkzeug und gleichem Ziel."""
+    ertraege = {}
+    for effort in (0.0, 1.0):
+        body, hands, layer = _setup()
+        klinge = _klinge(0.3)  # blade_factor 1.0 → nur der Effort-Faktor wirkt
+        layer.add(klinge, (5, 5), source="spawned")
+        do_grasp(body, hands, layer, (5, 5), klinge)
+        kadaver = make_object("carcass", 20.0)
+        layer.add(kadaver, (5, 5), source="spawned")
+        res = do_cut(body, hands, layer, (5, 5), klinge, kadaver, effort=effort)
+        assert res.ok and res.extracted is not None
+        ertraege[effort] = res.extracted.mass
+    assert ertraege[1.0] == pytest.approx(2.0 * ertraege[0.0], rel=1e-9)
+
+
+def test_cut_masse_exakt_erhalten_und_platzierung():
+    body, hands, layer = _setup()
+    klinge = _klinge(0.3)
+    layer.add(klinge, (5, 5), source="spawned")
+    do_grasp(body, hands, layer, (5, 5), klinge)
+    kadaver = make_object("carcass", 20.0)
+    layer.add(kadaver, (5, 5), source="spawned")
+
+    res = do_cut(body, hands, layer, (5, 5), klinge, kadaver, effort=0.5)
+    # Mikro-Invariante (D1): extracted + remainder == target, exakt
+    boden = layer.objects_at((5, 5))
+    remainder = [o for o in boden if o is not res.extracted]
+    assert len(boden) == 2 and len(remainder) == 1
+    assert math.isclose(res.extracted.mass + remainder[0].mass, 20.0, rel_tol=1e-9)
+    assert layer.position_of(kadaver) is None  # Original ist ersetzt
+    # Schneidearbeit über den Ermüdungspfad: CUT_WORK_J = 15 + 35·0.5 = 32.5 J
+    erwartete_arbeit = CUT_WORK_J_BASE + CUT_WORK_J_PER_EFFORT * 0.5
+    assert res.work_j == pytest.approx(erwartete_arbeit)
+    assert body.fatigue == pytest.approx(erwartete_arbeit * FATIGUE_PER_JOULE)
+    assert res.energy_delta_sim < 0.0
+    lhs, rhs = layer.conservation_terms(held_mass_kg=hands.carried_mass_kg())
+    assert math.isclose(lhs, rhs, rel_tol=1e-9)
+
+
+def test_cut_gehaltenes_ziel_remainder_bleibt_in_der_hand():
+    body, hands, layer = _setup()
+    fleisch = make_object("raw_meat", 2.0)
+    layer.add(fleisch, (5, 5), source="spawned")
+    do_grasp(body, hands, layer, (5, 5), fleisch)
+
+    res = do_cut(body, hands, layer, (5, 5), None, fleisch, effort=0.2)  # bloße Hand
+    assert res.ok and res.extracted is not None
+    assert len(hands.held) == 1 and hands.held[0] is not fleisch  # remainder ersetzt Ziel
+    assert layer.position_of(res.extracted) == (5, 5)  # Abschnitt fällt zu Boden
+    assert math.isclose(hands.held[0].mass + res.extracted.mass, 2.0, rel_tol=1e-9)
+
+
+def test_cut_granit_kein_ertrag_aber_arbeit():
+    """Gestein ist nicht schneidbar (processes.cut) — Arbeit fällt trotzdem an."""
+    body, hands, layer = _setup()
+    klinge = _klinge(0.3)
+    layer.add(klinge, (5, 5), source="spawned")
+    do_grasp(body, hands, layer, (5, 5), klinge)
+    granit = make_object("granite", 3.0)
+    layer.add(granit, (5, 5), source="spawned")
+    res = do_cut(body, hands, layer, (5, 5), klinge, granit, effort=1.0)
+    assert res.ok and res.reason == "no_yield" and res.extracted is None
+    assert granit.mass == 3.0 and layer.position_of(granit) == (5, 5)
+    assert body.fatigue > 0.0

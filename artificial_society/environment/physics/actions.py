@@ -18,7 +18,7 @@ from artificial_society.environment.daynight import TICKS_PER_DAY
 from .body import Body, Hands
 from .calibration import cal
 from .objects import PhysObject
-from .processes import strike
+from .processes import cut, strike
 
 # --- Energie-Kopplung kcal ↔ Sim-Energie (B5) --------------------------------
 SIM_ENERGY_PER_KCAL = 0.032
@@ -251,4 +251,84 @@ def do_strike(
         energy_delta_sim=energy_delta,
         fragments=result.fragments,
         work_j=impact_j,
+    )
+
+
+def blade_factor(blade: PhysObject | None) -> float:
+    """Klingen-Massen-Faktor (B4), beidseitig begrenzt: zu leichte Splitter
+    (< ~150 g) und unhandliche Brocken (> ~1 kg einhändig) schneiden schlecht.
+    blade_factor = clamp(sqrt(m/BLADE_MASS_REF), 0.2, 1) · clamp((2·HANDLE_MAX − m)/HANDLE_MAX, 0.2, 1)
+    Bloße Hand: 1.0 (kein Werkzeug, kein Massen-Faktor — der Hand-Malus steckt
+    in BARE_HAND_SHARPNESS der Prozess-Physik)."""
+    if blade is None:
+        return 1.0
+    leicht = min(max(math.sqrt(blade.mass / BLADE_MASS_REF), 0.2), 1.0)
+    handlich = min(max((BLADE_HANDLE_MAX * 2.0 - blade.mass) / BLADE_HANDLE_MAX, 0.2), 1.0)
+    return leicht * handlich
+
+
+def do_cut(
+    body: Body,
+    hands: Hands,
+    layer,
+    pos,
+    blade_held: PhysObject | None,
+    target: PhysObject,
+    effort: float,
+) -> ActionResult:
+    """Schneiden mit Klinge aus der Hand oder bloßer Hand (blade_held=None).
+
+    Der Ertrag der Prozess-Physik (processes.cut) wird mit dem beidseitigen
+    Klingen-Massen-Faktor UND dem Effort-Faktor (0.5 + 0.5·effort) skaliert
+    (Spec B4 Rev. 4: Zerlegegeschwindigkeit skaliert mit aufgebrachter Kraft);
+    Masse bleibt exakt erhalten (der nicht abgetrennte Anteil bleibt im
+    remainder). Schneiden kostet Arbeit CUT_WORK_J = 15 + 35·effort über
+    denselben Ermüdungspfad wie der Schlag. Platzierung: extracted fällt zu
+    Boden; remainder ersetzt das Ziel an dessen Ort (Hand bleibt Hand, Boden
+    bleibt Boden)."""
+    pos = (int(pos[0]), int(pos[1]))
+    if blade_held is not None and blade_held not in hands.held:
+        return ActionResult(ok=False, verb="cut", reason="blade_not_held")
+    if target is blade_held:
+        return ActionResult(ok=False, verb="cut", reason="target_is_blade")
+    target_held = target in hands.held
+    if not target_held and layer.position_of(target) != pos:
+        return ActionResult(ok=False, verb="cut", reason="target_out_of_reach")
+
+    effort = min(max(float(effort), 0.0), 1.0)
+    work_j = CUT_WORK_J_BASE + CUT_WORK_J_PER_EFFORT * effort
+    body.exert_strike(work_j)  # derselbe Ermüdungspfad (FATIGUE_PER_JOULE)
+    energy_delta = -work_j * WORK_SIM_ENERGY_PER_JOULE
+
+    result = cut(target, blade_held)
+    if result.extracted is None:
+        return ActionResult(
+            ok=True, verb="cut", reason="no_yield", energy_delta_sim=energy_delta, work_j=work_j
+        )
+    extracted, remainder = result.extracted, result.remainder
+    # Ertrag = Prozess-Yield × Klingen-Massen-Faktor × Effort-Faktor (B4 Rev. 4);
+    # die Kosten (CUT_WORK_J, Ermüdung) skalieren bereits oben mit Effort.
+    faktor = blade_factor(blade_held) * (0.5 + 0.5 * effort)
+    if faktor < 1.0:
+        skaliert = extracted.mass * faktor
+        if skaliert <= 1e-9:
+            return ActionResult(
+                ok=True,
+                verb="cut",
+                reason="no_yield",
+                energy_delta_sim=energy_delta,
+                work_j=work_j,
+            )
+        extracted.mass = skaliert
+    remainder.mass = target.mass - extracted.mass  # Masse exakt erhalten
+
+    if target_held:
+        hands.held[hands.held.index(target)] = remainder  # Masse sinkt strikt → kein Budget-Check
+    else:
+        layer.remove(target)
+        layer.add(remainder, pos)
+    layer.add(extracted, pos)
+    layer.discovery.register(extracted.props)
+    return ActionResult(
+        ok=True, verb="cut", energy_delta_sim=energy_delta, extracted=extracted, work_j=work_j
     )
