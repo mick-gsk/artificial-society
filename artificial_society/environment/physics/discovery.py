@@ -47,6 +47,3 @@ class DiscoveryV2:
 
     def known_ids(self) -> list:
         return [e["id"] for e in self.entries]
-
-
-DISCOVERY_V2 = DiscoveryV2()

@@ -15,7 +15,7 @@ from .body import (
     Hands,
 )
 from .calibration import CALIBRATION, CalEntry, cal, entry_for, render_markdown
-from .discovery import DISCOVERY_V2, DiscoveryV2
+from .discovery import DiscoveryV2
 from .materials_v2 import MATERIALS_V2
 from .objects import PhysObject, make_object
 from .processes import (
@@ -41,7 +41,6 @@ __all__ = [
     "cal",
     "entry_for",
     "render_markdown",
-    "DISCOVERY_V2",
     "DiscoveryV2",
     "MATERIALS_V2",
     "PhysObject",

@@ -43,3 +43,14 @@ def test_state_roundtrip_and_reset():
     reg2.reset()
     assert reg2.known_ids() == []
     assert reg2.get_vector("pmat_0000") is None
+
+
+def test_kein_modul_singleton_mehr():
+    """Spec B1: DiscoveryV2 lebt pro Welt (ObjectLayer.discovery), nicht als
+    Modul-Singleton — geteilter Zustand zwischen Simulationen ist verboten."""
+    import artificial_society.environment.physics as physics_pkg
+    from artificial_society.environment.physics import discovery as discovery_mod
+
+    assert not hasattr(discovery_mod, "DISCOVERY_V2")
+    assert not hasattr(physics_pkg, "DISCOVERY_V2")
+    assert "DISCOVERY_V2" not in physics_pkg.__all__
