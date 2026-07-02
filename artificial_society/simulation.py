@@ -22,7 +22,8 @@ from artificial_society.systems.language import TOKEN_WORLD
 from artificial_society.systems.remedy import REMEDY_REGISTRY, try_infect_agent
 from artificial_society.world import World
 
-EVENT_WARMUP_TICKS = 600
+# (EVENT_WARMUP_TICKS lives in environment/events.py now — it was a dead
+# constant here since the old live loop was removed; events.py enforces it.)
 MIN_POPULATION = 8
 RESPAWN_COUNT = 6
 CHECKPOINT_INTERVAL = 500
