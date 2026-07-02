@@ -20,6 +20,7 @@ from artificial_society.agents.agent import Agent
 from artificial_society.agents.knowledge import EpisodicMemory, NoveltyMemory
 from artificial_society.environment.materials import DISCOVERY_REGISTRY, N_PROPS
 from artificial_society.simulation import Simulation
+from artificial_society.systems.goal_stack import NeedFulfilled, SubGoal
 from artificial_society.systems.goal_stack_ext import RECIPE_DISCOVERY
 from artificial_society.systems.language import TOKEN_WORLD, Token
 
@@ -87,6 +88,29 @@ def test_checkpoint_restores_id_counter(tmp_path, monkeypatch):
 def test_id_counter_is_class_level_not_a_field():
     assert "id_counter" not in {f.name for f in dataclasses.fields(Agent)}
     assert "id_counter" not in Agent(id=999).__dict__
+
+
+def test_checkpoint_saves_with_active_suggested_goals(tmp_path, monkeypatch):
+    """SubGoal.done_fn used to be a local closure — every mid-run save failed
+    with "Can't pickle local object" as soon as any agent had an active goal."""
+    path = tmp_path / "ckpt.pkl"
+    monkeypatch.setattr(sim_mod, "CHECKPOINT_PATH", str(path))
+    sim = Simulation(load_checkpoint=False, **SMALL)
+    sim.agents[0].goal_stack.push(
+        SubGoal(
+            action="rub",
+            reward_pred=0.5,
+            max_ticks=20,
+            label="need_test",
+            done_fn=NeedFulfilled(0),
+        )
+    )
+
+    sim._save_checkpoint()
+
+    assert path.exists() and path.stat().st_size > 0, "save must not silently fail"
+    fresh = Simulation(load_checkpoint=True, **SMALL)
+    assert not fresh.agents[0].goal_stack.is_empty(), "goal must survive the round-trip"
 
 
 def test_novelty_memory_pickle_alias():

@@ -111,6 +111,36 @@ class GoalStack:
         return len(self.stack) == 0
 
 
+class NeedFulfilled:
+    """Picklebare done_fn: erfuellt, sobald irgendein Material (Inventar oder
+    Zelle) die benoetigte Eigenschaft ueber dem Schwellenwert hat.
+
+    Eine Klasseninstanz statt einer Closure, weil SubGoals im goal_stack des
+    Agenten liegen und mit dem Checkpoint gepicklet werden — lokale Funktionen
+    sind nicht picklebar und liessen jeden Mid-Run-Save fehlschlagen.
+    """
+
+    __slots__ = ("prop_idx", "threshold")
+
+    def __init__(self, prop_idx: int, threshold: float = 0.3):
+        self.prop_idx = prop_idx
+        self.threshold = threshold
+
+    def __call__(self, agent, cell) -> bool:
+        from artificial_society.environment.materials import get_vector
+
+        inv = getattr(agent, 'material_inventory', {})
+        for mat_id, qty in inv.items():
+            if qty > 0.1 and float(get_vector(mat_id)[self.prop_idx]) > self.threshold:
+                return True
+        # Auch Zelle pruefen (z.B. Feuer in Zelle loest Kaelte-Need)
+        slot = cell.get('materials', {})
+        for mat_id, qty in slot.items():
+            if qty > 0.1 and float(get_vector(mat_id)[self.prop_idx]) > self.threshold:
+                return True
+        return False
+
+
 # ---------------------------------------------------------------------------
 # GoalPlanner: vollstaendig emergent, keine hardcodierten Rezepte
 # ---------------------------------------------------------------------------
@@ -175,27 +205,6 @@ class GoalPlanner:
         causal_mem = getattr(agent, 'causal_memory', None)
         action = _select_action_by_need(need, vec_a, vec_b, causal_mem)
 
-        # done_fn: Ziel erreicht wenn Need-Vektor in Inventar befriedigt wird
-        # (d.h. irgendein Material mit der benoetigten Eigenschaft > Schwellenwert)
-        needed_prop_idx = top_prop_idx
-        needed_threshold = 0.3
-
-        def need_fulfilled(a, c, prop_idx=needed_prop_idx, threshold=needed_threshold):
-            inv = getattr(a, 'material_inventory', {})
-            for mat_id, qty in inv.items():
-                if qty > 0.1:
-                    v = get_vector(mat_id)
-                    if float(v[prop_idx]) > threshold:
-                        return True
-            # Auch Zelle pruefen (z.B. Feuer in Zelle loest Kaelte-Need)
-            slot = c.get('materials', {})
-            for mat_id, qty in slot.items():
-                if qty > 0.1:
-                    v = get_vector(mat_id)
-                    if float(v[prop_idx]) > threshold:
-                        return True
-            return False
-
         reward_pred = top_need_val * 0.8  # proportional zum Need
 
         suggestions.append(SubGoal(
@@ -204,7 +213,13 @@ class GoalPlanner:
             reward_pred = reward_pred,
             max_ticks   = 20,
             label       = f'need_{top_prop}',
-            done_fn     = need_fulfilled,
+            # done_fn: Ziel erreicht wenn irgendein Material (Inventar oder
+            # Zelle) die benoetigte Eigenschaft > Schwellenwert hat. Muss eine
+            # picklebare Instanz sein, KEINE Closure: SubGoals liegen im
+            # goal_stack des Agenten und werden mit dem Checkpoint gepicklet —
+            # eine lokale Funktion liess jeden Mid-Run-Checkpoint-Save
+            # fehlschlagen.
+            done_fn     = NeedFulfilled(top_prop_idx),
         ))
 
         return suggestions
