@@ -182,19 +182,19 @@ design hands agents a behaviour ("when X, do Y"), it is scripting and gets rejec
 right question for every slice is: *what affordance does the world offer, and what pressure
 makes learning it worthwhile?*
 
-1. **Language / communication.** Wake the dormant token substrate
+1. **Tools / crafting.** Open the combination space: material properties + physical
+   actions (`invention.py` primitives) determine outcomes; no hardcoded recipe list
+   decides what may exist. Composite tools (handle + blade) should be reachable, not
+   enumerated. Spec + laufender Plan: docs/superpowers/specs/2026-07-02-realphysik-emergenz-schnitt1-design.md, docs/superpowers/plans/2026-07-02-physik-v2-kern.md.
+2. **Building / environment shaping.** Persistent world modification driven by learned
+   advantage (shelter → warmth → survival in winter), with structures decaying unless
+   maintained — so building has to *earn* its cost.
+3. **Language / communication.** Wake the dormant token substrate
    (`systems/language.py`, `agents/communication.py` 4-dim `message_vector`). Ground
    symbols in learned utility: emitting/attending to signals must pay off through the
    reward channel (found food, avoided danger, coordinated action), never through
    scripted meanings. Success looks like: stable signal→situation conventions that
-   differ across tribes/lineages.
-2. **Tools / crafting.** Open the combination space: material properties + physical
-   actions (`invention.py` primitives) determine outcomes; no hardcoded recipe list
-   decides what may exist. Composite tools (handle + blade) should be reachable, not
-   enumerated.
-3. **Building / environment shaping.** Persistent world modification driven by learned
-   advantage (shelter → warmth → survival in winter), with structures decaying unless
-   maintained — so building has to *earn* its cost.
+   differ across tribes/lineages. Bewusst nach Tools: Sprache braucht erst etwas Kommunikationswürdiges (Spec 2026-07-02, §9).
 4. **Learning machinery.** The abandoned research's one transferable finding: the learned
    policy generated *less* novelty than a random-recombination null — the bottleneck is
    credit assignment, memory, and generation–policy coupling, not the number of world
@@ -216,7 +216,7 @@ Tasks A–K are ✅ done (Phases 2, 4 and 5 above). Remaining + new backlog:
 | L | Tribe / lineage / discovery overlays | visualization | neutral | — |
 | M | Per-agent inspector overlay (state, brain, memory) | visualization | neutral | — |
 | N | Rebase + integrate live web viz (`feat/infra-live-viz`, predates Phase 1b+) | infra | neutral | — |
-| O | **Capability slice 1: language/communication** (§4b — spec first) | systems + agents | regen | — |
+| O | **Capability slice 1: tools/crafting — Physik v2 Kern** (Spec + Plan 2026-07-02) | environment | neutral | — |
 | P | **Capability slice 4 (thin): intrinsic motivation & credit horizon** (§4b) | agents | regen | — |
 
 Branch naming: `feat/<lane>-<topic>` (or `core/<topic>`). One worktree per branch.
