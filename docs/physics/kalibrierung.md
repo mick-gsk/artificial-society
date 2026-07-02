@@ -49,4 +49,5 @@
 | Name | Realer Anker | Quelle |
 |---|---|---|
 | `carry_capacity` | Dauer-Tragfähigkeit ≈ 30 % des Körpergewichts (Trekking-Richtwert 20–25 %, militärisches Marschgepäck 30–45 % mit Ermüdungsfolgen); skaliert mit Kraft, gedämpft durch Ermüdung | Ergonomie-/Militär-Richtwerte zum Lastentragen |
+| `fatigue` | Ermüdung/Erholung, Größenordnungen: ~200 kräftige Schläge bis deutliche Erschöpfung (geübte Steinschläger arbeiten stundenlang); Dauerlast an der Traggrenze über Hunderte Ticks tragbar; Erholung in Ruhe über Dutzende Ticks. [Zeitskala Sim-Tick↔Realzeit bewusst qualitativ, bis die Sim-Integration sie fixiert] | Arbeitsphysiologie (Ermüdung/Erholung beim Lastentragen und repetitiver Arbeit) |
 | `strike_energy` | Schlagenergie eines Handschlags mit Werkzeugstein 5–50 J (deckungsgleich mit dem Anker des Prozesses strike: kräftiger Handschlag 10–50 J); skaliert mit Kraft, gedämpft durch Ermüdung | Biomechanik des Hammerschlags; experimentelle Archäologie |
