@@ -1,15 +1,7 @@
 # EpisodicMemory – erweitert um:
-# - Territorium-Tracking und Reward-Bridge
+# - Territorium-Tracking
 # - Jahreszeiten-Kontext in Erinnerungen (saisonales Heimrevierverhalten)
-# - Korrektur: position_reward prueft ob Ressource noch vorhanden ist
 # - Korrektur: memory_capacity skaliert korrekt pro Speichertyp (nicht geteilt)
-
-MEMORY_TERRITORY_RADIUS   = 3
-MEMORY_REVISIT_REWARD     = 0.12
-MEMORY_FRESH_TICKS        = 300
-MEMORY_DANGER_PENALTY     = 0.18
-# Saisonale Toleranz: Erinnerungen aus anderer Jahreszeit werden abgediscontet
-SEASON_DISCOUNT           = 0.45
 
 
 class EpisodicMemory:
@@ -68,59 +60,9 @@ class EpisodicMemory:
             return None
         return max(self.social_memory, key=lambda m: m['trust'])
 
-    def position_reward(self, pos: tuple, tick: int, world=None, current_season: str = None) -> float:
-        """
-        Reward-Bridge: Bonus fuer Revisit bekannter Ressourcen, Penalty fuer Gefahrenzonen.
-
-        NEU:
-        - Prueft ob die Ressource in der Zelle noch wirklich vorhanden ist (world-Parameter).
-          Wenn leer -> kein Bonus (verhindert leere Revisits nach Drought/Ueberfischung).
-        - Saisonaler Discount: Erinnerungen aus anderer Jahreszeit werden abgediscontet
-          (SEASON_DISCOUNT). Agent lernt dass Sommerressourcen im Winter nicht da sind.
-        """
-        reward = 0.0
-        px, py = pos
-
-        # Ressourcen-Bonus
-        for mem in self.resource_memory:
-            if mem['food'] < 20.0 and mem['water'] < 20.0:
-                continue
-            age = tick - mem['timestamp']
-            if age > MEMORY_FRESH_TICKS:
-                continue
-            lx, ly = mem['location']
-            dist = abs(px - lx) + abs(py - ly)
-            if dist <= MEMORY_TERRITORY_RADIUS:
-                # Pruefe ob Ressource noch da ist
-                if world is not None:
-                    cell = world.get_cell(lx, ly)
-                    if cell['food'] < 5.0 and cell['water'] < 5.0:
-                        continue  # Leer -- kein Bonus fuer leere Erinnerung
-                freshness = max(0.0, 1.0 - age / MEMORY_FRESH_TICKS)
-                quality   = min(1.0, (mem['food'] + mem['water']) / 120.0)
-                # Saisonaler Discount wenn Erinnerung aus anderer Saison
-                season_match = 1.0
-                if current_season and mem.get('season_id') and mem['season_id'] != current_season:
-                    season_match = SEASON_DISCOUNT
-                reward += MEMORY_REVISIT_REWARD * freshness * quality * season_match
-
-        # Gefahren-Penalty
-        for mem in self.danger_memory:
-            if mem['danger'] < 40.0:
-                continue
-            age = tick - mem['timestamp']
-            if age > MEMORY_FRESH_TICKS:
-                continue
-            lx, ly = mem['location']
-            dist = abs(px - lx) + abs(py - ly)
-            if dist <= MEMORY_TERRITORY_RADIUS:
-                freshness = max(0.0, 1.0 - age / MEMORY_FRESH_TICKS)
-                season_match = 1.0
-                if current_season and mem.get('season_id') and mem['season_id'] != current_season:
-                    season_match = SEASON_DISCOUNT
-                reward -= MEMORY_DANGER_PENALTY * freshness * season_match
-
-        return reward
+    # (position_reward is gone: it had no callers, and its current_season
+    # parameter lost its only data source when the old live loop — which set
+    # world.current_season — was removed.)
 
     def retrieval_features(self, x, y, tick, world_w=1, world_h=1):
         res = self.best_known_resource()

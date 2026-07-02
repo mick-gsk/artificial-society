@@ -40,8 +40,8 @@ PYTHONHASHSEED=0 python -m artificial_society.serve   # or scripts/run-dashboard
 ```
 
 `artificial_society/serve/` (infra lane) hosts the sim on the GPU PC and is controlled
-remotely from the MacBook. `runner.SimulationRunner` steps the sim in a thread and calls
-`sim.stats.update(...)` after each tick (`step` does not collect stats itself); `app` exposes
+remotely from the MacBook. `runner.SimulationRunner` steps the sim in a thread; statistics
+are collected inside `step()` by the registered `stats` system (order 70); `app` exposes
 `/api/{run,stop,status,history,graph.png,health}`. Full setup: `docs/serve-setup.md`.
 Concrete provisioned GPU host + remote-access details (for the MacBook): `docs/remote-host.md`.
 

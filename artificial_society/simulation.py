@@ -391,66 +391,10 @@ class Simulation:
             print(f"[checkpoint] load failed: {e} — starting fresh")
             self.spawn_initial_population(self._initial_population)
 
-    def _collect_stats(self):
-        alive = [a for a in self.agents if a.alive]
-        if not alive:
-            return
-        from artificial_society.agents.life_stage import STAGE_ADULT, STAGE_CHILD, STAGE_ELDER
-
-        n_child = sum(1 for a in alive if getattr(a, "life_stage", STAGE_ADULT) == STAGE_CHILD)
-        n_adult = sum(1 for a in alive if getattr(a, "life_stage", STAGE_ADULT) == STAGE_ADULT)
-        n_elder = sum(1 for a in alive if getattr(a, "life_stage", STAGE_ADULT) == STAGE_ELDER)
-        avg_age = sum(self.tick - getattr(a, "birth_tick", self.tick) for a in alive) / len(alive)
-        avg_hyd = sum(getattr(a, "hydration", 50.0) for a in alive) / len(alive)
-        avg_sick = sum(getattr(a, "sick", 0.0) for a in alive) / len(alive)
-        avg_rew = sum(getattr(a, "last_reward", 0.0) for a in alive) / len(alive)
-        n_preg = sum(1 for a in alive if getattr(a, "pregnant", False))
-        n_tribes = len({a.tribe_id for a in alive if a.tribe_id is not None})
-        food_vals = [
-            self.world.get_cell(x, y)["food"]
-            for y in range(self.world.height)
-            for x in range(self.world.width)
-        ]
-        water_vals = [
-            self.world.get_cell(x, y)["water"]
-            for y in range(self.world.height)
-            for x in range(self.world.width)
-        ]
-        dis_vals = [
-            self.world.get_cell(x, y)["disease"]
-            for y in range(self.world.height)
-            for x in range(self.world.width)
-        ]
-        pol_vals = [
-            self.world.get_cell(x, y)["pollution"]
-            for y in range(self.world.height)
-            for x in range(self.world.width)
-        ]
-        dist_vals = [
-            self.world.get_cell(x, y)["disturbance"]
-            for y in range(self.world.height)
-            for x in range(self.world.width)
-        ]
-        self.stats.record(
-            {
-                "population": len(alive),
-                "n_child": n_child,
-                "n_adult": n_adult,
-                "n_elder": n_elder,
-                "average_age": avg_age,
-                "avg_hydration": avg_hyd,
-                "avg_sick": avg_sick,
-                "avg_reward": avg_rew,
-                "pregnant": n_preg,
-                "tribes": n_tribes,
-                "active_events": 0,
-                "world_food": sum(food_vals) / max(1, len(food_vals)),
-                "world_water": sum(water_vals) / max(1, len(water_vals)),
-                "world_disease": sum(dis_vals) / max(1, len(dis_vals)),
-                "world_pollution": sum(pol_vals) / max(1, len(pol_vals)),
-                "world_disturbance": sum(dist_vals) / max(1, len(dist_vals)),
-            }
-        )
+    # (The legacy _collect_stats method is gone: it had no callers, called a
+    # non-existent stats.record(), hardcoded active_events to 0 and compared
+    # the life_stage METHOD against stage constants. Live statistics are
+    # collected by the registered 'stats' system (order 70, _builtins.py).)
 
     def step(self):
         """Advance the simulation by exactly one tick.
