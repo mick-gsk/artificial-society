@@ -56,7 +56,20 @@ every tick (≈ 72×/tick at pop 36 once buffers fill → ~6 ms/tick of pure ove
 
 ## Optimization plan (priority by measured impact)
 
-### Tier 1 — Vectorize the world update *(the #1 hotspot, 55-84 % of runtime)*
+> **Status 2026-07-02:** Tier 1 and Tier 2 are ✅ DONE (`core/perf-tier1-world-vectorize`,
+> merged). World cell state is numpy struct-of-arrays (`cell_store.py`) behind dict-compatible
+> views; regrowth/events/diffusion are grid-wide array math, **bit-identical** to the scalar
+> reference (golden stayed green; guard: `tests/environment/test_vectorized_equivalence.py`).
+> Brains default to CPU (`AS_BRAIN_DEVICE=cuda` to opt back in). Measured on the GPU-PC
+> (`perf_bench.py scale`, before → after): 36 @ 60×40 **137.5 → 56.8 ms/tick**;
+> 8 @ 200×200 **1421.6 → 50.0 (28×)**; 200 @ 200×200 **1725.3 → 352.3**;
+> 500 @ 200×200 **2104.8 → 740.0 ms/tick** (100k ticks: 58.5 h → 20.6 h).
+> The world term is gone (~40-50 ms at 200×200, mostly the per-cell herb-RNG loop);
+> the remaining cost is per-agent brain planning (`imagine_rollout`) at ~1.4 ms/agent —
+> that is Tier 4 / the GPU-resident engine, and it touches `brain.py`/`agent.py`
+> (coordinate with the capability-slice lane before starting).
+
+### Tier 1 — Vectorize the world update *(the #1 hotspot, 55-84 % of runtime)* ✅ DONE
 
 Replace the per-cell Python scalar loops with NumPy array ops over the whole grid.
 - `environment/resources.py` — `regrow_cell` / `clamp` / `diffuse_step` (33 M `min`/`max` calls).
@@ -67,7 +80,7 @@ Replace the per-cell Python scalar loops with NumPy array ops over the whole gri
 - **Determinism:** vectorized float reductions can change rounding vs scalar Python → may shift the
   golden trajectory. Treat as a deliberate change: regenerate the baseline, don't "fix" the test.
 
-### Tier 2 — Run the brains on CPU, not GPU *(data-backed reversal)*
+### Tier 2 — Run the brains on CPU, not GPU *(data-backed reversal)* ✅ DONE
 
 For the current per-agent, batch-1 architecture the GPU is 7-11× **slower**. Default
 `brain.py` `device` to CPU. This also sidesteps the FP16 autocast crash (see `docs/remote-host.md`)

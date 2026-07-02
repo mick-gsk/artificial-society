@@ -34,6 +34,13 @@ Damit ist der Messkontrakt verankert: **dieselben Konfigurationen, dasselbe Skri
 (`scripts/perf_bench.py` + Scale-Läufe) werden nach der Engine-Umsetzung erneut gemessen;
 das Vorher/Nachher gehört zum Abnahmekriterium.
 
+**Zwischenstand nach Tier 1+2 (2026-07-02, vorgezogen):** Welt-Update vektorisiert
+(bit-identisch, Golden grün) + CPU-Default. GPU-PC-Messung: 36 @ 60×40 = 56,8 ms;
+8 @ 200×200 = 50,0 ms (28×); 200 @ 200×200 = 352,3 ms; 500 @ 200×200 = **740,0 ms/Tick
+(20,6 h/100k)**. Der Weltterm ist eliminiert; was bleibt, ist das Pro-Agent-Planen
+(`imagine_rollout`, ~1,4 ms/Agent) — genau der Teil, den diese Engine batcht. Das
+≥50×-Abnahmeziel bezieht sich weiter auf die ursprüngliche Baseline oben.
+
 ## Entscheidung: Torch-residente Engine (Hybrid)
 
 1. **Welt als Tensoren:** alle Zellfelder als `torch`-Arrays (GPU-resident); Regrowth =
