@@ -377,6 +377,10 @@ class Simulation:
             _restore_singletons(data.get("registries", {}))
             for agent in self.agents:
                 ensure_fields(agent)
+            # Newborn ids must not collide with loaded ids: trust, ToM and
+            # _last_mate_id are all keyed by agent.id, and the class-level
+            # counter is not part of the pickled per-agent state.
+            Agent.id_counter = max((a.id for a in self.agents), default=Agent.id_counter)
             print(f"[checkpoint] loaded tick={self.tick}, agents={len(self.agents)}")
         except Exception as e:
             print(f"[checkpoint] load failed: {e} — starting fresh")
