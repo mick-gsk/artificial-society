@@ -5,7 +5,13 @@ import random
 import pygame
 
 import artificial_society.systems._builtins  # noqa: F401  (registers built-in systems)
-from artificial_society.agents.agent import CORPSE_ENERGY, MAX_ENERGY, Agent, ensure_fields
+from artificial_society.agents.agent import (
+    CORPSE_ENERGY,
+    MAX_ENERGY,
+    Agent,
+    attach_body,
+    ensure_fields,
+)
 from artificial_society.environment.materials import DISCOVERY_REGISTRY
 from artificial_society.environment.resources import add_carcass
 from artificial_society.environment.territory import update_territory_claims
@@ -108,10 +114,13 @@ class Simulation:
         headless=False,
         seed=None,
         load_checkpoint=True,
+        physics_v2=False,
     ):
         # Seed first, before anything stochastic (biome grid, population) is built.
         self.headless = headless
         self.seed = seed
+        # Physik v2 (Plan 3a): additive Objekt-Schicht. Default False = v1 byte-gleich.
+        self.physics_v2 = bool(physics_v2)
         if seed is not None:
             seed_all(seed)
             # Reset the agent id sequence so a seed reproduces the same ids too.
@@ -157,7 +166,10 @@ class Simulation:
     def spawn_initial_population(self, n):
         for _ in range(n):
             x, y = self.world.random_land_position()
-            self.agents.append(Agent.spawn_random(x, y))
+            agent = Agent.spawn_random(x, y)
+            if self.physics_v2:
+                attach_body(agent)
+            self.agents.append(agent)
 
     def spawn_child_from_parent(self, parent, genes):
         x, y = self.world.find_free_neighbor(parent.pos)
@@ -171,6 +183,8 @@ class Simulation:
         child = self.evolution.make_child(parent, x, y, genes=genes, other_parent=other_parent)
         child.hidden_state = child.brain.initial_hidden()
         child.birth_tick = self.tick
+        if self.physics_v2:
+            attach_body(child)
         inherit_strength = max(
             0.20, min(0.75, 0.75 - (child.genes["plasticity"] - 0.3) / (1.8 - 0.3) * 0.55)
         )
@@ -246,6 +260,8 @@ class Simulation:
             x, y = self.world.random_land_position()
             a = Agent.spawn_random(x, y)
             a.birth_tick = self.tick
+            if self.physics_v2:
+                attach_body(a)
             self.agents.append(a)
 
     def remove_dead(self):

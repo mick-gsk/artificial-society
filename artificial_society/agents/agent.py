@@ -17,6 +17,8 @@ from artificial_society.agents.memory import EpisodicMemory
 from artificial_society.agents.theory_of_mind import TheoryOfMind
 from artificial_society.environment.herbs import available_herbs, collect_herb
 from artificial_society.environment.materials import get_vector, material_reward
+from artificial_society.environment.physics.actions import enforce_carry_budget
+from artificial_society.environment.physics.body import BODY_MASS_DEFAULT_KG, Body, Hands
 from artificial_society.environment.resources import apply_consumption, clamp, maybe_build_structure
 from artificial_society.environment.structures import (
     BUILD_ENERGY_COST,
@@ -174,6 +176,28 @@ def ensure_fields(agent) -> None:
         agent._cached_nearby_radius = 2
     if not hasattr(agent, "_disease_immunity"):
         agent._disease_immunity = {}
+    # --- Physik v2 (Plan 3a) ---
+    if not hasattr(agent, "physics_v2"):
+        agent.physics_v2 = False
+    if not hasattr(agent, "body"):
+        agent.body = None
+    if not hasattr(agent, "hands"):
+        agent.hands = None
+    if agent.physics_v2 and agent.body is None:
+        agent.body = Body(body_mass=BODY_MASS_DEFAULT_KG, strength=0.5)
+    if agent.physics_v2 and agent.hands is None:
+        agent.hands = Hands()
+
+
+def attach_body(agent) -> None:
+    """Physik-v2-Embodiment (Plan 3a): Body + Hände mit Default-Kraft 0.5.
+
+    Das strength-Gen ersetzt den Default in Plan 3b; die Körpermasse ist real
+    geankert (BODY_MASS_DEFAULT_KG, cal 'body_mass'). Zieht keine RNG.
+    """
+    agent.physics_v2 = True
+    agent.body = Body(body_mass=BODY_MASS_DEFAULT_KG, strength=0.5)
+    agent.hands = Hands()
 
 
 def _inventory_value_state(agent) -> dict:
@@ -301,6 +325,10 @@ class Agent:
     emotional_memory: EmotionalMemory = field(default_factory=EmotionalMemory)
     # Emergenz v3: Kurzzeitgedaechtnis fuer ausgefuehrte Aktionssequenzen
     _recent_action_seq: list = field(default_factory=list)
+    # Physik v2 (Plan 3a): Flag + Embodiment. Default False/None ⇒ v1 byte-gleich.
+    physics_v2: bool = False
+    body: object = None
+    hands: object = None
 
     @classmethod
     def spawn_random(cls, x, y):
@@ -1058,6 +1086,16 @@ class Agent:
             return None
 
         self._sleep_tick(mods)
+
+        if self.physics_v2 and self.body is not None:
+            # Körper-Mechanik pro Tick (B4): Tragen ermüdet, Ruhe erholt;
+            # Überlast (Ermüdung senkt die Kapazität) wirft zu Tick-Beginn das
+            # jeweils schwerste gehaltene Objekt ab. Rein mechanisch, kein Reward.
+            if self.hands.held:
+                self.body.carry_tick(self.hands.carried_mass_kg())
+            else:
+                self.body.rest_tick()
+            enforce_carry_budget(self.body, self.hands, world.objects, self.pos)
 
         current_cell = world.get_cell(*self.pos)
         structure_mods = apply_structure_effects(self, current_cell)
