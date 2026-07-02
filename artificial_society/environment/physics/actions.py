@@ -246,6 +246,7 @@ def do_strike(
     for frag in result.fragments:
         layer.add(frag, pos)
         layer.discovery.register(frag.props)
+    layer.metrics["fragments_total"] += len(result.fragments)
     return ActionResult(
         ok=True,
         verb="strike",
@@ -330,6 +331,7 @@ def do_cut(
         layer.add(remainder, pos)
     layer.add(extracted, pos)
     layer.discovery.register(extracted.props)
+    layer.metrics["cuts_with_tool" if blade_held is not None else "cuts_bare_hand"] += 1
     return ActionResult(
         ok=True, verb="cut", energy_delta_sim=energy_delta, extracted=extracted, work_j=work_j
     )
@@ -364,6 +366,10 @@ def do_eat(body: Body, hands: Hands, layer, pos, target: PhysObject) -> ActionRe
     else:
         target.mass -= bite
     layer.ledger["eaten"] += bite
+    kcal_by_kind = layer.metrics["kcal_eaten_by_kind"]
+    kcal_by_kind[target.kind] = (
+        kcal_by_kind.get(target.kind, 0.0) + nutrition * KCAL_PER_KG_PER_NUTRITION * bite
+    )
     return ActionResult(
         ok=True, verb="eat", energy_delta_sim=energy_gain, health_delta=health_delta, bite_kg=bite
     )

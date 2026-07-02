@@ -42,6 +42,14 @@ class ObjectLayer:
         self._pos_by_id: dict = {}  # id(obj) -> (x, y); prozess-lokal, s. __setstate__
         self.discovery = DiscoveryV2()
         self.ledger: dict = {"spawned": 0.0, "from_carcass": 0.0, "eaten": 0.0, "decayed": 0.0}
+        # D4-Metriken (reines Logging, kein Verhalten): kumulative Zähler;
+        # „je Tick" ergibt sich als Delta zwischen zwei metrics_snapshot()-Aufrufen.
+        self.metrics: dict = {
+            "fragments_total": 0,
+            "cuts_with_tool": 0,
+            "cuts_bare_hand": 0,
+            "kcal_eaten_by_kind": {},
+        }
 
     # -- Kern-API ------------------------------------------------------------
     def add(self, obj: PhysObject, pos, source: str | None = None) -> None:
@@ -109,6 +117,12 @@ class ObjectLayer:
         rhs = self.ledger["spawned"] + self.ledger["from_carcass"]
         return lhs, rhs
 
+    def metrics_snapshot(self) -> dict:
+        """Kopie aller D4-Zähler + Ledger-Flüsse (Pilot-Logging, Plan 5)."""
+        snap = {k: (dict(v) if isinstance(v, dict) else v) for k, v in self.metrics.items()}
+        snap["ledger"] = dict(self.ledger)
+        return snap
+
     # -- Pickling: id()-Rückwärts-Map ist prozess-lokal; Modul-rng nicht picklebar --
     def __getstate__(self) -> dict:
         state = dict(self.__dict__)
@@ -122,6 +136,15 @@ class ObjectLayer:
         if self.__dict__.get("rng") is None:
             self.rng = _random  # Modul-Default wieder anbinden (global via seed_all geseedet)
         self._pos_by_id = {id(obj): pos for pos, bucket in self._by_pos.items() for obj in bucket}
+        self.__dict__.setdefault(
+            "metrics",
+            {
+                "fragments_total": 0,
+                "cuts_with_tool": 0,
+                "cuts_bare_hand": 0,
+                "kcal_eaten_by_kind": {},
+            },
+        )
 
 
 # ---------------------------------------------------------------------------

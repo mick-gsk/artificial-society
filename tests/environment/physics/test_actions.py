@@ -360,3 +360,40 @@ def test_eat_ausser_reichweite_noop():
     fleisch = make_object("raw_meat", 1.0)
     layer.add(fleisch, (9, 9), source="spawned")
     assert not do_eat(body, hands, layer, (5, 5), fleisch).ok
+
+
+def test_metriken_hooks_zaehlen_ohne_verhalten():
+    """D4 (nach 3a messbar): Fragmente, Schnitte Werkzeug vs. Hand, kcal je Quelle,
+    Ledger-Snapshot — reine Zähler, kein Verhalten."""
+    body, hands, layer = _setup(strength=0.5)
+    hammer = make_object("granite", 0.5)
+    flint = make_object("flint", 0.8)
+    fleisch_a = make_object("raw_meat", 0.5)
+    fleisch_b = make_object("raw_meat", 0.5)
+    for obj in (hammer, flint, fleisch_a, fleisch_b):
+        layer.add(obj, (5, 5), source="spawned")
+    do_grasp(body, hands, layer, (5, 5), hammer)
+
+    res = do_strike(body, hands, layer, (5, 5), hammer, flint, 0.8, random.Random(42))
+    assert layer.metrics["fragments_total"] == len(res.fragments) > 0
+
+    # ACHTUNG: do_cut ERSETZT das Ziel (remainder ist ein neues Objekt) —
+    # deshalb zwei getrennte Fleisch-Objekte für die zwei Schnitte.
+    schnitt_hand = do_cut(body, hands, layer, (5, 5), None, fleisch_a, effort=0.2)
+    assert schnitt_hand.ok and schnitt_hand.extracted is not None
+    klinge = _klinge(0.3)
+    layer.add(klinge, (5, 5), source="spawned")
+    do_grasp(body, hands, layer, (5, 5), klinge)
+    schnitt_klinge = do_cut(body, hands, layer, (5, 5), klinge, fleisch_b, effort=0.2)
+    assert schnitt_klinge.ok
+    assert layer.metrics["cuts_bare_hand"] == 1
+    assert layer.metrics["cuts_with_tool"] == 1
+
+    biss = do_eat(body, hands, layer, (5, 5), schnitt_hand.extracted)
+    assert biss.ok
+    kcal = layer.metrics["kcal_eaten_by_kind"]
+    assert kcal["raw_meat_piece"] == pytest.approx(0.35 * 4000.0 * biss.bite_kg)
+
+    snap = layer.metrics_snapshot()
+    assert snap["ledger"] == layer.ledger and snap["ledger"] is not layer.ledger
+    assert snap["fragments_total"] == layer.metrics["fragments_total"]
