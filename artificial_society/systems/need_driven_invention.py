@@ -54,6 +54,12 @@ from artificial_society.systems.invention import (
     _evaluate_legacy_outcomes,
     _maybe_upgrade_tool,
 )
+from artificial_society.systems.causal_model import (
+    _cm_enabled,
+    causal_model_step,
+    get_or_create_model,
+    select_by_info_gain,
+)
 
 # Wie stark Need-Vektor die Materialauswahl beeinflusst vs. Zufall
 NEED_SEARCH_WEIGHT = 0.70
@@ -413,6 +419,35 @@ def _select_combination_m1(agent, cell: dict, need: np.ndarray, causal_mem, env:
     return cands[idx]
 
 
+def _select_combination_cm(agent, cell: dict, model):
+    """CM prototype (L3): choose the ``(mat_a, mat_b, action)`` with the highest expected
+    information gain via a seeded softmax over the agent's causal model — active
+    experimentation rather than need-greedy selection. Returns ``None`` if nothing is
+    available. Uses the model's local generator (isolated from the global RNG stream).
+    """
+    mats = _available_materials(agent, cell)
+    if not mats:
+        return None
+    vecs = {m: get_vector(m) for m in mats}
+    feat: list = []
+    meta: list = []
+    for ma in mats:
+        partners = [m for m in mats if m != ma]
+        partners.append(None)
+        for mb in partners:
+            vb = vecs[mb] if mb is not None else None
+            for ai, action in enumerate(PRIMITIVE_ACTIONS):
+                feat.append((vecs[ma], vb, ai))
+                meta.append((ma, mb, action))
+    if len(feat) > M1_MAX_IMAGINED:
+        feat = feat[:M1_MAX_IMAGINED]
+        meta = meta[:M1_MAX_IMAGINED]
+    idx = select_by_info_gain(model, feat, model.gen)
+    if idx < 0:
+        return None
+    return meta[idx]
+
+
 # ---------------------------------------------------------------------------
 # Haupt-API: Need-Driven Invention
 # ---------------------------------------------------------------------------
@@ -457,7 +492,15 @@ def agent_invent_from_need(
     causal_mem = getattr(agent, "causal_memory", None)
 
     # Step 3+4: WHAT (materials) + ACTION selection.
-    if _m1_enabled():
+    if _cm_enabled():
+        # CM prototype (L3): active experimentation — pick by expected information gain.
+        sel = _select_combination_cm(agent, cell, get_or_create_model(agent))
+        if sel is None:
+            return 0.0
+        mat_a, mat_b, action = sel
+        vec_a = get_vector(mat_a)
+        vec_b = get_vector(mat_b) if mat_b else None
+    elif _m1_enabled():
         # M1 (Path-A): seeded-softmax + VoI imagined means-ends search (uncounted twin).
         mat_a, mat_b, action = _select_combination_m1(agent, cell, need, causal_mem, env)
         if mat_a is None:
@@ -482,6 +525,18 @@ def agent_invent_from_need(
     # Step 5b: Emergent-Pfad (Vektorkombination -> neues Material)
     new_vec = combine_vectors(vec_a, vec_b, action, env)
     emergent_reward = 0.0
+
+    # L4/L5 (CM prototype): predict -> observe the real outcome -> learn; the prediction
+    # error is an intrinsic epistemic reward. A null reaction is observed as zeros so the
+    # model also learns which combinations do nothing. No-op (0.0) when the flag is OFF.
+    epistemic_reward = 0.0
+    if _cm_enabled():
+        observed = new_vec if new_vec is not None else np.zeros(N_PROPS, dtype=np.float32)
+        try:
+            _action_idx = PRIMITIVE_ACTIONS.index(action)
+        except ValueError:
+            _action_idx = 0
+        epistemic_reward = causal_model_step(agent, vec_a, vec_b, _action_idx, observed)
 
     if new_vec is not None and float(new_vec.sum()) > 0.1:
         agent_state = _agent_homeostatic_state(agent, cell)
@@ -527,7 +582,7 @@ def agent_invent_from_need(
         if emergent_reward > 0.5 and hasattr(agent, "endocrine"):
             agent.endocrine.apply_discovery(min(1.0, emergent_reward * 0.7))
 
-    total_reward = legacy_reward + emergent_reward * EMERGENT_WEIGHT
+    total_reward = legacy_reward + emergent_reward * EMERGENT_WEIGHT + epistemic_reward
 
     # Step 7: In CausalMemory speichern
     if causal_mem is not None:

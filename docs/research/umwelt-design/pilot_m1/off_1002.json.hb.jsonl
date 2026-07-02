@@ -1,0 +1,6 @@
+{"arm": "learned", "seed": 1002, "tick": 250, "ticks": 1500, "n_attempts": 1388, "n_discoveries": 376, "pop": 34, "ts": 1782841950.761}
+{"arm": "learned", "seed": 1002, "tick": 500, "ticks": 1500, "n_attempts": 3718, "n_discoveries": 889, "pop": 65, "ts": 1782841995.887}
+{"arm": "learned", "seed": 1002, "tick": 750, "ticks": 1500, "n_attempts": 7820, "n_discoveries": 1641, "pop": 113, "ts": 1782842075.763}
+{"arm": "learned", "seed": 1002, "tick": 1000, "ticks": 1500, "n_attempts": 15318, "n_discoveries": 2647, "pop": 197, "ts": 1782842226.099}
+{"arm": "learned", "seed": 1002, "tick": 1250, "ticks": 1500, "n_attempts": 24188, "n_discoveries": 3607, "pop": 102, "ts": 1782842437.768}
+{"arm": "learned", "seed": 1002, "tick": 1500, "ticks": 1500, "n_attempts": 27900, "n_discoveries": 3897, "pop": 67, "ts": 1782842534.861}

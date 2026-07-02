@@ -48,6 +48,11 @@ from artificial_society.environment.materials import (
     material_light,
     material_reward,
 )
+from artificial_society.systems.causal_model import (
+    N_PROPS,
+    _cm_enabled,
+    causal_model_step,
+)
 
 PRIMITIVE_ACTIONS = ["rub", "strike", "place_on_heat", "bundle", "blow", "carry", "eat", "bind"]
 
@@ -140,6 +145,19 @@ def agent_try_invention(agent, world, x, y) -> float:
     vec_b = get_vector(mat_b) if mat_b else None
     new_vec = combine_vectors(vec_a, vec_b, action, env)
     emergent_reward = 0.0
+
+    # L4/L5 (CM prototype): predict -> observe the real outcome -> learn; prediction error
+    # is an intrinsic epistemic reward. The model also accumulates experience from this
+    # classic path. No-op (0.0) when AS_CAUSAL_MODEL is OFF.
+    epistemic_reward = 0.0
+    if _cm_enabled():
+        observed = new_vec if new_vec is not None else np.zeros(N_PROPS, dtype=np.float32)
+        try:
+            _action_idx = PRIMITIVE_ACTIONS.index(action)
+        except ValueError:
+            _action_idx = 0
+        epistemic_reward = causal_model_step(agent, vec_a, vec_b, _action_idx, observed)
+
     if new_vec is not None and float(new_vec.sum()) > 0.1:
         agent_state = _agent_homeostatic_state(agent, cell)
         emergent_reward = material_reward(new_vec, agent_state)
@@ -172,7 +190,7 @@ def agent_try_invention(agent, world, x, y) -> float:
             agent.endocrine.apply_discovery(min(1.0, emergent_reward))
 
     # FIX: emergent_reward-Gewichtung von 0.6 auf 1.0 erhöht
-    total_reward = legacy_reward + emergent_reward * 1.0
+    total_reward = legacy_reward + emergent_reward * 1.0 + epistemic_reward
     if causal_mem is not None:
         causal_mem.record(action, mat_a, mat_b, legacy_outcomes, total_reward)
     return total_reward
