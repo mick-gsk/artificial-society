@@ -2,49 +2,107 @@
   import { onMount, onDestroy } from "svelte";
   import { WorldScene } from "../lib/world-render.js";
   import { connectWS } from "../lib/ws.js";
+  import { initWarum, warumLine, needWord, actWord } from "../lib/warum.js";
+  import Inspector from "./Inspector.svelte";
 
-  let { onFrame } = $props();
+  let { onFrame, onSelect } = $props();
 
   let host;
   let scene;
-  let closeWS;
+  let ws; // { dispose, send }
 
   let online = $state(false);
   let hud = $state({ tick: 0, agents: 0, w: 0, h: 0, fps: 0, events: 0, zoom: 1 });
-  let sel = $state(null); // live data of the inspected agent
+  let sel = $state(null); // compact data of the inspected agent (current frame)
+  let selDetail = $state(null); // deep detail blob (kept until a newer one lands)
+  let lastFrame = $state(null);
+  let following = $state(false);
 
-  const ACT_NAME = ["unterwegs", "sammelt", "kooperiert", "kämpft", "baut", "schläft"];
-  const STAGE_NAME = ["Kind", "Erwachsen", "Ältester"];
-  const TOOL_NAME = ["—", "Stein", "scharfe Klinge"];
+  // hover tooltip
+  let hover = $state(null); // { id, act, need } | null
+  let hoverPos = $state({ x: 0, y: 0 });
 
   let selectedId = null;
 
+  // Send the current inspect registration. Called on select/deselect AND after
+  // every hello (initial connect + auto-reconnect) so a reconnect re-subscribes.
+  function sendInspect() {
+    ws?.send({ type: "inspect", id: selectedId });
+  }
+
+  function select(id) {
+    selectedId = id;
+    following = false;
+    if (scene) scene.followId = null;
+    if (id == null) {
+      sel = null;
+      selDetail = null;
+      onSelect?.(null);
+    } else {
+      onSelect?.(id);
+    }
+    sendInspect();
+  }
+
   function refreshSel(f) {
-    if (selectedId == null) return;
+    if (selectedId == null) {
+      if (sel !== null) sel = null;
+      scene?.setSelectedLabel("");
+      return;
+    }
     const a = f.agents.find((x) => x.id === selectedId);
     if (!a) {
+      // selected agent vanished (died / left frame)
       selectedId = null;
       sel = null;
-      if (scene) scene.selectedId = null;
+      selDetail = null;
+      following = false;
+      if (scene) {
+        scene.selectedId = null;
+        scene.followId = null;
+        scene.setSelectedLabel("");
+      }
+      onSelect?.(null);
+      sendInspect();
       return;
     }
     sel = a;
+    // keep the last detail until a newer one lands; drop to null only on deselect
+    selDetail = f.detail?.[String(selectedId)] ?? selDetail;
+    scene?.setSelectedLabel(warumLine(a));
   }
 
   onMount(async () => {
     scene = new WorldScene();
     await scene.init(host);
     scene.onHud = (h) => (hud = { ...hud, ...h });
-    scene.onPick = (id) => {
-      selectedId = id;
-      if (id == null) sel = null;
+    scene.onPick = (id) => select(id);
+    scene.onHover = (id) => {
+      if (id == null) {
+        hover = null;
+        return;
+      }
+      const a = lastFrame?.agents.find((x) => x.id === id);
+      hover = a
+        ? { id, act: actWord(a.act ?? 0), need: needWord(a.nd) }
+        : { id, act: actWord(0), need: needWord(0) };
     };
+    // track cursor for tooltip placement
+    host.addEventListener("pointermove", (e) => {
+      const r = host.getBoundingClientRect();
+      hoverPos = { x: e.clientX - r.left, y: e.clientY - r.top };
+    });
     window.__scene = scene; // debug/testing hook
-    closeWS = connectWS({
+    ws = connectWS({
       onOpen: () => (online = true),
       onClose: () => (online = false),
-      onHello: (m) => scene.setLegend(m.biomes),
+      onHello: (m) => {
+        scene.setLegend(m.biomes);
+        initWarum(m.behavior);
+        sendInspect(); // re-subscribe our current inspect after (re)connect
+      },
       onFrame: (f) => {
+        lastFrame = f;
         scene.update(f);
         refreshSel(f);
         hud = {
@@ -61,13 +119,28 @@
   });
 
   function closeInspector() {
-    selectedId = null;
-    sel = null;
-    if (scene) scene.selectedId = null;
+    select(null);
+  }
+
+  function toggleFollow() {
+    following = !following;
+    if (scene) scene.followId = following ? selectedId : null;
+  }
+
+  // Inspector jump: to a world cell, or select + jump to another agent.
+  function onJump(target) {
+    if (!scene) return;
+    if (target.agent != null) {
+      select(target.agent);
+      scene.selectedId = target.agent;
+      scene.panToAgent(target.agent);
+    } else if (target.x != null && target.y != null) {
+      scene.panToCell(target.x, target.y);
+    }
   }
 
   onDestroy(() => {
-    closeWS?.();
+    ws?.dispose();
     scene?.destroy();
   });
 </script>
@@ -110,43 +183,23 @@
     {/if}
   </div>
 
-  {#if sel}
-    <div class="inspector">
-      <div class="ins-head">
-        <span class="ins-dot" style="--c:{sel.col}"></span>
-        <span class="ins-title">Agent {sel.id}</span>
-        <button class="ins-close" onclick={closeInspector}>×</button>
-      </div>
-      <div class="ins-row">
-        <span class="ins-k">Status</span>
-        <span class="ins-v">{STAGE_NAME[sel.st] ?? "?"} · {ACT_NAME[sel.act] ?? "?"}</span>
-      </div>
-      <div class="ins-row">
-        <span class="ins-k">Stamm</span>
-        <span class="ins-v">{sel.tribe ?? "—"}</span>
-      </div>
-      <div class="ins-row">
-        <span class="ins-k">Energie</span>
-        <span class="ins-bar"><span class="ins-fill e" style="width:{Math.min(100, (sel.e / 240) * 100)}%"></span></span>
-        <span class="ins-num">{sel.e}</span>
-      </div>
-      <div class="ins-row">
-        <span class="ins-k">Gesundheit</span>
-        <span class="ins-bar"><span class="ins-fill h" style="width:{Math.min(100, sel.hp)}%"></span></span>
-        <span class="ins-num">{sel.hp}</span>
-      </div>
-      <div class="ins-row">
-        <span class="ins-k">Werkzeug</span>
-        <span class="ins-v">{TOOL_NAME[sel.tl ?? 0]}</span>
-      </div>
-      <div class="ins-row">
-        <span class="ins-k">Traglast</span>
-        <span class="ins-v">{sel.cg > 0 ? "█".repeat(Math.min(9, sel.cg)) : "leer"}</span>
-      </div>
-      <div class="ins-row">
-        <span class="ins-k">Position</span>
-        <span class="ins-v">({sel.x}, {sel.y})</span>
-      </div>
+  <Inspector
+    {sel}
+    detail={selDetail}
+    frame={lastFrame}
+    {following}
+    {onJump}
+    onFollowToggle={toggleFollow}
+    onClose={closeInspector}
+  />
+
+  {#if hover && hover.id !== selectedId}
+    <div
+      class="tooltip"
+      style="left:{hoverPos.x + 14}px; top:{hoverPos.y + 14}px"
+      aria-hidden="true"
+    >
+      #{hover.id} · {hover.act} · {hover.need}
     </div>
   {/if}
 
@@ -345,94 +398,19 @@
     text-transform: uppercase;
   }
 
-  .inspector {
+  .tooltip {
     position: absolute;
-    top: 34px;
-    right: 12px;
-    width: 208px;
-    background: rgba(5, 8, 13, 0.92);
+    pointer-events: none;
+    background: rgba(5, 8, 13, 0.95);
     border: 1px solid var(--line);
-    border-radius: 4px;
-    padding: 8px 10px 10px;
-    font-size: 11px;
-    backdrop-filter: blur(2px);
-  }
-  .ins-head {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    padding-bottom: 6px;
-    margin-bottom: 6px;
-    border-bottom: 1px solid var(--line);
-  }
-  .ins-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--c);
-    box-shadow: 0 0 6px var(--c);
-  }
-  .ins-title {
+    border-radius: 3px;
+    padding: 2px 7px;
+    font-size: 10.5px;
     color: var(--text);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    font-size: 11px;
-    flex: 1;
-  }
-  .ins-close {
-    background: none;
-    border: none;
-    color: var(--muted);
-    font-size: 14px;
-    cursor: pointer;
-    padding: 0 2px;
-    line-height: 1;
-  }
-  .ins-close:hover {
-    color: var(--text);
-  }
-  .ins-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 2.5px 0;
-  }
-  .ins-k {
-    color: var(--muted);
-    width: 72px;
-    flex: none;
-    text-transform: uppercase;
-    font-size: 9.5px;
-    letter-spacing: 0.08em;
-  }
-  .ins-v {
-    color: var(--text);
-  }
-  .ins-bar {
-    flex: 1;
-    height: 5px;
-    background: #101724;
-    border-radius: 2px;
-    overflow: hidden;
-  }
-  .ins-fill {
-    display: block;
-    height: 100%;
-    border-radius: 2px;
-  }
-  .ins-fill.e {
-    background: #ffd166;
-  }
-  .ins-fill.h {
-    background: #49d17c;
-  }
-  .ins-num {
-    color: var(--muted);
-    font-variant-numeric: tabular-nums;
-    width: 26px;
-    text-align: right;
-    flex: none;
-    font-size: 10px;
+    font-family: ui-monospace, Menlo, monospace;
+    white-space: nowrap;
+    z-index: 5;
+    text-shadow: 0 0 6px rgba(0, 0, 0, 0.9);
   }
 
   @media (prefers-reduced-motion: reduce) {

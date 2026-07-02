@@ -18,7 +18,7 @@
 // Frames arrive ~20 Hz; the ticker runs at display rate and eases agent motion
 // between frames so movement stays fluid.
 
-import { Application, Container, Graphics, Sprite, Texture } from "pixi.js";
+import { Application, Container, Graphics, Sprite, Text, Texture } from "pixi.js";
 
 import {
   makeDecorTextures,
@@ -67,6 +67,24 @@ const EVENT_KIND_CODE = { drought: 1, fire: 2, blight: 3, storm: 4 };
 // Action codes from serve/frame.py: 0 idle/move, 1 forage, 2 cooperate,
 // 3 attack, 4 build, 5 sleep.
 export const ACT = { IDLE: 0, FORAGE: 1, COOPERATE: 2, ATTACK: 3, BUILD: 4, SLEEP: 5 };
+
+// Action-line marker kinds + their palette. ttl (seconds) is the fade-out
+// window; a re-trigger for the same actor→target pair is throttled until it
+// lapses (see _spawnActionMarkers). Attack/coop links draw at every LOD (the
+// most important read); pulse/build/comms are MID/NEAR only (anti-clutter).
+const MARKER_ATTACK = 0; // red line actor→victim
+const MARKER_COOP = 1; // cyan arc actor↔partner
+const MARKER_FORAGE = 2; // green expanding pulse on the actor cell
+const MARKER_BUILD = 3; // amber ring on the actor cell
+const MARKER_COMMS = 4; // expanding comms ring around the agent
+const MARKER_TTL = 0.5; // seconds
+const MARKER_COLORS = {
+  [MARKER_ATTACK]: 0xff5d6c,
+  [MARKER_COOP]: 0x3fc5f0,
+  [MARKER_FORAGE]: 0x49d17c,
+  [MARKER_BUILD]: 0xffb54d,
+  [MARKER_COMMS]: 0x9fd0ff,
+};
 export const ACT_COLORS = {
   [ACT.FORAGE]: 0x49d17c,
   [ACT.COOPERATE]: 0x3fc5f0,
@@ -115,6 +133,11 @@ export class WorldScene {
     this.shadowLayer = new Graphics();
     this.trailLayer = new Graphics();
     this.fxLayer = new Graphics();
+    // Action lines/rings (attack, cooperate, forage pulse, build, comms) live in
+    // their own Graphics layer between fx and glow so they read under the figure
+    // glow but over the fx/trail scribbles. Redrawn each tick from a pool of
+    // marker records with a ttl — no per-frame allocation in the steady state.
+    this.actionLayer = new Graphics();
     this.glowLayer = new Container();
     this.figureLayer = new Container();
     this.emoteLayer = new Container();
@@ -172,7 +195,27 @@ export class WorldScene {
     this._zoomMax = ZOOM_MAX_FLOOR; // recomputed per grid in _rebuildGrid
     this._drag = null;
     this.onPick = null; // (agentId | null) => void
+    this.onHover = null; // (agentId | null) => void — nearest agent under cursor
     this.selectedId = null;
+
+    // Follow camera (B5). When set to a living agent id the ticker eases
+    // worldRoot so that agent stays centred; a manual drag clears it. panToCell /
+    // panToAgent implement the inspector's "jump" without engaging follow.
+    this.followId = null;
+
+    // Action-line markers: a pool of {kind, from, to, cx, cy, ttl, life, color}.
+    // `from`/`to` are agent-record refs (not fixed coords) so a line follows the
+    // eased render positions of both endpoints across its whole ttl. Re-triggers
+    // for the same actor→target pair are throttled until the previous marker
+    // expires (keyed in _actionKeys) to avoid a redraw storm.
+    this._markers = [];
+    this._markerPool = [];
+    this._actionKeys = new Map(); // "kind:actorId:targetId" -> remaining ttl
+
+    // Floating "why" label over the selected agent — one reused Pixi Text set
+    // from World.svelte via setSelectedLabel(). Created lazily in init().
+    this._selLabel = null;
+    this._selLabelText = "";
 
     // Zoom-LOD (R4): 'far' | 'mid' | 'near', driven by on-screen cell size with
     // hysteresis. Recomputed on zoom change and grid rebuild; a change triggers
@@ -199,6 +242,7 @@ export class WorldScene {
       this.shadowLayer,
       this.trailLayer,
       this.fxLayer,
+      this.actionLayer,
       this.glowLayer,
       this.figureLayer,
       this.emoteLayer,
@@ -220,9 +264,38 @@ export class WorldScene {
     this._itemTex = makeItemTextures();
     this._toolTex = makeToolTextures();
     this._structTex = makeStructureTextures();
+
+    // Floating "why" label over the selected agent. Lives on the emote layer so
+    // it renders above figures; positioned in the ticker, text set from World via
+    // setSelectedLabel(). One reused object — never re-created per frame.
+    this._selLabel = new Text({
+      text: "",
+      style: {
+        fill: 0xf2f6ff,
+        fontFamily: "ui-monospace, Menlo, monospace",
+        fontSize: 13,
+        stroke: { color: 0x05070b, width: 4 },
+        align: "center",
+      },
+    });
+    this._selLabel.anchor.set(0.5, 1);
+    this._selLabel.visible = false;
+    this._selLabel.resolution = 2;
+    this.emoteLayer.addChild(this._selLabel);
+
     this._bindViewControls();
+    this._bindHover();
     this.app.ticker.add((t) => this._tick(t.deltaMS));
     this.app.renderer.on("resize", () => this._rebuildGrid());
+  }
+
+  // Text of the floating label over the selected agent. World.svelte owns the
+  // warum.js string and pushes it here; world-render.js never touches warum.js.
+  setSelectedLabel(str) {
+    this._selLabelText = str ?? "";
+    if (this._selLabel && this._selLabel.text !== this._selLabelText) {
+      this._selLabel.text = this._selLabelText;
+    }
   }
 
   // -- zoom / pan / pick -------------------------------------------------------
@@ -255,6 +328,14 @@ export class WorldScene {
         /* synthetic events have no active pointer */
       }
       canvas.style.cursor = "grabbing";
+    });
+    // A manual pan breaks follow-mode — once the user grabs the world we stop
+    // chasing the agent. Fires on the first move past the click threshold so a
+    // plain click (which selects) doesn't cancel a follow the user just started.
+    canvas.addEventListener("pointermove", (e) => {
+      if (this._drag && this.followId != null && this._drag.moved >= 5) {
+        this.followId = null;
+      }
     });
     canvas.addEventListener("pointermove", (e) => {
       if (!this._drag) return;
@@ -303,14 +384,16 @@ export class WorldScene {
     this.worldRoot.y = clampNum(this.worldRoot.y, H - H * z, 0);
   }
 
-  _pick(sx, sy) {
+  // Nearest agent to a canvas-space point whose hit-disc (radius from rec.hpx,
+  // the zoom-aware figure size honouring the MIN_AGENT_PX floor) the point falls
+  // inside; null if none. Shared by click-pick and hover so both stay in sync.
+  _nearestAgent(sx, sy) {
     const wx = (sx - this.worldRoot.x) / this._zoom;
     const wy = (sy - this.worldRoot.y) / this._zoom;
     let best = null;
-    // hit radius tracks the on-screen figure size (rec.hpx already respects the
-    // MIN_AGENT_PX floor), so click-selection keeps working when zoomed out.
     let bestD = Infinity;
     for (const [id, rec] of this.agents) {
+      if (rec._px == null) continue; // not yet placed by the ticker
       const dx = rec._px - wx;
       const dy = rec._py - wy;
       const d = dx * dx + dy * dy;
@@ -320,8 +403,59 @@ export class WorldScene {
         best = id;
       }
     }
+    return best;
+  }
+
+  _pick(sx, sy) {
+    const best = this._nearestAgent(sx, sy);
     this.selectedId = best;
     this.onPick?.(best);
+  }
+
+  // -- hover (B5) --------------------------------------------------------------
+  //
+  // pointermove on the canvas, throttled to ~10/s: resolve the nearest agent and
+  // fire onHover only when it changes. Cheap (one linear pass over agents) and
+  // idle-friendly (skipped when nobody listens or a drag is in progress).
+  _bindHover() {
+    const canvas = this.app.canvas;
+    let last = 0;
+    let lastId = undefined;
+    const emit = (id) => {
+      if (id !== lastId) {
+        lastId = id;
+        this.onHover?.(id);
+      }
+    };
+    canvas.addEventListener("pointermove", (e) => {
+      if (!this.onHover || this._drag) return;
+      const now = performance.now();
+      if (now - last < 100) return; // ~10 Hz
+      last = now;
+      const r = canvas.getBoundingClientRect();
+      emit(this._nearestAgent(e.clientX - r.left, e.clientY - r.top));
+    });
+    canvas.addEventListener("pointerleave", () => emit(null));
+  }
+
+  // -- camera jumps (B5) — used by the inspector's clickable targets -----------
+  //
+  // Centre a world cell (or an agent) in the viewport without engaging follow.
+  // Respects the same pan clamp as manual drag so the world can't slide off.
+  panToCell(cx, cy) {
+    if (!this.grid) return;
+    const W = this.app.renderer.width;
+    const H = this.app.renderer.height;
+    const wx = this.offX + (cx + 0.5) * this.cellPx;
+    const wy = this.offY + (cy + 0.5) * this.cellPx;
+    this.worldRoot.x = W / 2 - wx * this._zoom;
+    this.worldRoot.y = H / 2 - wy * this._zoom;
+    this._clampPan();
+  }
+
+  panToAgent(id) {
+    const rec = this.agents.get(id);
+    if (rec) this.panToCell(rec.toX, rec.toY);
   }
 
   // -- zoom-LOD (R4) -----------------------------------------------------------
@@ -955,6 +1089,7 @@ export class WorldScene {
         this.figureLayer.addChild(figure);
         this.emoteLayer.addChild(emote);
         rec = {
+          id: a.id,
           glow,
           figure,
           emote,
@@ -1000,6 +1135,17 @@ export class WorldScene {
         rec.act = a.act ?? 0;
         rec.actAge = 0; // restart the action animation
       }
+      // behaviour fields for action markers + intent line (falsy → absent).
+      rec.nd = a.nd ?? 0;
+      rec.tg = a.tg ?? null;
+      rec.gx = a.gx ?? null;
+      rec.gy = a.gy ?? null;
+      rec.fl = a.fl ?? 0;
+
+      // Spawn action-line markers on this fresh frame (once per frame, not per
+      // tick). Endpoints are record refs so the drawn line follows both agents'
+      // eased motion; comms/forage/build markers sit on the actor's own cell.
+      this._spawnActionMarkers(rec, a);
       const tint = blip(a.col);
       rec.tint = tint;
       rec.energy = a.e;
@@ -1052,6 +1198,129 @@ export class WorldScene {
     this.figureLayer.children.sort((a, b) => a.y - b.y);
   }
 
+  // -- action markers (B5) -----------------------------------------------------
+  //
+  // Spawn the frame's action lines/rings for one agent record. Called once per
+  // FRAME (from _syncAgents), not per tick — the ticker only ages + redraws the
+  // pooled markers. Endpoint refs (not coords) mean a line follows both agents'
+  // eased motion; the throttle map keeps a held action (attack over many ticks)
+  // from stacking a new marker every frame — it re-arms only after ttl lapses.
+  _spawnActionMarkers(rec, a) {
+    const act = rec.act;
+    const near = this._lod !== "far"; // pulse/build/comms are MID/NEAR only
+
+    // Attack line — actor → living victim. Drawn at ALL LODs.
+    if (act === ACT.ATTACK && rec.tg != null) {
+      const target = this.agents.get(rec.tg);
+      if (target) this._arm(MARKER_ATTACK, rec, target);
+    }
+
+    // Cooperation arc — actor ↔ living partner. Drawn at ALL LODs. A missing tg
+    // (legitimate pooling path) simply skips — no line, no error.
+    if (act === ACT.COOPERATE && rec.tg != null) {
+      const target = this.agents.get(rec.tg);
+      if (target) this._arm(MARKER_COOP, rec, target);
+    }
+
+    // Forage pulse / build ring — on the actor cell, MID/NEAR only.
+    if (near && act === ACT.FORAGE) this._arm(MARKER_FORAGE, rec, null);
+    if (near && act === ACT.BUILD) this._arm(MARKER_BUILD, rec, null);
+
+    // Communication ring — fl bit2. MID/NEAR only.
+    if (near && rec.fl & 4) this._arm(MARKER_COMMS, rec, null);
+  }
+
+  // Add (or refuse, if still throttled) one marker. Endpoints are record refs;
+  // pooled objects are reused so the steady state allocates nothing.
+  _arm(kind, from, to) {
+    const key = `${kind}:${from.id ?? "?"}:${to ? to.id ?? "?" : "-"}`;
+    if (this._actionKeys.has(key)) return; // previous still alive → throttle
+    const m = this._markerPool.pop() ?? {};
+    m.kind = kind;
+    m.from = from;
+    m.to = to;
+    m.ttl = MARKER_TTL;
+    m.life = MARKER_TTL;
+    m.color = MARKER_COLORS[kind];
+    m.key = key;
+    this._markers.push(m);
+    this._actionKeys.set(key, MARKER_TTL);
+  }
+
+  // Age + draw every live marker into actionLayer (already cleared this tick by
+  // _tick). Expired markers return to the pool. Positions read the endpoints'
+  // current eased render coords (_px/_py) so lines track motion. `from.id` may
+  // have been removed (agent died) — guard and expire cleanly.
+  _drawMarkers(dt, lw) {
+    if (!this._markers.length) {
+      // still age the throttle keys so a re-trigger can re-arm even with no live
+      // markers (belt-and-braces; normally the marker's own expiry clears them).
+      if (this._actionKeys.size) {
+        for (const [k, t] of this._actionKeys) {
+          const nt = t - dt;
+          if (nt <= 0) this._actionKeys.delete(k);
+          else this._actionKeys.set(k, nt);
+        }
+      }
+      return;
+    }
+    const g = this.actionLayer;
+    const keep = [];
+    for (const m of this._markers) {
+      m.ttl -= dt;
+      const from = m.from;
+      const aliveFrom = from && from._px != null && this.agents.get(from.id) === from;
+      const aliveTo = !m.to || (m.to._px != null && this.agents.get(m.to.id) === m.to);
+      if (m.ttl <= 0 || !aliveFrom || !aliveTo) {
+        this._actionKeys.delete(m.key);
+        this._markerPool.push(m);
+        continue;
+      }
+      keep.push(m);
+      const p = 1 - m.ttl / m.life; // 0 → 1 over the ttl
+      const alpha = Math.max(0, 1 - p); // linear fade
+      const ax = from._px;
+      const ay = from._py;
+
+      if (m.kind === MARKER_ATTACK) {
+        const bx = m.to._px;
+        const by = m.to._py;
+        g.moveTo(ax, ay).lineTo(bx, by).stroke({ width: 2.2 * lw, color: m.color, alpha: alpha * 0.9 });
+        // arrowhead toward the victim
+        const ang = Math.atan2(by - ay, bx - ax);
+        const hl = this.cellPx * 0.5;
+        g.moveTo(bx, by)
+          .lineTo(bx - Math.cos(ang - 0.4) * hl, by - Math.sin(ang - 0.4) * hl)
+          .moveTo(bx, by)
+          .lineTo(bx - Math.cos(ang + 0.4) * hl, by - Math.sin(ang + 0.4) * hl)
+          .stroke({ width: 2 * lw, color: m.color, alpha: alpha * 0.9 });
+      } else if (m.kind === MARKER_COOP) {
+        const bx = m.to._px;
+        const by = m.to._py;
+        // quadratic bow above the midpoint so a coop link reads distinct from a
+        // straight attack line
+        const mx = (ax + bx) / 2;
+        const my = (ay + by) / 2 - Math.hypot(bx - ax, by - ay) * 0.18;
+        g.moveTo(ax, ay)
+          .quadraticCurveTo(mx, my, bx, by)
+          .stroke({ width: 1.8 * lw, color: m.color, alpha: alpha * 0.8 });
+      } else if (m.kind === MARKER_FORAGE) {
+        const r = this.cellPx * (0.3 + p * 0.9);
+        g.circle(ax, ay, r).stroke({ width: 1.6 * lw, color: m.color, alpha: alpha * 0.85 });
+      } else if (m.kind === MARKER_BUILD) {
+        const r = this.cellPx * 0.7;
+        g.circle(ax, ay, r).stroke({ width: 2 * lw, color: m.color, alpha: alpha * 0.85 });
+        g.circle(ax, ay, r * 0.55).stroke({ width: lw, color: m.color, alpha: alpha * 0.5 });
+      } else if (m.kind === MARKER_COMMS) {
+        const r = this.cellPx * (0.4 + p * 1.3);
+        g.circle(ax, ay, r).stroke({ width: 1.4 * lw, color: m.color, alpha: alpha * 0.7 });
+      }
+      // keep the throttle key alive as long as its marker is
+      this._actionKeys.set(m.key, m.ttl);
+    }
+    this._markers = keep;
+  }
+
   // -- events ----------------------------------------------------------------
 
   _paintEvents(events) {
@@ -1098,6 +1367,7 @@ export class WorldScene {
     this.trailLayer.clear();
     this.fxLayer.clear();
     this.shadowLayer.clear();
+    this.actionLayer.clear();
 
     // Trails + coop-links are NEAR-only (single top-level flag, checked once
     // per frame — not a per-sprite branch). Both are per-frame Graphics
@@ -1264,16 +1534,77 @@ export class WorldScene {
       }
     }
 
-    // selection ring for the inspector (sized off the figure, not the cell)
-    if (this.selectedId != null) {
-      const rec = this.agents.get(this.selectedId);
-      if (rec) {
-        this.fxLayer
-          .circle(rec._px, rec._py, rec.hpx * 0.58)
-          .stroke({ width: 1.6 * lw, color: 0xffffff, alpha: 0.85 });
-        this.fxLayer
-          .circle(rec._px, rec._py, rec.hpx * 0.72)
-          .stroke({ width: lw, color: rec.tint ?? 0xffffff, alpha: 0.5 });
+    // pooled action-line markers (attack/coop/forage/build/comms) — after all
+    // agents have their eased _px/_py this tick so lines land on the drawn
+    // figures. Cleared at the top of the tick; endpoints track motion.
+    this._drawMarkers(dt, lw);
+
+    // selection ring + intent line + floating label for the inspected agent.
+    let selRec = null;
+    if (this.selectedId != null) selRec = this.agents.get(this.selectedId) ?? null;
+    if (selRec) {
+      const rec = selRec;
+      this.fxLayer
+        .circle(rec._px, rec._py, rec.hpx * 0.58)
+        .stroke({ width: 1.6 * lw, color: 0xffffff, alpha: 0.85 });
+      this.fxLayer
+        .circle(rec._px, rec._py, rec.hpx * 0.72)
+        .stroke({ width: lw, color: rec.tint ?? 0xffffff, alpha: 0.5 });
+
+      // Intent line — dotted, dezent — from the selected agent to its goal cell
+      // gx/gy. ONLY for the selected agent (anti-clutter). Drawn as short dashes
+      // along the segment so it reads as "headed there" without a solid rail.
+      if (rec.gx != null && rec.gy != null) {
+        const gx = px(rec.gx);
+        const gy = py(rec.gy);
+        const dx = gx - rec._px;
+        const dy = gy - rec._py;
+        const len = Math.hypot(dx, dy);
+        if (len > 1) {
+          const ux = dx / len;
+          const uy = dy / len;
+          const dash = cp * 0.35;
+          const gap = cp * 0.3;
+          for (let d = rec.hpx * 0.5; d < len; d += dash + gap) {
+            const d2 = Math.min(len, d + dash);
+            this.fxLayer
+              .moveTo(rec._px + ux * d, rec._py + uy * d)
+              .lineTo(rec._px + ux * d2, rec._py + uy * d2)
+              .stroke({ width: lw, color: 0xdfe8ff, alpha: 0.4 });
+          }
+          this.fxLayer
+            .circle(gx, gy, cp * 0.28)
+            .stroke({ width: lw, color: 0xdfe8ff, alpha: 0.4 });
+        }
+      }
+
+      // floating "why" label over the head; text pushed from World.svelte.
+      if (this._selLabel && this._selLabelText) {
+        this._selLabel.visible = true;
+        this._selLabel.x = rec._px;
+        this._selLabel.y = rec.figure.y - rec.hpx * 1.15;
+        // keep label legible regardless of world zoom (counter-scale it)
+        this._selLabel.scale.set(1 / this._zoom);
+      } else if (this._selLabel) {
+        this._selLabel.visible = false;
+      }
+    } else if (this._selLabel) {
+      this._selLabel.visible = false;
+    }
+
+    // follow camera — ease worldRoot so the followed agent stays centred.
+    if (this.followId != null) {
+      const rec = this.agents.get(this.followId);
+      if (rec && rec._px != null) {
+        const W = this.app.renderer.width;
+        const H = this.app.renderer.height;
+        const targetX = W / 2 - rec._px * this._zoom;
+        const targetY = H / 2 - rec._py * this._zoom;
+        this.worldRoot.x += (targetX - this.worldRoot.x) * 0.12;
+        this.worldRoot.y += (targetY - this.worldRoot.y) * 0.12;
+        this._clampPan();
+      } else if (!rec) {
+        this.followId = null; // followed agent gone → stop following
       }
     }
 

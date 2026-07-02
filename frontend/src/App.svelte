@@ -11,6 +11,9 @@
   let snap = $state({ status: "idle", device: null, stats: {} });
   let frame = $state(null);
   let feed = $state([]);
+  // Selected agent id lifted from World — foundation for the later Chronik task
+  // (per-agent event stream). For now App just holds it; nothing consumes it yet.
+  let selectedId = $state(null);
   const differ = createFeedDiffer();
   let feedSeq = 0;
 
@@ -21,6 +24,10 @@
       for (const e of fresh) e.key = feedSeq++;
       feed = [...fresh.reverse(), ...feed].slice(0, 80);
     }
+  }
+
+  function onSelect(id) {
+    selectedId = id;
   }
 
   onMount(() => {
@@ -55,7 +62,7 @@
 
 <Controls {snap} />
 <div class="stage">
-  <World {onFrame} />
+  <World {onFrame} {onSelect} />
   <Feed entries={feed} />
 </div>
 <Cards {stats} />
