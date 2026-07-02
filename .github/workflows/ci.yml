@@ -44,7 +44,7 @@ jobs:
         run: |
           git fetch --no-tags origin "${{ github.base_ref }}"
           mapfile -t CHANGED < <(git diff --name-only --diff-filter=ACMR \
-            "origin/${{ github.base_ref }}...HEAD" -- '*.py')
+            "origin/${{ github.base_ref }}...HEAD" -- '*.py' | grep -v '^archive/' || true)
           if [ ${#CHANGED[@]} -eq 0 ]; then
             echo "No changed Python files — skipping ruff."
             exit 0

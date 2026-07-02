@@ -56,3 +56,13 @@ def test_kaputter_checkpoint_startet_weiterhin_frisch(checkpoint_path):
         f.write(b"kein pickle")
     sim = Simulation(seed=3, physics_v2=False, load_checkpoint=True, **_PARAMS)
     assert sim.tick == 0 and len(sim.agents) == 8
+
+
+def test_kaputter_checkpoint_v2_seedet_objekt_schicht_frisch(checkpoint_path):
+    """Broad-except-Pfad mit physics_v2=True muss auch das v2-Objekt-Seeding
+    nachholen (sonst startet die Welt masselos)."""
+    with open(checkpoint_path, "wb") as f:
+        f.write(b"kein pickle")
+    sim = Simulation(seed=3, physics_v2=True, load_checkpoint=True, **_PARAMS)
+    assert sim.tick == 0 and len(sim.agents) == 8
+    assert sim.world.objects.total_mass() > 0

@@ -127,6 +127,9 @@ class ObjectLayer:
     def __getstate__(self) -> dict:
         state = dict(self.__dict__)
         state.pop("_pos_by_id")
+        # _spawn_cells ist ein reiner Perf-Cache (lazy via getattr-Fallback in
+        # _cells_for rekonstruiert) — nicht mitpickeln.
+        state.pop("_spawn_cells", None)
         if isinstance(state.get("rng"), types.ModuleType):
             state["rng"] = None  # Modul-Default ist prozess-global, nicht picklebar
         return state

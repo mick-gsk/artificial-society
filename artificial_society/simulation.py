@@ -445,6 +445,11 @@ class Simulation:
         except Exception as e:
             print(f"[checkpoint] load failed: {e} — starting fresh")
             self.spawn_initial_population(self._initial_population)
+            if self.physics_v2:
+                # Spiegelt das Start-Seeding aus __init__: ein kaputter Checkpoint
+                # bringt keine Objekt-Schicht mit, also muss sie hier ebenfalls
+                # frisch geseedet werden (sonst startet physics_v2 masselos).
+                seed_initial(self.world.objects, self.world.biomes)
 
     def _collect_stats(self):
         alive = [a for a in self.agents if a.alive]
