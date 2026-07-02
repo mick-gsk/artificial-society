@@ -1,7 +1,7 @@
 # Lern-Kopplung (Schnitt 1, Bau-Schritt 3) — Design
 
 **Datum:** 2026-07-02
-**Status:** Rev. 3 — team-approved (4-Linsen-Agenten-Review + Re-Review: Architektur, Physik, RL, Tests; alle Auflagen eingearbeitet)
+**Status:** Rev. 4 — team-approved (4-Linsen-Agenten-Review + Re-Review: Architektur, Physik, RL, Tests; alle Auflagen eingearbeitet). Rev.-4-Nachträge aus dem 3a-Plan-Review (team-entschieden): Metabolik-Formel korrigiert (×1000-Fehler entfernt, B5), kind `"action"` ratifiziert (B2), Kiesel-Präzisierung (B4), Cut-Ertrag skaliert mit Effort (B4), exert-Bindung normativ präzisiert (B4), eigenschaftsbasiertes Verwesungs-Gate (B3)
 **Eltern-Spec:** `2026-07-02-realphysik-emergenz-schnitt1-design.md` (§5 Gehirn-Kopplung, §6 Bau-Reihenfolge Schritt 3, §10 offene Punkte)
 **Basis:** main @ 9c7b6f0 (Physik-v2-Kern + Embodiment v1 + Welt-Vektorisierung Tier 1+2)
 
@@ -140,10 +140,12 @@ tragen initial ein Objekt), Regeneration `SPAWN_RATE_PER_CELL_TICK = 1e-5`
 Feinabstimmung im Pilot erlaubt, nie zur Laufzeit pro Agent.
 
 **Kalibrierung:** Spawn-Dichten/-Raten bekommen Einträge unter dem **neuen kind
-`"spawn"`** (`VALID_KINDS` wird erweitert; das bestehende kind `material` prüft strikt
-gegen `MATERIALS_V2`-Namen und würde Spawn-Parameter als Orphans abweisen). Der
-Realitäts-Gate-Test wird um die `"spawn"`-Quelle und um `CALIBRATED_ACTION_PARAMS` (B4/B5)
-erweitert — neue Konstanten, die nicht registriert sind, machen das Gate rot.
+`"spawn"`**, die Aktions-/Kopplungs-Konstanten unter dem **neuen kind `"action"`** für
+`CALIBRATED_ACTION_PARAMS` (`VALID_KINDS` wird um beide erweitert; das bestehende kind
+`material` prüft strikt gegen `MATERIALS_V2`-Namen und würde die neuen Parameter als
+Orphans abweisen). Der Realitäts-Gate-Test wird um die `"spawn"`- und `"action"`-Quellen
+(`CALIBRATED_ACTION_PARAMS`, B4/B5) inkl. Orphan-Prüfung erweitert — neue Konstanten,
+die nicht registriert sind, machen das Gate rot.
 
 ### B3. Kadaver-Umleitung (Erhaltung!)
 
@@ -176,7 +178,10 @@ unsichtbar).
    und `toxicity += TOX_SPOILAGE_PER_TICK` mit `TOX_SPOILAGE_PER_TICK = 5e-4` (gekappt
    bei 0.6; Anker: rohes Fleisch wird bei Umgebungstemperatur in ~3–5 Tagen gefährlich —
    Kappe nach ~5 Tagen ≙ 1200 Ticks erreicht). Verweste Masse fließt in
-   `ledger["decayed"]` (bilanzierter Abfluss).
+   `ledger["decayed"]` (bilanzierter Abfluss). Verwesung wirkt **eigenschaftsbasiert**
+   (nie über Labels) auf Objekte mit `moisture ≥ DECAY_MOISTURE_MIN (0.5) ∧ nutrition > 0`
+   — `DECAY_MOISTURE_MIN` ist kalibrierte Konstante (kind `action`); Stein/Trockenholz
+   verwesen nicht, Kadaver-Fragmente erben die Verweslichkeit über ihre Props.
 
 Flag aus → exakt v1-Verhalten (Golden-Garantie + expliziter Verzweigungstest, D1).
 
@@ -195,9 +200,14 @@ dieses Abschnitts stehen in `CALIBRATED_ACTION_PARAMS` und sind Gate-pflichtig.
   Gelieferte Energie:
   `E = min(body.strike_energy_j(effort), 0.5 * striker.mass_kg * V_MAX_STRIKE**2)`
   mit `V_MAX_STRIKE = 14 m/s` (Anker: Hammerschlag-/Knapping-Endgeschwindigkeit 10–15 m/s).
-  Nachgerechnet (Physik-Review): 0.05-kg-Kiesel liefert max ~4.9 J < jede Flint-Schwelle
-  (Exploit zu); 0.5–2-kg-Schlagstein liefert die vollen 49–50 J > Flint-Schwellen bis
-  4 kg — **Knapping bleibt möglich** (Regressionstest D2 hält beides fest).
+  Nachgerechnet (Physik-Review): 0.05-kg-Kiesel liefert max ~4.9 J — unter der Schwelle
+  typischer Knollen ≥ 0.55 kg; Winz-Knollen darf er realistischerweise brechen, der
+  Klingen-Massen-Faktor entwertet Winz-Fragmente ohnehin. 0.5–2-kg-Schlagstein liefert
+  die vollen 49–50 J > Flint-Schwellen bis 4 kg — **Knapping bleibt möglich**
+  (Regressionstest D2 hält beides fest). Normativ zur exert-Bindung: ein AUSGEFÜHRTER
+  Schlag bindet `exert_strike` immer — auch bei wirkungslosem Schlag ohne Bruch; ein
+  unerreichbares/ungültiges Ziel ist dagegen ein No-op OHNE Exert (es wurde nicht
+  geschlagen).
   Ziel: Boden-Objekt an eigener Position ODER das andere gehaltene Objekt.
 - **`do_cut(blade_held_or_none, target, effort)`** — Klinge aus der Hand oder bloße Hand
   (`BARE_HAND_*`-Konstanten aus Physik v2). **Klingen-Massen-Faktor** (beidseitig
@@ -207,7 +217,9 @@ dieses Abschnitts stehen in `CALIBRATED_ACTION_PARAMS` und sind Gate-pflichtig.
   `BLADE_HANDLE_MAX = 1.0 kg` (einhändig führbares Schneidwerkzeug ≤ ~1 kg — darüber ist
   es ein Hammer, kein Messer; Ethnographie Lithik). Ein 20-g-Splitter schneidet langsam,
   ein 4-kg-Rohbrocken ebenfalls (Faktor 0.2) — **das „8-kg-Skalpell" ist zu**, roher
-  Großstein ersetzt kein geknapptes Werkzeug. Schneiden kostet Arbeit:
+  Großstein ersetzt kein geknapptes Werkzeug. Der Schnitt-Ertrag skaliert mit Effort:
+  `yield *= (0.5 + 0.5*effort)` (Anker: Zerlegegeschwindigkeit skaliert mit aufgebrachter
+  Kraft; die Kosten `CUT_WORK_J` skalieren bereits mit). Schneiden kostet Arbeit:
   `CUT_WORK_J = 15 + 35*effort` über denselben Ermüdungspfad (`FATIGUE_PER_JOULE`).
 - **`do_eat(target)`** — Ziel gehalten oder am Boden. Ein Biss pro Tick:
   `bite = min(BITE_MASS_KG, target.mass_kg)` mit `BITE_MASS_KG = 0.3`. Wirkung s. B5.
@@ -239,14 +251,15 @@ Kopplung an die v1-Energieskala (MAX_ENERGY 240):
   `TOX_DAMAGE_PER_KG = 20` (Anker: 0.3 kg stark toxischen Materials (0.8) ≈ 5 Health ≙
   spürbar, wiederholt tödlich; verdorbenes Fleisch bei tox 0.6 ≈ 3.6 Health/Biss).
 - Mechanische Arbeit kostet metabolisch: `energy -= joules / MUSCLE_EFFICIENCY / 4184 *
-  SIM_ENERGY_PER_KCAL * 1000` — Anker `MUSCLE_EFFICIENCY = 0.25` (Brutto-Wirkungsgrad
+  SIM_ENERGY_PER_KCAL` — Anker `MUSCLE_EFFICIENCY = 0.25` (Brutto-Wirkungsgrad
   Skelettmuskel 20–25 %). Bewusst klein (200 Schläge ≈ 0.3 Sim-Energie): der reale
   Begrenzer ist die **Ermüdung**, die Energie-Kopplung ist Erhaltungs-Buchhaltung.
 
 Alle neuen Konstanten (`SIM_ENERGY_PER_KCAL`, `V_MAX_STRIKE`, `BLADE_MASS_REF`,
-`BLADE_HANDLE_MAX`, `BITE_MASS_KG`, `CUT_WORK_J`-Parameter, `MUSCLE_EFFICIENCY`,
-`TOX_DAMAGE_PER_KG`, `TOX_SPOILAGE_PER_TICK`, `DECAY_RATE`) stehen in
-`CALIBRATED_ACTION_PARAMS` bzw. kind `spawn` und sind Gate-pflichtig (B2).
+`BLADE_HANDLE_MAX`, `BITE_MASS_KG`, `CUT_WORK_J`-Parameter inkl. Effort-Ertrags-Faktor,
+`MUSCLE_EFFICIENCY`, `TOX_DAMAGE_PER_KG`, `TOX_SPOILAGE_PER_TICK`, `DECAY_RATE`,
+`DECAY_MOISTURE_MIN`) stehen in `CALIBRATED_ACTION_PARAMS` (kind `action`) bzw. kind
+`spawn` und sind Gate-pflichtig (B2).
 
 ### B6. v1-Systeme im v2-Modus (pro System: Mechanik / Belohnung getrennt)
 
