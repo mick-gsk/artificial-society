@@ -69,3 +69,14 @@ def test_release_value_equal_but_not_held_object_raises():
     assert hands.grasp(make_object("granite", 8.0), body)
     with pytest.raises(ValueError):
         hands.release(make_object("granite", 8.0))  # gleichwertig, aber nie gegriffen
+
+
+def test_same_object_cannot_be_grasped_twice():
+    # Identitäts-Check: dasselbe Objekt doppelt zu greifen würde Masse doppelt zählen.
+    hands = Hands()
+    body = Body(body_mass=70.0, strength=1.0)
+    stone = make_object("granite", 5.0)
+    assert hands.grasp(stone, body)
+    assert not hands.can_grasp(stone, body)
+    assert not hands.grasp(stone, body)
+    assert hands.carried_mass_kg() == pytest.approx(5.0)

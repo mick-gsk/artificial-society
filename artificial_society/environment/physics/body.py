@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .calibration import cal
+from .objects import PhysObject
 
 # Körper-Physik (reale Anker: siehe cal()-Einträge unten)
 CARRY_FRACTION_SUSTAINED = 0.30
@@ -80,25 +81,28 @@ MAX_HELD = 2  # zwei Hände; je Hand ein gehaltenes Objekt
 @dataclass
 class Hands:
     """Was der Körper ohne erfundene Behälter transportieren kann: höchstens
-    zwei gehaltene Objekte, deren Gesamtmasse in die Tragkapazität passt."""
+    zwei gehaltene Objekte, deren Gesamtmasse in die Tragkapazität passt.
+    Die Kapazität wird beim Greifen geprüft; sinkt sie danach (Ermüdung),
+    bleibt Gehaltenes gehalten — Überlast beschleunigt via carry_tick die
+    Ermüdung, das Fallenlassen entscheidet später die Action-Schicht der Sim."""
 
     held: list = field(default_factory=list)
 
     def carried_mass_kg(self) -> float:
         return sum(obj.mass for obj in self.held)
 
-    def can_grasp(self, obj, body: Body) -> bool:
-        if len(self.held) >= MAX_HELD:
+    def can_grasp(self, obj: PhysObject, body: Body) -> bool:
+        if len(self.held) >= MAX_HELD or obj in self.held:
             return False
         return self.carried_mass_kg() + obj.mass <= body.carry_capacity_kg()
 
-    def grasp(self, obj, body: Body) -> bool:
+    def grasp(self, obj: PhysObject, body: Body) -> bool:
         if not self.can_grasp(obj, body):
             return False
         self.held.append(obj)
         return True
 
-    def release(self, obj) -> None:
+    def release(self, obj: PhysObject) -> None:
         self.held.remove(obj)
 
 
