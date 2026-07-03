@@ -105,6 +105,7 @@
       onClose: () => (online = false),
       onHello: (m) => {
         scene.setLegend(m.biomes);
+        scene.notifyReset(); // (re)connect — next sync is a cast swap, not births
         initWarum(m.behavior);
         sendInspect(); // re-subscribe our current inspect after (re)connect
       },

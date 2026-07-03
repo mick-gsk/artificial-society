@@ -298,10 +298,12 @@ export class WorldScene {
 
     // Pooled particle system (R5). Its ParticleContainer is inserted into
     // worldRoot right before the glow layer (over action lines, under figure
-    // glow). One shared atlas → one draw call; a fixed pool with an 800 cap.
+    // glow). One shared atlas over TWO adjacent containers — normal blend for
+    // rain/smoke/dust/wisps, additive for flames/spores/sparks (two draw calls);
+    // one fixed pool with an 800 cap behind both.
     this.particles = createParticleSystem({ container: this.worldRoot });
-    const glowIdx = this.worldRoot.getChildIndex(this.glowLayer);
-    this.worldRoot.setChildIndex(this.particles.container, glowIdx);
+    this.worldRoot.setChildIndex(this.particles.container, this.worldRoot.getChildIndex(this.glowLayer));
+    this.worldRoot.setChildIndex(this.particles.containerAdd, this.worldRoot.getChildIndex(this.glowLayer));
     // Radial texture for the additive fire glows (a soft warm falloff).
     this._deathGlowTex = makeRadialTexture(64, [
       [0, "rgba(255,196,120,1)"],
@@ -331,6 +333,13 @@ export class WorldScene {
     this._bindHover();
     this.app.ticker.add((t) => this._tick(t.deltaMS));
     this.app.renderer.on("resize", () => this._rebuildGrid());
+  }
+
+  // A WS hello implies the stream may now describe a different run (reconnect
+  // or restart). Arm the next _syncAgents to treat its population as a reset:
+  // no birth sparkles, vanished records leave without death theatre.
+  notifyReset() {
+    this._agentConnected = false;
   }
 
   // Text of the floating label over the selected agent. World.svelte owns the
@@ -1119,6 +1128,27 @@ export class WorldScene {
   // -- agents ----------------------------------------------------------------
 
   _syncAgents(agents) {
+    // Population-reset detection (R5 fix): a run restart mid-connection (POST
+    // /api/run → new sim) floods this sync with brand-new ids — that is a cast
+    // change, not a wave of births. Reset when (a) this is the first sync after
+    // a (re)connect (`notifyReset()` clears the flag on every WS hello), or (b)
+    // more than 3 ids are new AND at least half the incoming population is new
+    // in ONE sync (genuine births arrive one or two per 20-Hz frame). During a
+    // reset: no birth sparkles, vanished records leave without death theatre,
+    // and stale particles from the old run are cleared.
+    let newIds = 0;
+    for (const a of agents) if (!this.agents.has(a.id)) newIds++;
+    const reset = !this._agentConnected || (newIds > 3 && newIds * 2 >= agents.length);
+    if (reset && (this.agents.size || this._dying.length)) {
+      this.particles?.clear(); // old run's weather/fx are stale coordinates now
+      for (const d of this._dying) {
+        d.rec.glow.destroy();
+        d.rec.figure.destroy({ children: true });
+        d.rec.emote.destroy();
+      }
+      this._dying.length = 0;
+    }
+
     const seen = new Set();
     for (const a of agents) {
       seen.add(a.id);
@@ -1172,10 +1202,10 @@ export class WorldScene {
           emoteOn: false,
         };
         this.agents.set(a.id, rec);
-        // Birth burst: a genuinely-new id — gold sparks + ring. NOT on the first
-        // sync after connect (every agent is "new" then; that's a connect, not a
-        // wave of births). MID/NEAR only (anti-clutter at far zoom).
-        if (this._agentConnected && this.particles && this._lod !== "far") {
+        // Birth burst: a genuinely-new id — gold sparks + ring. NOT during a
+        // population reset (first sync after connect, or a run restart flooding
+        // the frame with new ids). MID/NEAR only (anti-clutter at far zoom).
+        if (!reset && this.particles && this._lod !== "far") {
           const bx = this.offX + (a.x + 0.5) * this.cellPx;
           const by = this.offY + (a.y + 0.5) * this.cellPx;
           this.particles.emitters.birth(bx, by, this.cellPx);
@@ -1253,17 +1283,26 @@ export class WorldScene {
     }
     for (const [id, rec] of this.agents) {
       if (!seen.has(id)) {
-        // Death: don't destroy immediately. Move the record OUT of this.agents
-        // (so selection/hover/markers stop tracking it — World already deselects
-        // when an id vanishes) into _dying, where _tick fades the figure over
-        // ~600 ms and then destroys it. A grey wisp rises from the last cell.
         this.agents.delete(id);
-        this._dying.push({ rec, age: 0 });
-        rec.emote.visible = false;
-        if (this.particles && this._lod !== "far") {
-          const dx = rec._px ?? this.offX + (rec.toX + 0.5) * this.cellPx;
-          const dy = rec._py ?? this.offY + (rec.toY + 0.5) * this.cellPx;
-          this.particles.emitters.deathWisp(dx, dy, this.cellPx);
+        if (reset) {
+          // Wholesale cast replacement (run restart) — the old records leave
+          // instantly and silently: no fade, no wisp; nobody "died", the run
+          // changed underneath us.
+          rec.glow.destroy();
+          rec.figure.destroy({ children: true });
+          rec.emote.destroy();
+        } else {
+          // Death: don't destroy immediately. Move the record OUT of this.agents
+          // (so selection/hover/markers stop tracking it — World already
+          // deselects when an id vanishes) into _dying, where _tick fades the
+          // figure over ~600 ms and then destroys it. A grey wisp rises.
+          this._dying.push({ rec, age: 0 });
+          rec.emote.visible = false;
+          if (this.particles && this._lod !== "far") {
+            const dx = rec._px ?? this.offX + (rec.toX + 0.5) * this.cellPx;
+            const dy = rec._py ?? this.offY + (rec.toY + 0.5) * this.cellPx;
+            this.particles.emitters.deathWisp(dx, dy, this.cellPx);
+          }
         }
         if (this.selectedId === id) {
           this.selectedId = null;

@@ -5,8 +5,11 @@
 // droughts kick up warm dust, blight breathes violet spores, births burst gold
 // sparks + a ring, deaths exhale a grey wisp, discoveries spit embers.
 //
-// Design constraints (see the R5 brief):
-//   * ONE ParticleContainer, ONE small programmatic atlas → one draw call.
+// Design constraints (R5 brief + plan review):
+//   * TWO ParticleContainers over ONE small programmatic atlas — a normal-blend
+//     one for occluding matter (rain, smoke, dust, wisps) and an ADDITIVE one
+//     for hot/luminous matter (flames, blight spores, sparks, birth ring). Both
+//     share the same texture source → exactly two draw calls.
 //   * A fixed pre-allocated pool + freelist. Hard global cap of 800 active
 //     particles; every emitter enforces its own sub-budget against that cap.
 //   * NO Math.random() in the render path — a seeded mulberry32 PRNG per emitter
@@ -51,6 +54,17 @@ const KIND_BUDGET = {
   [K_SPARK]: "fx",
   [K_WISP]: "smoke", // death wisps draw from the smoke budget
   [K_RING]: "fx",
+};
+
+// Which kinds render ADDITIVELY (hot / luminous matter — brighter where they
+// overlap): flames, blight spores, discovery/birth sparks and the birth ring.
+// Rain, smoke, dust and death wisps are ordinary occluding matter → normal
+// blend. One pooled ParticleContainer per blend mode, same atlas source.
+const KIND_ADDITIVE = {
+  [K_FIRE]: true,
+  [K_SPORE]: true,
+  [K_SPARK]: true,
+  [K_RING]: true,
 };
 
 // -- deterministic PRNG (mulberry32) -----------------------------------------
@@ -163,17 +177,22 @@ function rgb2bgr(hex) {
 export function createParticleSystem({ container }) {
   const atlas = buildParticleAtlas();
 
-  // One dynamic ParticleContainer: position, rotation, colour (alpha lives in
-  // the packed colour) and uvs (per-particle atlas frame) all change per frame,
-  // so all four are dynamic. Still ONE draw call — one shared texture source.
-  const pc = new ParticleContainer({
-    dynamicProperties: { position: true, rotation: true, color: true, uvs: true },
-    roundPixels: false,
-  });
-  // ParticleContainer bounds aren't auto-computed; give it a huge static area so
-  // culling never hides the spray. (Cheap — one rect.)
+  // Two dynamic ParticleContainers over the SAME atlas source: position,
+  // rotation, colour (alpha lives in the packed colour) and uvs (per-particle
+  // atlas frame) all change per frame, so all four are dynamic. `pc` draws the
+  // occluding matter with normal blending; `pcAdd` draws the hot/luminous kinds
+  // (KIND_ADDITIVE) additively — flames stack brighter where they overlap and
+  // spores glow. Exactly two draw calls, adjacent in the layer stack.
+  const DYN = { position: true, rotation: true, color: true, uvs: true };
+  const pc = new ParticleContainer({ dynamicProperties: DYN, roundPixels: false });
+  const pcAdd = new ParticleContainer({ dynamicProperties: DYN, roundPixels: false });
+  pcAdd.blendMode = "add"; // the particle pipe honours the container's blend mode
+  // ParticleContainer bounds aren't auto-computed; give both a huge static area
+  // so culling never hides the spray. (Cheap — one rect each.)
   pc.boundsArea = new Rectangle(-1e5, -1e5, 2e5, 2e5);
+  pcAdd.boundsArea = new Rectangle(-1e5, -1e5, 2e5, 2e5);
   container.addChild(pc);
+  container.addChild(pcAdd);
 
   // The pool. Each slot is a Particle plus the sim fields we animate. Particles
   // stay in the container for their whole life; inactive ones are parked
@@ -190,6 +209,7 @@ export function createParticleSystem({ container }) {
     free[i] = i;
     sim[i] = {
       _alive: false, // freelist/budget truth — release is idempotent on this
+      ctn: pc, // which container the Particle currently sits in (blend route)
       kind: 0,
       vx: 0,
       vy: 0,
@@ -246,10 +266,18 @@ export function createParticleSystem({ container }) {
     free[freeTop++] = idx;
   }
 
-  // Common spawn: set the Particle's frame + transform + initial colour.
+  // Common spawn: set the Particle's frame + transform + initial colour, and
+  // route it to the right blend container. The move only happens when a recycled
+  // slot crosses the normal↔additive boundary (spawn-time only, never per frame).
   function spawn(idx, kind, x, y, opts) {
     const p = pool[idx];
     const s = sim[idx];
+    const target = KIND_ADDITIVE[kind] ? pcAdd : pc;
+    if (s.ctn !== target) {
+      s.ctn.removeParticle(p);
+      target.addParticle(p);
+      s.ctn = target;
+    }
     p.texture = atlas.frames[kind];
     p.x = x;
     p.y = y;
@@ -612,7 +640,8 @@ export function createParticleSystem({ container }) {
   }
 
   return {
-    container: pc,
+    container: pc, // normal-blend (rain, smoke, dust, wisps)
+    containerAdd: pcAdd, // additive (flames, spores, sparks, ring)
     update,
     clear,
     activeCount,
@@ -621,6 +650,7 @@ export function createParticleSystem({ container }) {
     emitters: { rain, fire, smoke, dust, spores, birth, deathWisp, sparks },
     destroy() {
       pc.destroy();
+      pcAdd.destroy();
       atlas.source.destroy(true);
     },
   };
