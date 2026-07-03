@@ -139,3 +139,55 @@ def test_v2_sim_laueft_und_planner_bleibt_stumm():
     assert all(a.brain.physics_v2 for a in sim.agents)
     assert sum(len(a.brain.rollout) for a in sim.agents) > 0, "Transitionen müssen fließen"
     assert not any(np.isnan(a.last_reward) for a in sim.agents)
+
+
+def test_d4_metriken_verbs_und_discovery_je_agent():
+    """D4 (erst nach 3b): Verb-Raten + DiscoveryV2-Events je Agent im Snapshot."""
+    sim = _sim_v2()
+    agent = sim.agents[0]
+    agent._test_world = sim.world
+    agent.body.strength = 1.0
+    hammer = make_object("granite", 1.5)
+    flint = make_object("flint", 0.8)
+    agent.hands.held.append(hammer)
+    sim.world.objects.ledger["spawned"] += 1.5
+    sim.world.objects.add(flint, agent.pos, source="spawned")
+    view = build_slots(agent, sim.world.objects)
+    _erzwinge_verb(agent, 2, view.objs.index(flint), tool_slot=view.objs.index(hammer))
+
+    snap = sim.world.objects.metrics_snapshot()
+    assert snap["verbs_fired"]["strike"] == 1  # Versuche (F4)
+    assert snap.get("verbs_failed", {}).get("strike", 0) == 0  # erfolgreicher Schlag
+    assert snap["discovery_events_by_agent"].get(agent.id, 0) >= 1, (
+        "frische Fragmente sind neue Eigenschafts-Punkte → DiscoveryV2-Event je Agent"
+    )
+
+
+def test_d4_neugier_zerlegung_wird_geloggt():
+    """D4: die drei Neugier-Quellen werden separat geloggt (Pilot-Diagnostik)."""
+    sim = _sim_v2()
+    for _ in range(3):
+        sim.step()
+    snap = sim.world.objects.metrics_snapshot()
+    assert set(snap["curiosity_sums"]) == {"nextslot", "causal", "novelty"}
+    assert all(np.isfinite(v) for v in snap["curiosity_sums"].values())
+    assert snap["curiosity_sums"]["nextslot"] > 0.0  # Vorhersagefehler früh > 0
+    for agent in sim.agents:
+        assert set(agent.curiosity_last) == {"nextslot", "causal", "novelty"}
+
+
+def test_v2_smoke_12_ticks_keine_nans():
+    """Kurzer Suite-Smoke: 12 Ticks v2 — keine Exceptions, keine NaNs, Buffer wachsen."""
+    sim = _sim_v2(seed=7)
+    for _ in range(12):
+        sim.step()
+    for agent in sim.agents:
+        assert np.isfinite(agent.last_reward)
+        assert np.isfinite(agent.energy) and np.isfinite(agent.health)
+        assert not torch.isnan(agent.hidden_state).any()
+    assert sum(len(a.brain.rollout) for a in sim.agents) > 0
+    haende = sum(
+        a.hands.carried_mass_kg() for a in sim.agents if getattr(a, "hands", None) is not None
+    )
+    lhs, rhs = sim.world.objects.conservation_terms(held_mass_kg=haende)
+    assert abs(lhs - rhs) < 1e-6, "Massen-Ledger hält auch unter Policy-Aktionen"
