@@ -24,6 +24,35 @@
 
   let selectedId = null;
 
+  // -- analysis overlays (C3) --------------------------------------------------
+  // Six zuschaltbare Overlays, Default alle aus. Three are server-computed
+  // layers (need a WS `layers` request); three are client-only.
+  const OVERLAY_CHIPS = [
+    { key: "food", label: "Nahrung", server: false },
+    { key: "temperature", label: "Temperatur", server: true },
+    { key: "danger", label: "Gefahr", server: true },
+    { key: "disease", label: "Krankheit", server: true },
+    { key: "tribe", label: "Territorium", server: false },
+    { key: "kin", label: "Verwandtschaft", server: false },
+  ];
+  const SERVER_OVERLAY_KEYS = OVERLAY_CHIPS.filter((c) => c.server).map((c) => c.key);
+  let overlays = $state({}); // key -> bool
+
+  // Send the union of active SERVER overlays to the sim (empty → clears it). The
+  // server ignores unknown/empty and only ships the layers every 10th tick.
+  function sendLayers() {
+    const want = SERVER_OVERLAY_KEYS.filter((k) => overlays[k]);
+    ws?.send({ type: "layers", want });
+  }
+
+  function toggleOverlay(key) {
+    overlays = { ...overlays, [key]: !overlays[key] };
+    // Tell the renderer which overlays to paint (all six).
+    scene?.setOverlays(Object.keys(overlays).filter((k) => overlays[k]));
+    // If a SERVER overlay flipped, (re)send the reduced/expanded request.
+    if (SERVER_OVERLAY_KEYS.includes(key)) sendLayers();
+  }
+
   // Send the current inspect registration. Called on select/deselect AND after
   // every hello (initial connect + auto-reconnect) so a reconnect re-subscribes.
   function sendInspect() {
@@ -108,6 +137,7 @@
         scene.notifyReset(); // (re)connect — next sync is a cast swap, not births
         initWarum(m.behavior);
         sendInspect(); // re-subscribe our current inspect after (re)connect
+        sendLayers(); // re-subscribe our active server overlays after (re)connect
       },
       onFrame: (f) => {
         lastFrame = f;
@@ -179,6 +209,21 @@
       <span class="hud-label">ZOOM</span>
       <span class="hud-val">{hud.zoom}×</span>
     {/if}
+  </div>
+
+  <div class="overlays">
+    <span class="ov-label">Overlays</span>
+    {#each OVERLAY_CHIPS as c (c.key)}
+      <button
+        type="button"
+        class="ov-chip"
+        class:on={overlays[c.key]}
+        onclick={() => toggleOverlay(c.key)}
+        title={c.server ? "Server-Layer" : "Client-Overlay"}
+      >
+        {c.label}
+      </button>
+    {/each}
   </div>
 
   <Inspector
@@ -277,6 +322,49 @@
   }
   .amber {
     color: var(--amber) !important;
+  }
+
+  /* -- analysis-overlay chip bar (C3) -------------------------------------- */
+  .overlays {
+    position: absolute;
+    top: 30px;
+    left: 28px;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+    max-width: min(560px, calc(100% - 40px));
+    z-index: 4;
+  }
+  .ov-label {
+    color: var(--muted);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-right: 3px;
+    text-shadow: 0 0 6px rgba(0, 0, 0, 0.9);
+  }
+  .ov-chip {
+    font: inherit;
+    font-size: 10.5px;
+    letter-spacing: 0.03em;
+    color: var(--muted);
+    background: rgba(5, 8, 13, 0.72);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 2px 8px;
+    cursor: pointer;
+    transition: color 0.12s, border-color 0.12s, background 0.12s;
+  }
+  .ov-chip:hover {
+    color: var(--text);
+    border-color: #3a4a66;
+  }
+  .ov-chip.on {
+    color: #05070b;
+    background: var(--accent);
+    border-color: var(--accent);
+    box-shadow: 0 0 8px rgba(90, 200, 250, 0.4);
   }
 
   .legend {

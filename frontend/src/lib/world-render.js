@@ -65,6 +65,43 @@ const LOD_FAR_MID = 8;
 const LOD_MID_NEAR = 24;
 const LOD_HYST = 0.1;
 
+// -- analysis overlays (C3) ---------------------------------------------------
+// Overlays are analysis tools: dezent (semitransparent), off by default.
+const OVERLAY_ALPHA = 0.35; // heat-map sprite alpha
+const OVERLAY_NAMES = ["food", "temperature", "danger", "disease", "tribe", "kin"];
+// Which overlays are server-computed layers (need a WS `layers` request); the
+// rest are painted purely client-side from the live frame.
+const SERVER_OVERLAYS = ["temperature", "danger", "disease"];
+// Data overlays draw a per-cell heat-map canvas; food is quantized client-side
+// to the same 0..9 nibble the server layers use, so one ramp path serves all.
+const DATA_OVERLAYS = ["food", "temperature", "danger", "disease"];
+const TERR_TERRITORY_EVERY = 10; // re-splat the tribe overlay every N render frames
+const KIN_MAX_LINES = 150; // above this, draw only the selected lineage
+// Colour ramps: 10 stops (idx 0..9) as [r,g,b]. Interpolated by the quantized
+// value. Kept dezent — the alpha carries the transparency.
+const OVERLAY_RAMPS = {
+  // Nahrung: dark→bright green.
+  food: [
+    [10, 30, 16], [16, 52, 24], [22, 74, 32], [30, 98, 40], [40, 124, 50],
+    [54, 150, 62], [72, 176, 78], [96, 200, 98], [128, 220, 124], [170, 240, 158],
+  ],
+  // Temperatur: blue (cold) → red (hot).
+  temperature: [
+    [40, 70, 200], [46, 104, 214], [58, 148, 220], [86, 186, 210], [150, 210, 170],
+    [214, 210, 120], [232, 176, 78], [236, 132, 58], [230, 84, 52], [214, 44, 44],
+  ],
+  // Gefahr: yellow → red.
+  danger: [
+    [70, 66, 20], [110, 100, 24], [154, 132, 28], [196, 158, 30], [224, 168, 36],
+    [232, 140, 40], [232, 108, 44], [226, 78, 44], [214, 50, 42], [196, 28, 40],
+  ],
+  // Krankheit: green → violet.
+  disease: [
+    [30, 96, 54], [46, 104, 74], [66, 106, 98], [92, 102, 128], [118, 92, 156],
+    [140, 78, 178], [158, 62, 194], [172, 48, 204], [186, 40, 214], [200, 40, 224],
+  ],
+};
+
 const EVENT_COLORS = {
   drought: 0xf0b030,
   storm: 0x4cc6ff,
@@ -138,6 +175,9 @@ export class WorldScene {
     // everything world-positioned goes under worldRoot: zoom/pan = one transform
     this.worldRoot = new Container();
     this.terrainLayer = new Container();
+    // Analysis overlays sit directly over the terrain and under decor so the
+    // heat-maps tint the ground but everything alive/built reads on top (C3).
+    this.overlayLayer = new Container();
     this.decorLayer = new Container();
     this.gridLayer = new Container();
     this.itemLayer = new Container();
@@ -244,6 +284,37 @@ export class WorldScene {
     this._ashData = null; // Uint8Array w*h*4, refilled only when cells.ash arrives
     this._ashTex = null;
 
+    // -- analysis overlays (C3) ----------------------------------------------
+    // Six zuschaltbare, semitransparente Overlays über dem Terrain (unter decor).
+    // Set of active overlay names; empty by default (all off). The owner
+    // (World.svelte) flips these via setOverlays() and separately tells the WS
+    // which SERVER layers to request. Client overlays (food/tribe/kin) read the
+    // live frame; server overlays (temperature/danger/disease) read cached
+    // per-cell arrays that the server ships only every 10th tick — the client
+    // keeps painting the last array between refreshes (Ash-cache idiom).
+    this._overlays = new Set();
+    // Per data-overlay canvas/texture/sprite (1 texel/cell, LINEAR-scaled for a
+    // soft heat-map). Built lazily per grid; torn down on resize/reset. Keyed by
+    // overlay name. `data` overlays are food + the three server layers.
+    this._ovSprites = {}; // name -> { canvas, ctx, img, tex, sprite }
+    // Cached server-layer arrays (last-known), so a throttled tick that ships no
+    // fresh array keeps painting the previous one. Cleared on resize/reset.
+    this._layerCache = {}; // name -> Int/number[] (0..9 quantized)
+    this._overlayDirty = {}; // name -> bool: needs a canvas refill this frame
+    // Tribe-territory overlay: a ¼-res canvas splatted from agent positions,
+    // throttled to every ~10 render frames. Persistent buffers, no per-frame
+    // allocation beyond the splat pass.
+    this._terrCanvas = null;
+    this._terrCtx = null;
+    this._terrTex = null;
+    this._terrSprite = null;
+    this._terrTick = 0; // render-frame counter for the ~10-frame throttle
+    // Kinship overlay: a Graphics layer redrawn each display tick from eased
+    // agent render positions (rec._px/_py). Capped at KIN_MAX_LINES visible
+    // lines; when the cap would be exceeded only the selected agent's lineage is
+    // drawn (parent + children), else a truncated set.
+    this._kinLayer = null;
+
     // view state
     this._zoom = 1;
     this._zoomMax = ZOOM_MAX_FLOOR; // recomputed per grid in _rebuildGrid
@@ -290,8 +361,13 @@ export class WorldScene {
     await this.app.init({ background: 0x05070b, antialias: true, resizeTo: host });
     host.appendChild(this.app.canvas);
     this.glowLayer.blendMode = "add";
+    // Kinship-line layer: a Graphics between the overlay heat-maps and decor so
+    // the family lines read over the ground tint but under decor/figures.
+    this._kinLayer = new Graphics();
+    this.overlayLayer.addChild(this._kinLayer);
     this.worldRoot.addChild(
       this.terrainLayer,
+      this.overlayLayer,
       this.decorLayer,
       this.gridLayer,
       this.itemLayer,
@@ -375,6 +451,294 @@ export class WorldScene {
   // no birth sparkles, vanished records leave without death theatre.
   notifyReset() {
     this._agentConnected = false;
+    // A fresh run may have a different grid/tribes — drop the cached server
+    // layers so a stale heat-map from the old run never bleeds into the new one.
+    this._layerCache = {};
+    for (const name of DATA_OVERLAYS) this._overlayDirty[name] = true;
+  }
+
+  // -- analysis overlays (C3) --------------------------------------------------
+  //
+  // The owner (World.svelte) sets the active overlay set here whenever a chip is
+  // toggled. Sprites for now-inactive overlays are hidden; newly-active data
+  // overlays are marked dirty so their canvas gets a fresh fill on the next
+  // frame. Server-layer subscription is the owner's job (it sends the WS
+  // `layers` request) — this method only drives what gets *painted*.
+  setOverlays(names) {
+    this._overlays = new Set(names || []);
+    // Hide every data-overlay sprite that is no longer active; mark active ones
+    // dirty so they repaint from the freshest data on the next update()/_tick.
+    for (const name of DATA_OVERLAYS) {
+      const on = this._overlays.has(name);
+      const entry = this._ovSprites[name];
+      if (entry) entry.sprite.visible = on;
+      if (on) this._overlayDirty[name] = true;
+    }
+    if (this._terrSprite) this._terrSprite.visible = this._overlays.has("tribe");
+    if (this._kinLayer && !this._overlays.has("kin")) this._kinLayer.clear();
+  }
+
+  // Ensure a data-overlay sprite (1 texel/cell canvas, LINEAR-scaled for a soft
+  // heat-map, alpha ~0.35) exists for `name` at the current grid size. Rebuilt
+  // when the grid changes. Returns the entry or null if there's no grid yet.
+  _ensureOverlaySprite(name) {
+    if (!this.grid) return null;
+    const { w, h } = this.grid;
+    let e = this._ovSprites[name];
+    if (e && e.canvas.width === w && e.canvas.height === h) return e;
+    if (e) {
+      e.sprite.destroy();
+      if (e.tex) e.tex.destroy(true);
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    const img = ctx.createImageData(w, h);
+    const tex = Texture.from(canvas);
+    tex.source.scaleMode = "linear"; // soft heat-map, not hard cells
+    const sprite = new Sprite(tex);
+    sprite.alpha = OVERLAY_ALPHA;
+    sprite.visible = this._overlays.has(name);
+    e = { canvas, ctx, img, tex, sprite };
+    this._ovSprites[name] = e;
+    this.overlayLayer.addChildAt(sprite, 0); // under the kin lines
+    this._overlayDirty[name] = true;
+    return e;
+  }
+
+  // Quantize the client-side food field to the same 0..9 nibble the server
+  // layers use (food ships every frame in cells.food, 0..~90). Cheap, allocates
+  // one array per fill (only while the overlay is active).
+  _foodLayerData(cells) {
+    const food = cells.food;
+    if (!food) return null;
+    const out = new Array(food.length);
+    for (let i = 0; i < food.length; i++) {
+      const q = Math.round(food[i] / 10);
+      out[i] = q < 0 ? 0 : q > 9 ? 9 : q;
+    }
+    return out;
+  }
+
+  // Paint a quantized 0..9 per-cell array into a data-overlay canvas via its
+  // colour ramp. Only runs when the overlay is active AND dirty (new data), so
+  // there is no per-frame allocation in the steady state.
+  _fillOverlayCanvas(name, arr) {
+    const e = this._ensureOverlaySprite(name);
+    if (!e || !arr) return;
+    const { w, h } = this.grid;
+    const ramp = OVERLAY_RAMPS[name];
+    const px = e.img.data;
+    const n = w * h;
+    for (let i = 0; i < n; i++) {
+      const v = arr[i] | 0;
+      const c = ramp[v < 0 ? 0 : v > 9 ? 9 : v];
+      const p = i * 4;
+      px[p] = c[0];
+      px[p + 1] = c[1];
+      px[p + 2] = c[2];
+      // Per-texel alpha rides the value so empty cells fade out; the sprite's
+      // own alpha (0.35) still caps the whole overlay's opacity.
+      px[p + 3] = 90 + ((v / 9) * 165) | 0;
+    }
+    e.ctx.putImageData(e.img, 0, 0);
+    e.tex.source.update();
+    e.sprite.x = this.offX;
+    e.sprite.y = this.offY;
+    e.sprite.width = w * this.cellPx;
+    e.sprite.height = h * this.cellPx;
+  }
+
+  // Refresh all active data overlays from the current frame. Server layers read
+  // the cached last-known array (updated when frame.layers[name] arrives); food
+  // is recomputed from cells.food every frame. Cheap: skips inactive overlays
+  // and skips a canvas refill when nothing changed (dirty flag).
+  _updateDataOverlays(frame) {
+    // Fold any fresh server-layer arrays into the cache (Ash-cache idiom: the
+    // key only arrives ~every 10th tick; between refreshes we keep the last).
+    const layers = frame.layers;
+    if (layers) {
+      for (const name of SERVER_OVERLAYS) {
+        if (layers[name]) {
+          this._layerCache[name] = layers[name];
+          this._overlayDirty[name] = true;
+        }
+      }
+    }
+    for (const name of DATA_OVERLAYS) {
+      if (!this._overlays.has(name)) continue;
+      let arr;
+      if (name === "food") {
+        arr = this._foodLayerData(frame.cells); // recomputed every frame
+        this._overlayDirty[name] = true;
+      } else {
+        arr = this._layerCache[name]; // cached server layer
+      }
+      if (arr && this._overlayDirty[name]) {
+        this._fillOverlayCanvas(name, arr);
+        this._overlayDirty[name] = false;
+      } else if (!arr) {
+        // No data yet (server layer not shipped this run) — hide until it lands.
+        const e = this._ovSprites[name];
+        if (e) e.sprite.visible = false;
+      } else {
+        // Data unchanged but active — keep the sprite visible & positioned.
+        const e = this._ovSprites[name];
+        if (e) {
+          e.sprite.visible = true;
+          e.sprite.x = this.offX;
+          e.sprite.y = this.offY;
+          e.sprite.width = this.grid.w * this.cellPx;
+          e.sprite.height = this.grid.h * this.cellPx;
+        }
+      }
+    }
+  }
+
+  // Tribe-territory overlay: splat each agent's tribe colour into a ¼-res canvas
+  // with a soft radial stamp, argmax-colour per texel by accumulated density,
+  // alpha ∝ density. Throttled to every TERR_TERRITORY_EVERY render frames.
+  _updateTribeOverlay(agents) {
+    if (!this.grid || !agents) return;
+    const { w, h } = this.grid;
+    const lw = Math.max(1, Math.floor(w / 4));
+    const lh = Math.max(1, Math.floor(h / 4));
+    if (!this._terrCanvas || this._terrCanvas.width !== lw || this._terrCanvas.height !== lh) {
+      if (this._terrTex) this._terrTex.destroy(true);
+      if (this._terrSprite) this._terrSprite.destroy();
+      this._terrCanvas = document.createElement("canvas");
+      this._terrCanvas.width = lw;
+      this._terrCanvas.height = lh;
+      this._terrCtx = this._terrCanvas.getContext("2d");
+      this._terrTex = Texture.from(this._terrCanvas);
+      this._terrTex.source.scaleMode = "linear";
+      this._terrSprite = new Sprite(this._terrTex);
+      this._terrSprite.alpha = OVERLAY_ALPHA;
+      this.overlayLayer.addChildAt(this._terrSprite, 0);
+    }
+    this._terrSprite.visible = true;
+    // Accumulate per-texel {r,g,b} weighted by a radial stamp, keep the winning
+    // tribe (argmax by weight) — persistent scratch buffers, no per-frame alloc.
+    const n = lw * lh;
+    if (!this._terrAcc || this._terrAcc.length !== n * 4) {
+      this._terrAcc = new Float32Array(n * 4); // r,g,b,maxWeight per texel
+    }
+    const acc = this._terrAcc;
+    acc.fill(0);
+    const R = 2; // stamp radius in low-res texels
+    for (const a of agents) {
+      const col = a.col ? parseInt(a.col.slice(1), 16) : 0x888888;
+      const cr = (col >> 16) & 255;
+      const cg = (col >> 8) & 255;
+      const cb = col & 255;
+      const lx = (a.x / w) * lw;
+      const ly = (a.y / h) * lh;
+      const x0 = Math.max(0, Math.floor(lx - R));
+      const x1 = Math.min(lw - 1, Math.ceil(lx + R));
+      const y0 = Math.max(0, Math.floor(ly - R));
+      const y1 = Math.min(lh - 1, Math.ceil(ly + R));
+      for (let ty = y0; ty <= y1; ty++) {
+        for (let tx = x0; tx <= x1; tx++) {
+          const dx = tx + 0.5 - lx;
+          const dy = ty + 0.5 - ly;
+          const d2 = dx * dx + dy * dy;
+          const wgt = Math.max(0, 1 - d2 / (R * R)); // soft radial falloff
+          if (wgt <= 0) continue;
+          const p = (ty * lw + tx) * 4;
+          acc[p] += cr * wgt;
+          acc[p + 1] += cg * wgt;
+          acc[p + 2] += cb * wgt;
+          acc[p + 3] += wgt; // total density → alpha + argmax normaliser
+        }
+      }
+    }
+    const img = this._terrCtx.createImageData(lw, lh);
+    const px = img.data;
+    for (let i = 0; i < n; i++) {
+      const p = i * 4;
+      const dens = acc[p + 3];
+      if (dens <= 0) {
+        px[p + 3] = 0;
+        continue;
+      }
+      px[p] = (acc[p] / dens) | 0; // density-weighted mean colour (argmax-ish)
+      px[p + 1] = (acc[p + 1] / dens) | 0;
+      px[p + 2] = (acc[p + 2] / dens) | 0;
+      px[p + 3] = Math.min(255, 60 + dens * 90) | 0; // alpha ∝ density
+    }
+    this._terrCtx.putImageData(img, 0, 0);
+    this._terrTex.source.update();
+    this._terrSprite.x = this.offX;
+    this._terrSprite.y = this.offY;
+    this._terrSprite.width = w * this.cellPx;
+    this._terrSprite.height = h * this.cellPx;
+  }
+
+  // Kinship overlay: draw a dezent line from each visible child to its living,
+  // visible parent (`pa`). Redrawn every display tick from eased render
+  // positions (rec._px/_py — set in the same _tick pass, B5 idiom). Above
+  // KIN_MAX_LINES visible pairs, draw only the selected agent's lineage
+  // (its parent + its children); if nothing is selected, cap the set.
+  _drawKinship() {
+    const g = this._kinLayer;
+    g.clear();
+    if (!this._overlays.has("kin")) return;
+    const lw = 1 / this._zoom; // constant on-screen width while zoomed
+    // Collect candidate child→parent pairs among currently-tracked records.
+    const pairs = [];
+    for (const rec of this.agents.values()) {
+      if (rec.pa == null || rec._px == null) continue;
+      const par = this.agents.get(rec.pa);
+      if (!par || par._px == null) continue; // parent must be alive & positioned
+      pairs.push([rec, par]);
+    }
+    let draw = pairs;
+    if (pairs.length > KIN_MAX_LINES) {
+      // Thin out: keep only the selected agent's own lineage (its parent link +
+      // links from its children to it). Falls back to a hard cap when nothing
+      // is selected.
+      const sel = this.selectedId;
+      if (sel != null) {
+        draw = pairs.filter(([c, p]) => c.id === sel || p.id === sel);
+      } else {
+        draw = pairs.slice(0, KIN_MAX_LINES);
+      }
+    }
+    for (const [child, parent] of draw) {
+      g.moveTo(child._px, child._py).lineTo(parent._px, parent._py);
+    }
+    if (draw.length) {
+      g.stroke({ width: lw, color: 0xffd27a, alpha: 0.22 });
+    }
+  }
+
+  // Tear down all overlay canvases/textures/sprites (resize + reset). The kin
+  // Graphics layer persists (it's cleared, not destroyed) — only its buffers go.
+  _destroyOverlays() {
+    for (const name of DATA_OVERLAYS) {
+      const e = this._ovSprites[name];
+      if (e) {
+        e.sprite.destroy();
+        if (e.tex) e.tex.destroy(true);
+      }
+    }
+    this._ovSprites = {};
+    if (this._terrSprite) {
+      this._terrSprite.destroy();
+      this._terrSprite = null;
+    }
+    if (this._terrTex) {
+      this._terrTex.destroy(true);
+      this._terrTex = null;
+    }
+    this._terrCanvas = null;
+    this._terrCtx = null;
+    this._terrAcc = null;
+    if (this._kinLayer) this._kinLayer.clear();
+    // Cached data is grid-shaped → invalidate on a resize; a fresh fill follows.
+    this._layerCache = {};
+    for (const name of DATA_OVERLAYS) this._overlayDirty[name] = true;
   }
 
   // Text of the floating label over the selected agent. World.svelte owns the
@@ -655,6 +1019,17 @@ export class WorldScene {
     this._syncAgents(frame.agents);
     this._packEvents(this._events); // event → shader uniforms (20 Hz, no realloc)
     this._paintEvents(this._events);
+    // Analysis overlays (C3): data heat-maps every frame (dirty-gated); the
+    // tribe splat is throttled to every TERR_TERRITORY_EVERY render frames; the
+    // kinship lines are redrawn per display tick in _tick from eased positions.
+    this._updateDataOverlays(frame);
+    if (this._overlays.has("tribe")) {
+      if (this._terrTick++ % TERR_TERRITORY_EVERY === 0) {
+        this._updateTribeOverlay(frame.agents);
+      }
+    } else if (this._terrSprite) {
+      this._terrSprite.visible = false;
+    }
   }
 
   // -- terrain: one subpixel-painted texture ------------------------------------
@@ -1135,6 +1510,11 @@ export class WorldScene {
       this._ensureShaderTerrain();
     }
 
+    // Analysis-overlay canvases are grid-shaped and positioned at the current
+    // offX/offY/cellPx — a grid-size change or a pure resize invalidates them.
+    // Tear them down; the next update()/_tick refills active ones from cache.
+    this._destroyOverlays();
+
     this._structKey = ""; // force structure re-layout at the new scale
     this._itemKey = "";
     this._drawGrid();
@@ -1316,6 +1696,10 @@ export class WorldScene {
       rec.gx = a.gx ?? null;
       rec.gy = a.gy ?? null;
       rec.fl = a.fl ?? 0;
+      // Kinship/territory overlay inputs (C3): parent id, tribe, raw hex colour.
+      rec.pa = a.pa ?? null;
+      rec.tribe = a.tribe ?? null;
+      rec.col = a.col;
 
       // Spawn action-line markers on this fresh frame (once per frame, not per
       // tick). Endpoints are record refs so the drawn line follows both agents'
@@ -1732,6 +2116,10 @@ export class WorldScene {
       }
     }
 
+    // Kinship lines (C3): now that every rec._px/_py is set from this tick's
+    // eased motion, redraw the family graph so lines follow both endpoints.
+    this._drawKinship();
+
     // cooperate: turn each cooperating agent toward its nearest coop partner so
     // the extended arm reads as reaching for someone (the coop[] array already
     // exists for the link lines below).
@@ -2011,6 +2399,7 @@ export class WorldScene {
 
   destroy() {
     this._destroyShaderTerrain();
+    this._destroyOverlays();
     this.particles?.destroy();
     if (this.app) this.app.destroy(true, { children: true });
   }
