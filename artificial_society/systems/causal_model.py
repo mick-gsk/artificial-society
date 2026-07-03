@@ -36,7 +36,6 @@ CAUSAL_LR = 3e-4  # × Plastizitäts-Gen (geklemmt wie Brain: 0.5..2.5)
 LOG_SIGMA_FLOOR = -2.0  # Spec C4: früh ist σ winzig → z² kann 100+ erreichen
 LOG_SIGMA_CEIL = 2.0
 ERR_EMA_ALPHA = 0.1  # Logging-Signal (Archive-Idee)
-CAUSAL_BETA = 1.0  # Hinge-Epistemik Regularizer: Loss = NLL + β*max(0,mean(z²)-1)
 
 
 class CausalModelV2(nn.Module):
@@ -50,9 +49,6 @@ class CausalModelV2(nn.Module):
         )
         self.mu_head = nn.Linear(64, CAUSAL_TARGET)
         self.logsigma_head = nn.Linear(64, CAUSAL_TARGET)
-        # logsigma mit Null-Initialisierung
-        nn.init.zeros_(self.logsigma_head.weight)
-        nn.init.zeros_(self.logsigma_head.bias)
         lr = CAUSAL_LR * max(0.5, min(2.5, float(plasticity)))
         self.optimizer = optim.Adam(self.parameters(), lr=lr)
         self.err_ema = 1.0
@@ -65,7 +61,7 @@ class CausalModelV2(nn.Module):
 
     def observe(self, gru_h, action22, slot_embed, target17) -> dict:
         """Ein Beobachtungs-Schritt: Epistemik VOR dem Update (Überraschung des
-        aktuellen Modells), dann NLL+Hinge-Gradientenschritt, dann err_ema."""
+        aktuellen Modells), dann ein NLL-Gradientenschritt, dann err_ema."""
         x = torch.cat(
             [
                 gru_h.detach().reshape(-1).float(),
@@ -82,17 +78,10 @@ class CausalModelV2(nn.Module):
             mean_abs = float((target - mu).abs().mean())
 
         mu, log_sigma = self.forward(x)
-        z2_tensor = ((target - mu) / log_sigma.exp()).pow(2)
-        nll = (0.5 * z2_tensor + log_sigma).mean()
-        hinge = torch.clamp(z2_tensor.mean() - 1.0, min=0.0)
-        loss = nll + CAUSAL_BETA * hinge
+        nll = (0.5 * ((target - mu) / log_sigma.exp()).pow(2) + log_sigma).mean()
         self.optimizer.zero_grad()
-        loss.backward()
+        nll.backward()
         self.optimizer.step()
 
         self.err_ema = (1.0 - ERR_EMA_ALPHA) * self.err_ema + ERR_EMA_ALPHA * mean_abs
-        return {
-            "nll": float(nll.detach()),
-            "epistemic": epistemic,
-            "mean_abs_err": mean_abs,
-        }
+        return {"nll": float(nll.detach()), "epistemic": epistemic, "mean_abs_err": mean_abs}

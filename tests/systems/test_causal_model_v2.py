@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import torch
 
 from artificial_society.systems.causal_model import (
@@ -12,10 +14,8 @@ from artificial_society.systems.causal_model import (
 )
 
 
-def _fixe_eingabe(seed=0):
-    """Erzeugt Eingaben. Wenn seed ist None, nicht resetten."""
-    if seed is not None:
-        torch.manual_seed(seed)
+def _fixe_eingabe():
+    torch.manual_seed(0)
     return torch.randn(96), torch.rand(22) * 2 - 1, torch.randn(32)
 
 
@@ -57,22 +57,39 @@ def test_sigma_waechst_auf_verrauschter_sequenz():
     assert ls_noisy.mean() > ls_det.mean(), "σ muss auf verrauschtem Prozess wachsen"
 
 
-def test_epistemik_geht_auf_aleatorischem_prozess_gegen_null():
-    """D3 (b): auskonvergierter, rein aleatorischer Prozess zahlt gegen 0 —
-    ewiges Steineschlagen als Neugier-Farm ist zu (Hinge AUSSEN)."""
+def test_epistemik_konvergiert_auf_chi2_plateau_novelty_zahlt():
+    """D3 (b): auskonvergierter, rein aleatorischer Prozess zahlt fast nichts —
+    ewiges Steineschlagen als Neugier-Farm ist zu (Hinge AUSSEN).
+
+    Statistik-Korrektur (Task-12-Review): mean(z²) ist bei 17 Freiheitsgraden
+    chi²-verteilt (rechtsschief) — E[max(0, chi²(17)/17 − 1)] ≈ 0.13 > 0. Die
+    Epistemik konvergiert auf ein kleines positives Plateau, nicht exakt 0; die
+    ersten ~200 Schritte sind Einschwingphase (σ von Init ≈1 auf 0.2). Geprüft
+    wird: (1) Plateau klein, (2) σ kalibriert auf die wahre Rauschamplitude
+    (fängt Loss-Kontamination wie NLL+Hinge ab, die σ systematisch verzerrt),
+    (3) echte Novelty zahlt weit über dem Plateau, (4) Hinge: nie negativ."""
     torch.manual_seed(3)
     model = CausalModelV2()
-    h, a, e = _fixe_eingabe(seed=None)  # nicht resetten, behalte seed 3
+    h, a, e = _fixe_eingabe()
     gen = torch.Generator().manual_seed(11)
     epistemik = []
     for _ in range(2000):
         rausch = torch.full((17,), 0.5) + torch.randn(17, generator=gen) * 0.2
         epistemik.append(model.observe(h, a, e, rausch.clamp(0.0, 1.0))["epistemic"])
-    frueh = sum(epistemik[:500]) / 500  # Fenster vergrößert für Rausch-Robustheit
     spaet = sum(epistemik[-500:]) / 500
-    assert spaet < 0.25, f"konvergierte Epistemik muss ≈ 0 sein, ist {spaet}"
-    assert spaet < frueh, f"Epistemik muss fallen: spät={spaet:.6f}, früh={frueh:.6f}"
+    assert spaet < 0.25, (
+        f"konvergierte Epistemik muss klein sein (chi²-Plateau ≈ 0.13), ist {spaet}"
+    )
     assert all(v >= 0.0 for v in epistemik)  # Hinge: nie negativ
+
+    x = torch.cat([h, a, e]).unsqueeze(0)
+    _, log_sigma = model.forward(x)
+    assert abs(float(log_sigma.mean()) - math.log(0.2)) < 0.15, (
+        f"σ muss auf die wahre Rauschamplitude kalibrieren, log σ = {float(log_sigma.mean())}"
+    )
+
+    novel = model.observe(h, a, e, torch.full((17,), 2.0))["epistemic"]
+    assert novel > 1.0, f"Novelty muss weit über dem Plateau zahlen, ist {novel}"
 
 
 def test_lr_skaliert_mit_plastizitaets_gen():
