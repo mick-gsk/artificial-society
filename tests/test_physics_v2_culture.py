@@ -56,3 +56,11 @@ def test_v2_kind_erbt_keine_lern_stores():
     assert not child.remedy_knowledge
     child_mats = getattr(child, "material_inventory", {})
     assert not any(m.startswith("mat_") for m in child_mats), "mat_-Discovery vererbt (A9)"
+
+
+def test_v2_kind_erbt_kein_resource_memory():
+    sim = _v2_sim()
+    parent = sim.agents[0]
+    parent.memory.resource_memory = [(2, 2), (3, 3), (4, 4)]
+    child = sim.spawn_child_from_parent(parent, dict(parent.genes))
+    assert child.memory.resource_memory == [], "resource_memory vererbt (A10 nicht gegated)"
