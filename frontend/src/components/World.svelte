@@ -156,16 +156,6 @@
 <div class="viewport">
   <div class="canvas-host" bind:this={host}></div>
 
-  <!-- instrument frame: corner crop-marks + ambiance, all non-interactive -->
-  <div class="frame" aria-hidden="true">
-    <span class="brk tl"></span>
-    <span class="brk tr"></span>
-    <span class="brk bl"></span>
-    <span class="brk br"></span>
-    <div class="scan"></div>
-    <div class="vignette"></div>
-  </div>
-
   <div class="hud" aria-hidden="true">
     <span class="dot" class:live={online}></span>
     <span class="hud-label">FIELD</span>
@@ -250,62 +240,6 @@
   .canvas-host {
     position: absolute;
     inset: 0;
-  }
-  .frame {
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-  }
-  .brk {
-    position: absolute;
-    width: 14px;
-    height: 14px;
-    border: 1px solid var(--accent);
-    opacity: 0.7;
-  }
-  .brk.tl {
-    top: 8px;
-    left: 8px;
-    border-right: 0;
-    border-bottom: 0;
-  }
-  .brk.tr {
-    top: 8px;
-    right: 8px;
-    border-left: 0;
-    border-bottom: 0;
-  }
-  .brk.bl {
-    bottom: 8px;
-    left: 8px;
-    border-right: 0;
-    border-top: 0;
-  }
-  .brk.br {
-    bottom: 8px;
-    right: 8px;
-    border-left: 0;
-    border-top: 0;
-  }
-  .scan {
-    position: absolute;
-    inset: 0;
-    background: repeating-linear-gradient(
-      0deg,
-      rgba(0, 0, 0, 0) 0px,
-      rgba(0, 0, 0, 0) 2px,
-      rgba(4, 10, 16, 0.35) 3px
-    );
-    mix-blend-mode: multiply;
-  }
-  .vignette {
-    position: absolute;
-    inset: 0;
-    background: radial-gradient(
-      120% 120% at 50% 45%,
-      rgba(0, 0, 0, 0) 55%,
-      rgba(2, 4, 8, 0.55) 100%
-    );
   }
   .hud {
     position: absolute;
@@ -419,11 +353,5 @@
     white-space: nowrap;
     z-index: 5;
     text-shadow: 0 0 6px rgba(0, 0, 0, 0.9);
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .scan {
-      display: none;
-    }
   }
 </style>

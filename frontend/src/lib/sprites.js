@@ -269,65 +269,132 @@ export function makeToolTextures() {
 }
 
 // -- terrain decorations --------------------------------------------------------
+//
+// Upgraded (R7) to 24–32-px sprites with the same light-upper-left, 2–3-tone
+// shading convention as the figure atlas (figures.js OUTLINE = "#12161d"), plus
+// a soft directional ground shadow (drawn low-right of the base, opposite the
+// light) so decor reads as sitting IN the world rather than floating pixel art.
+// Placement/density/dirty-key logic in world-render.js `_buildDecor` is
+// unchanged — only these texture bodies grew.
+
+const DECOR_OUTLINE = "#12161d"; // same near-black outline as figures.js
+
+// Soft directional cast shadow: a squashed dark ellipse at the object's ground
+// contact point, offset down-right (the light falls from upper-left). Alpha
+// blend (not a flat fill) so it reads as a shadow, not a solid shape; anchor
+// (0.5, 1) means this must sit right at the canvas's bottom edge.
+function castShadow(ctx, cx, groundY, rx, ry) {
+  ctx.save();
+  ctx.translate(cx + rx * 0.25, groundY);
+  ctx.scale(1, ry / rx);
+  ctx.beginPath();
+  ctx.arc(0, 0, rx, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(4,8,6,0.32)";
+  ctx.fill();
+  ctx.restore();
+}
 
 export function makeDecorTextures() {
   const out = {};
 
-  // broadleaf tree
+  // broadleaf tree (24×30) — trunk with a lit/shadow face, layered 3-tone
+  // canopy (light upper-left, mid, dark lower-right), cast shadow at the base.
   {
-    const [c, ctx] = makeCanvas(12, 14);
-    px(ctx, 5, 9, 2, 5, "#6b4a2b"); // trunk
-    px(ctx, 2, 3, 8, 6, "#2f7a44"); // canopy
-    px(ctx, 3, 1, 6, 3, "#3c9455");
-    px(ctx, 1, 5, 2, 3, "#2a6c3c");
-    px(ctx, 9, 5, 2, 3, "#2a6c3c");
-    px(ctx, 4, 3, 2, 2, "#4fae67"); // light spots
+    const [c, ctx] = makeCanvas(24, 30);
+    castShadow(ctx, 12, 29, 8, 3);
+    // trunk: outline, dark shadow-side, lit face
+    px(ctx, 9, 18, 6, 10, DECOR_OUTLINE);
+    px(ctx, 10, 19, 4, 8, "#4a3018");
+    px(ctx, 10, 19, 2, 8, "#6b4a2b"); // lit left face
+    // canopy: outline blob, then dark/mid/light lobes (light from upper-left)
+    px(ctx, 3, 5, 18, 15, DECOR_OUTLINE);
+    px(ctx, 4, 6, 16, 13, "#1f5c33"); // dark base tone
+    px(ctx, 5, 7, 12, 10, "#2f7a44"); // mid tone
+    px(ctx, 6, 3, 10, 7, "#2f7a44");
+    px(ctx, 6, 8, 8, 6, "#3c9455"); // lit lobe, upper-left biased
+    px(ctx, 7, 4, 6, 4, "#3c9455");
+    px(ctx, 8, 6, 4, 3, "#57b374"); // brightest highlight, upper-left
     out.tree = tex(c);
   }
-  // pine
+  // pine (20×30) — conical layered tiers, lit on the left edge of each tier.
   {
-    const [c, ctx] = makeCanvas(10, 14);
-    px(ctx, 4, 11, 2, 3, "#5d3f24");
-    px(ctx, 1, 8, 8, 3, "#25603a");
-    px(ctx, 2, 5, 6, 3, "#2c7245");
-    px(ctx, 3, 2, 4, 3, "#358350");
-    px(ctx, 4, 0, 2, 2, "#3f9159");
+    const [c, ctx] = makeCanvas(20, 30);
+    castShadow(ctx, 10, 29, 7, 3);
+    px(ctx, 8, 22, 4, 7, DECOR_OUTLINE);
+    px(ctx, 9, 23, 2, 6, "#5d3f24");
+    px(ctx, 9, 23, 1, 6, "#7a5631"); // lit trunk edge
+    // three tiers, each outlined then dark/mid/light banded left→right
+    px(ctx, 1, 15, 18, 8, DECOR_OUTLINE);
+    px(ctx, 2, 16, 16, 6, "#1c4a2c");
+    px(ctx, 2, 16, 8, 6, "#25603a");
+    px(ctx, 2, 16, 4, 6, "#316e46"); // lit
+    px(ctx, 3, 9, 14, 7, DECOR_OUTLINE);
+    px(ctx, 4, 10, 12, 5, "#20502f");
+    px(ctx, 4, 10, 6, 5, "#2c7245");
+    px(ctx, 4, 10, 3, 5, "#388153"); // lit
+    px(ctx, 5, 3, 10, 7, DECOR_OUTLINE);
+    px(ctx, 6, 4, 8, 5, "#276036");
+    px(ctx, 6, 4, 4, 5, "#358350");
+    px(ctx, 6, 4, 2, 4, "#48965f"); // lit tip
     out.pine = tex(c);
   }
-  // grass tuft
-  {
-    const [c, ctx] = makeCanvas(8, 6);
-    px(ctx, 1, 2, 1, 4, "#78a651");
-    px(ctx, 3, 0, 1, 6, "#8ab55e");
-    px(ctx, 5, 1, 1, 5, "#6f9c4a");
-    out.tuft = tex(c);
-  }
-  // rock
+  // grass tuft (10×8) — kept small/simple (ground cover, not a shading target)
+  // but with a hint of a dark base and a tiny contact shadow.
   {
     const [c, ctx] = makeCanvas(10, 8);
-    px(ctx, 1, 3, 8, 5, "#7d8790");
-    px(ctx, 2, 1, 5, 3, "#8f99a2");
-    px(ctx, 3, 2, 2, 1, "#a6b0b8");
-    px(ctx, 6, 5, 2, 2, "#6a747d");
+    castShadow(ctx, 5, 7, 3, 1.2);
+    px(ctx, 1, 2, 1, 4, "#5d824a"); // shadow-side blade
+    px(ctx, 3, 0, 1, 6, "#8ab55e"); // lit blade
+    px(ctx, 5, 1, 1, 5, "#6f9c4a");
+    px(ctx, 7, 2, 1, 4, "#5d824a");
+    out.tuft = tex(c);
+  }
+  // rock (24×20) — faceted boulder: outline, dark shadow-side facet, mid body,
+  // bright upper-left highlight facet, cast shadow.
+  {
+    const [c, ctx] = makeCanvas(24, 20);
+    castShadow(ctx, 12, 19, 9, 3);
+    px(ctx, 2, 6, 20, 12, DECOR_OUTLINE);
+    px(ctx, 3, 7, 18, 10, "#5c656d"); // dark shadow-side base
+    px(ctx, 3, 7, 10, 10, "#7d8790"); // mid body, upper-left biased
+    px(ctx, 5, 3, 11, 7, DECOR_OUTLINE);
+    px(ctx, 6, 4, 9, 5, "#8f99a2");
+    px(ctx, 6, 4, 5, 4, "#a6b0b8"); // highlight facet, upper-left
+    px(ctx, 14, 12, 6, 4, "#4d555c"); // deep shadow facet, lower-right
     out.rock = tex(c);
   }
-  // cactus
+  // cactus (16×26) — saguaro silhouette, 3-tone barrel + arms, light-left rib
+  // highlight, cast shadow.
   {
-    const [c, ctx] = makeCanvas(10, 12);
-    px(ctx, 4, 1, 2, 11, "#4c8f57");
-    px(ctx, 1, 3, 2, 4, "#4c8f57");
-    px(ctx, 1, 3, 4, 2, "#4c8f57");
-    px(ctx, 7, 5, 2, 3, "#437f4d");
-    px(ctx, 5, 5, 4, 2, "#437f4d");
+    const [c, ctx] = makeCanvas(16, 26);
+    castShadow(ctx, 8, 25, 6, 2.4);
+    // main trunk
+    px(ctx, 5, 2, 6, 22, DECOR_OUTLINE);
+    px(ctx, 6, 3, 4, 20, "#3a6f43"); // dark shadow-side
+    px(ctx, 6, 3, 2, 20, "#4c8f57"); // mid
+    px(ctx, 6, 3, 1, 20, "#63a86e"); // lit rib, upper-left edge
+    // left arm
+    px(ctx, 0, 8, 6, 9, DECOR_OUTLINE);
+    px(ctx, 1, 9, 4, 7, "#3a6f43");
+    px(ctx, 1, 9, 2, 7, "#4c8f57");
+    // right arm
+    px(ctx, 10, 6, 6, 9, DECOR_OUTLINE);
+    px(ctx, 11, 7, 4, 7, "#3a6f43");
+    px(ctx, 11, 7, 2, 7, "#4c8f57");
+    px(ctx, 11, 7, 1, 7, "#5c9c66"); // faint lit edge even on the shadow-facing arm
     out.cactus = tex(c);
   }
-  // reed (swamp)
+  // reed (swamp, 12×16) — three blades + cattail head, light-left tint,
+  // small contact shadow (reeds barely cast one — thin/tall).
   {
-    const [c, ctx] = makeCanvas(8, 10);
-    px(ctx, 2, 1, 1, 9, "#5d7a4a");
-    px(ctx, 4, 0, 1, 10, "#6b8a54");
-    px(ctx, 6, 2, 1, 8, "#516b41");
-    px(ctx, 4, 0, 2, 2, "#8a6a3c"); // cattail head
+    const [c, ctx] = makeCanvas(12, 16);
+    castShadow(ctx, 6, 15, 4, 1.4);
+    px(ctx, 2, 2, 1, 13, "#425c34"); // shadow-side blade
+    px(ctx, 5, 0, 1, 15, "#6b8a54"); // lit centre blade
+    px(ctx, 5, 0, 1, 6, "#84a568"); // brighter tip
+    px(ctx, 8, 3, 1, 12, "#516b41");
+    px(ctx, 4, 0, 3, 3, "#8a6a3c"); // cattail head
+    px(ctx, 4, 0, 1, 3, "#a3854f"); // lit side of the head
     out.reed = tex(c);
   }
   return out;

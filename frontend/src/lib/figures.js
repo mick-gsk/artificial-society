@@ -123,9 +123,10 @@ function drawFigure(ctx, ox, oy, pose, p) {
   const bodyL = hx - Math.floor(bodyW / 2);
   const legY = oy + GROUND - p.legH; // legs stand on the ground line
 
-  // hand anchor accumulator (leading hand). Defaults to a resting hand at the
-  // side; poses override it.
-  let hand = { x: cx + Math.floor(bodyW / 2), y: torsoTopY + 3, rot: 0.2 };
+  // hand anchor (leading hand), set by the arms block below — every reachable
+  // branch (pose.arms.front or the default hanging-arms else) assigns it
+  // before use; sleep/pawn return early via their own dedicated drawers.
+  let hand;
 
   const isSleep = pose === "sleep";
   if (isSleep) {
@@ -289,7 +290,7 @@ const POSES = {
   // the arm outline adds 1 px — so lean+ex ≤ 6 (elder is the binding stage).
   // ex 8 overflowed into the attack2 cell; the forward motion comes from the
   // transform-lunge in world-render, not from arm length.
-  attack0: { legs: [[-3, 0], [2, 0]], arms: { front: [-2, -3, -1.4], back: [-3, 1] } },
+  attack0: { legs: [[-3, 0], [2, 0]], arms: { front: [-3, -2, -1.4], back: [-3, 1] } },
   attack1: { legs: [[-4, 0], [4, 0]], lean: 2, arms: { front: [4, -1, 0.4], back: [-3, 2] } },
   attack2: { legs: [[-2, 0], [2, 0]], arms: { front: [4, 2, 0.1], back: [-2, 3] } },
 

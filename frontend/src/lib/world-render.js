@@ -39,7 +39,12 @@ import {
 
 import { createParticleSystem } from "./particles.js";
 
-const STAGE_SCALE = [0.62, 1.0, 1.06]; // child, adult, elder (figure size)
+// child, adult, elder (figure size). Child raised from 0.62 → 0.80 (R7): the
+// atlas draws the child ~23/32 of the cell vs. the adult's 28/32, so a naive
+// equal STAGE_SCALE left the child at only ~51% of the adult's on-screen
+// height; 0.80 compensates for that cell-fill gap and lands at ~66% (target
+// band 65–70%). Pure render-scale change — no atlas pixels touched.
+const STAGE_SCALE = [0.8, 1.0, 1.06];
 const STAGE_KEY = ["child", "adult", "elder"]; // st index → atlas stage key
 // Agents never shrink below this many on-screen px tall — figures stay legible
 // as points on huge grids / when zoomed out. Applied AFTER zoom in _tick.
@@ -165,6 +170,13 @@ export class WorldScene {
     this._bursts = []; // {cx, cy, age, color} — knapping sparks, discoveries, fire
     this._biomeArr = null;
     this._events = [];
+    // Event locator glows (R7): a pooled, reused Sprite per event slot (like
+    // _fireGlows) — _paintEvents (WS rate, ~20 Hz) only repositions/retints the
+    // pool and hides the surplus, never destroys/recreates on every frame; _tick
+    // (display rate) drives the soft pulse. Each pooled entry also remembers a
+    // per-event phase offset (seeded from position) so multiple simultaneous
+    // events don't pulse in lockstep.
+    this._eventSprites = [];
 
     // -- particle-system bookkeeping (R5) -------------------------------------
     // Fire sources this frame in WORLD px ([x,y,...]) — filled by _paintItems
@@ -184,7 +196,7 @@ export class WorldScene {
     // id vanishes: figure fades out, a wisp rises, THEN destroy).
     this._agentConnected = false; // set true after the first _syncAgents
     this._dying = []; // {rec, age} — mid-death-fade records (out of this.agents)
-    this._deathGlowTex = null; // radial texture for fire glows (built in init)
+    this._fireGlowTex = null; // radial texture for fire glows (built in init)
 
     // Debug-only cell grid. Off by default (the shader terrain reads as an
     // organic landscape, not a game board). Flip at runtime via
@@ -319,10 +331,19 @@ export class WorldScene {
     this.worldRoot.setChildIndex(this.particles.container, this.worldRoot.getChildIndex(this.glowLayer));
     this.worldRoot.setChildIndex(this.particles.containerAdd, this.worldRoot.getChildIndex(this.glowLayer));
     // Radial texture for the additive fire glows (a soft warm falloff).
-    this._deathGlowTex = makeRadialTexture(64, [
+    this._fireGlowTex = makeRadialTexture(64, [
       [0, "rgba(255,196,120,1)"],
       [0.5, "rgba(255,150,70,0.5)"],
       [1, "rgba(255,120,50,0)"],
+    ]);
+    // Radial texture for event locator glows (R7). Plain white falloff, softer
+    // than the fire glow (fully transparent by 70%) — per-event `tint` paints
+    // the kind colour on top, same pattern as the agent glow / tribe tint.
+    this._eventGlowTex = makeRadialTexture(64, [
+      [0, "rgba(255,255,255,0.9)"],
+      [0.4, "rgba(255,255,255,0.4)"],
+      [0.7, "rgba(255,255,255,0.08)"],
+      [1, "rgba(255,255,255,0)"],
     ]);
 
     // Floating "why" label over the selected agent. Lives on the emote layer so
@@ -1499,26 +1520,39 @@ export class WorldScene {
 
   // -- events ----------------------------------------------------------------
 
+  // Reposition/retint the pooled event-glow sprites for this WS frame (~20 Hz).
+  // Reuses sprites by index across frames — never destroys/recreates on a
+  // frame where the event set is unchanged (or just shrinks/moves) — only the
+  // surplus from a previous, larger event set is hidden. The soft pulse itself
+  // is driven every display tick in _tick, off each sprite's own phase.
   _paintEvents(events) {
-    for (const c of this.eventLayer.removeChildren()) c.destroy();
     const cp = this.cellPx;
-    const lw = 1 / this._zoom;
+    let i = 0;
     for (const e of events) {
-      const cx = this.offX + (e.x + 0.5) * cp;
-      const cy = this.offY + (e.y + 0.5) * cp;
-      const col = EVENT_COLORS[e.kind] ?? COLORS.eventDefault;
-      const rad = Math.max(1, e.r) * cp;
-      const g = new Graphics();
-      g.circle(cx, cy, rad).stroke({ width: 1.5 * lw, color: col, alpha: 0.7 });
-      g.circle(cx, cy, rad * 0.6).stroke({ width: lw, color: col, alpha: 0.4 });
-      const m = rad + 4;
-      g.moveTo(cx - m, cy).lineTo(cx - m + 6, cy);
-      g.moveTo(cx + m - 6, cy).lineTo(cx + m, cy);
-      g.moveTo(cx, cy - m).lineTo(cx, cy - m + 6);
-      g.moveTo(cx, cy + m - 6).lineTo(cx, cy + m);
-      g.stroke({ width: lw, color: col, alpha: 0.7 });
-      this.eventLayer.addChild(g);
+      let s = this._eventSprites[i];
+      if (!s) {
+        s = new Sprite(this._eventGlowTex);
+        s.anchor.set(0.5);
+        s.blendMode = "add";
+        this.eventLayer.addChild(s);
+        this._eventSprites[i] = s;
+      }
+      s.visible = true;
+      s.x = this.offX + (e.x + 0.5) * cp;
+      s.y = this.offY + (e.y + 0.5) * cp;
+      s.tint = EVENT_COLORS[e.kind] ?? COLORS.eventDefault;
+      // base radius from the event's world footprint; the pulse in _tick
+      // multiplies this with a small breathing factor.
+      s._baseScale = (Math.max(1, e.r) * cp * 1.6) / 64;
+      s._intensity = e.i ?? 0.6;
+      // deterministic per-event phase so simultaneous glows don't pulse in
+      // lockstep — seeded from position (stable across frames for the same
+      // event, no Math.random).
+      s._phase = (Math.sin(e.x * 12.9898 + e.y * 78.233) * 43758.5453) % (Math.PI * 2);
+      i++;
     }
+    // hide surplus sprites left over from a previous, larger event set
+    for (; i < this._eventSprites.length; i++) this._eventSprites[i].visible = false;
   }
 
   // -- animation -------------------------------------------------------------
@@ -1626,7 +1660,6 @@ export class WorldScene {
       const base = hpx / tex.height;
       const breathe =
         !far && actKey === "idle" && !sleeping ? 1 + 0.015 * Math.sin(this._pulse * 4 + rec._px) : 1;
-      rec.figure.scale.set(base);
       rec.figure.scale.y = base * breathe;
       rec.figure.scale.x = base * rec.facing;
 
@@ -1858,7 +1891,7 @@ export class WorldScene {
       const placeGlow = (gx, gy, scale) => {
         let g = this._fireGlows[gi];
         if (!g) {
-          g = new Sprite(this._deathGlowTex);
+          g = new Sprite(this._fireGlowTex);
           g.anchor.set(0.5);
           g.blendMode = "add";
           this.glowLayer.addChild(g);
@@ -1949,10 +1982,16 @@ export class WorldScene {
       s.scale.set(s._bs * (1 + 0.06 * Math.sin(this._pulse * 13 + s.x)));
     }
 
-    // event pulse
+    // event pulse — each locator glow breathes independently (own phase),
+    // alpha proportional to the event's intensity. The in-shader ground scar
+    // (R2/R6) stays the main depiction; this is only a soft, dezent locator.
     this._pulse += dt;
-    const a = 0.45 + 0.35 * Math.sin(this._pulse * 4);
-    for (const g of this.eventLayer.children) g.alpha = a;
+    for (const s of this._eventSprites) {
+      if (!s.visible) continue;
+      const breathe = 0.85 + 0.15 * Math.sin(this._pulse * 2.2 + s._phase);
+      s.alpha = (0.35 + 0.5 * (s._intensity ?? 0.6)) * breathe;
+      s.scale.set(s._baseScale * (0.92 + 0.08 * breathe));
+    }
 
     // advance the pooled particle system last (all emitters have fed it this
     // frame). O(active); the wind vector drives shear/drift inside.
