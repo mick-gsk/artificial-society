@@ -61,6 +61,17 @@ BIRTH_ENERGY_FLOOR = 10.0
 REPRODUCTION_ENERGY = 60.0
 REPRODUCTION_COST = 20.0
 REPRODUCTION_COOLDOWN = 100
+# Density-dependent fertility. Personal energy alone (>= REPRODUCTION_ENERGY) is
+# a poor breeding cue: agents hoard up to MAX_ENERGY (240) and so breed off fat
+# reserves banked when food was plentiful, blind to how crowded the ground has
+# become. The population then overshoots the world's food-regrowth carrying
+# capacity and mass-starves (measured: pop 36 -> 64 -> 9 on a 60x40 world). A
+# mother now also requires the local food standing stock, shared across the
+# mouths already nearby, to clear a floor — the logistic negative feedback of a
+# real ecosystem: as local density rises, per-capita food falls and fertility
+# drops, so the population settles near carrying capacity instead of crashing.
+REPRODUCTION_SENSE_RADIUS = 2
+REPRODUCTION_MIN_FOOD_PER_CAPITA = 6.0
 # Tuned values previously applied at import by emergence_runtime; now the source of truth.
 MIN_REPRODUCTION_AGE = 60  # int(life_stage.CHILD_MAX * 0.5)
 GESTATION_TIME = 40
@@ -703,8 +714,28 @@ class Agent:
             self.trust[partner.id] = min(1.0, self.trust.get(partner.id, 0.0) + delta)
         return reward
 
-    def _try_reproduce(self, agents):
+    def _local_food_per_capita(self, world, agents):
+        """Local food standing stock shared over the mouths already nearby.
+
+        Sums ``food`` over the (2R+1)^2 cell box around the mother and divides by
+        the neighbour count (+1 for the mother herself). Reuses the per-tick
+        neighbour snapshot at the shared radius 2 so it costs no extra scan.
+        """
+        x, y = self.pos
+        r = REPRODUCTION_SENSE_RADIUS
+        total_food = 0.0
+        for cx in range(x - r, x + r + 1):
+            for cy in range(y - r, y + r + 1):
+                if world.in_bounds(cx, cy):
+                    total_food += world.get_cell(cx, cy)["food"]
+        nearby = len(self._nearby_cached(agents, r))
+        return total_food / (nearby + 1.0)
+
+    def _try_reproduce(self, world, agents):
         if not self.can_reproduce() or self.sex != "f":
+            return None
+        if self._local_food_per_capita(world, agents) < REPRODUCTION_MIN_FOOD_PER_CAPITA:
+            # The ground here can't feed another mouth right now — hold off.
             return None
         x, y = self.pos
         males = [
@@ -1053,7 +1084,7 @@ class Agent:
         # learning, invention, cooking, trade); gestation keeps progressing and
         # perception (_observe_tokens, ToM) stays on — sleeping is not a coma.
         if stage.get("can_reproduce", True) and not self.is_sleeping:
-            self._try_reproduce(agents)
+            self._try_reproduce(world, agents)
         child_genes = self.progress_pregnancy()
 
         if tick % 3 == 0 and not self.is_sleeping:

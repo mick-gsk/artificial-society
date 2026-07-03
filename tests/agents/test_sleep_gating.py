@@ -51,7 +51,7 @@ def _patch_counters(monkeypatch, calls):
     monkeypatch.setattr(agent_mod, "agent_try_invention", count("invent"))
     monkeypatch.setattr(agent_mod, "agent_try_cook", count("cook"))
     monkeypatch.setattr(
-        agent_mod.Agent, "_try_reproduce", lambda self, agents: calls.__setitem__(
+        agent_mod.Agent, "_try_reproduce", lambda self, world, agents: calls.__setitem__(
             "reproduce", calls["reproduce"] + 1
         )
     )

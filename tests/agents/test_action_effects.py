@@ -161,8 +161,14 @@ def test_children_counted_at_birth_not_conception():
         a.reproduction_cooldown = 0
         a.pregnant = False
     mother.pos, father.pos = (5, 5), (5, 6)
+    # Ample local food so the density-dependent fertility gate lets conception
+    # through — this test is about *when children are counted*, not fertility.
+    for cx in range(3, 8):
+        for cy in range(3, 8):
+            sim.world.set_cell(cx, cy, "food", 20.0)
+    mother._cached_nearby_agents = None
 
-    mother._try_reproduce(sim.agents)
+    mother._try_reproduce(sim.world, sim.agents)
 
     assert mother.pregnant, "test setup: conception must have happened"
     assert mother.children == 0 and father.children == 0, (
