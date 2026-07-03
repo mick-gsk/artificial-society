@@ -20,8 +20,27 @@
     onFollowToggle = () => {},
     onClose = () => {},
     following = false,
-    chronik = null, // optional slot content — filled by a later task
+    chronik = [], // ring buffer of ALL feed entries (incl. personalOnly) from App
   } = $props();
+
+  const CHRONIK_MAX = 25; // visible rows; the buffer itself holds up to 600
+
+  // Personal event history: every feed entry whose `ids` include the selected
+  // agent, newest first. Entries only exist in `chronik` from the moment the
+  // ring buffer captured them — selecting an agent does not retroactively
+  // reconstruct history the buffer never saw (accepted per spec; capped types
+  // are lückenlos again from the moment of selection thanks to the differ's
+  // personalOnly bypass).
+  let chronikEntries = $derived.by(() => {
+    const id = sel?.id;
+    if (id == null) return [];
+    const out = [];
+    for (let i = chronik.length - 1; i >= 0 && out.length < CHRONIK_MAX; i--) {
+      const e = chronik[i];
+      if (e.ids?.includes(id)) out.push(e);
+    }
+    return out;
+  });
 
   const STAGE_NAME = ["Kind", "Erwachsen", "Ältester"];
   const TOOL_NAME = ["—", "Stein", "scharfe Klinge"];
@@ -295,9 +314,23 @@
       </div>
     {/if}
 
-    {#if chronik}
-      <div class="sec chronik-slot">{@render chronik()}</div>
-    {/if}
+    <!-- 10 · Persönliche Chronik -->
+    <div class="sec chronik-slot">
+      <div class="sec-h">Chronik</div>
+      {#if chronikEntries.length}
+        <div class="chronik-list">
+          {#each chronikEntries as e (e.key)}
+            <div class="chronik-row {e.cls}">
+              <span class="t">T{e.tick}</span>
+              <span class="ic">{e.icon}</span>
+              <span class="tx">{e.text}</span>
+            </div>
+          {/each}
+        </div>
+      {:else}
+        <div class="hint">noch nichts erlebt</div>
+      {/if}
+    </div>
   </div>
 {/if}
 
@@ -578,4 +611,53 @@
     flex: 1;
     height: 18px;
   }
+
+  .chronik-list {
+    max-height: 220px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+  .chronik-row {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    padding: 2px 0;
+    font-size: 10.5px;
+    line-height: 1.4;
+  }
+  .chronik-row .t {
+    color: var(--muted);
+    font-size: 9px;
+    font-variant-numeric: tabular-nums;
+    flex: none;
+    width: 34px;
+  }
+  .chronik-row .ic {
+    flex: none;
+    width: 12px;
+    text-align: center;
+  }
+  .chronik-row .tx {
+    color: var(--text);
+  }
+  .chronik-row.birth .ic { color: #49d17c; }
+  .chronik-row.death .ic { color: #8a93a6; }
+  .chronik-row.death .tx { color: var(--muted); }
+  .chronik-row.attack .ic { color: #ff5d6c; }
+  .chronik-row.build .ic { color: #ffb54d; }
+  .chronik-row.tech .ic { color: #ffd166; }
+  .chronik-row.tribe .ic { color: #3fc5f0; }
+  .chronik-row.event .ic { color: var(--amber, #f0b030); }
+  .chronik-row.tool .ic { color: #cfd8e3; }
+  .chronik-row.wonder .ic { color: #c084fc; }
+  .chronik-row.fire .ic { color: #ff8a3c; }
+  .chronik-row.goal .ic { color: #b58cff; }
+  .chronik-row.sick .ic { color: #ff7a9c; }
+  .chronik-row.epoch {
+    background: rgba(255, 209, 102, 0.09);
+    border-left: 2px solid #ffd166;
+    padding-left: 6px;
+  }
+  .chronik-row.epoch .ic { color: #ffd166; }
+  .chronik-row.epoch .tx { color: #ffe3a3; }
 </style>

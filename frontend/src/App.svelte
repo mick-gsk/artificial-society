@@ -11,18 +11,33 @@
   let snap = $state({ status: "idle", device: null, stats: {} });
   let frame = $state(null);
   let feed = $state([]);
-  // Selected agent id lifted from World — foundation for the later Chronik task
-  // (per-agent event stream). For now App just holds it; nothing consumes it yet.
+  // Selected agent id lifted from World, via onSelect. Consumed by the personal
+  // Chronik (Inspector): fed to the differ as a cap-bypass getter, and used to
+  // filter the 600-entry ring buffer down to one agent's story.
   let selectedId = $state(null);
-  const differ = createFeedDiffer();
+  // The differ reads the getter live (not a snapshot) so cap-bypass always
+  // reflects the *current* selection, not the selection at differ-creation time.
+  const differ = createFeedDiffer(() => selectedId);
   let feedSeq = 0;
+  // Ring buffer of every entry the differ ever produced (incl. personalOnly
+  // ones the global feed filters out) — the raw material for the personal
+  // Chronik. Kept separate from the capped 80-entry global `feed`.
+  let chronikBuf = $state([]);
 
   function onFrame(f) {
     frame = f;
     const fresh = differ(f);
     if (fresh.length) {
       for (const e of fresh) e.key = feedSeq++;
-      feed = [...fresh.reverse(), ...feed].slice(0, 80);
+      chronikBuf = [...chronikBuf, ...fresh].slice(-600);
+      // personalOnly entries exist purely to keep the per-agent chronicle
+      // lückenlos past the global caps — they must never also appear in the
+      // capped world feed (that would both duplicate them and let the cap
+      // bypass leak into the global view).
+      const globalFresh = fresh.filter((e) => !e.personalOnly);
+      if (globalFresh.length) {
+        feed = [...globalFresh.reverse(), ...feed].slice(0, 80);
+      }
     }
   }
 
@@ -62,7 +77,7 @@
 
 <Controls {snap} />
 <div class="stage">
-  <World {onFrame} {onSelect} />
+  <World {onFrame} {onSelect} chronik={chronikBuf} />
   <Feed entries={feed} />
 </div>
 <Cards {stats} />

@@ -5,7 +5,7 @@
   import { initWarum, warumLine, needWord, actWord } from "../lib/warum.js";
   import Inspector from "./Inspector.svelte";
 
-  let { onFrame, onSelect } = $props();
+  let { onFrame, onSelect, chronik = [] } = $props();
 
   let host;
   let scene;
@@ -189,6 +189,7 @@
     {onJump}
     onFollowToggle={toggleFollow}
     onClose={closeInspector}
+    {chronik}
   />
 
   {#if hover && hover.id !== selectedId}
