@@ -850,6 +850,11 @@ class Brain(nn.Module):
     def maybe_train(self):
         if len(self.rollout) < ROLLOUT_HORIZON:
             return None
+        if self.physics_v2:
+            # v2 (C2): eigener Trainings-Pfad (γ 0.99, Minibatches, KL-Stop).
+            loss = self._train_v2(self.rollout.storage)
+            self.rollout.clear()
+            return loss
         batch = self.rollout.storage
         obs = torch.stack([item["obs"] for item in batch]).to(device)
         hid = torch.stack([item["hidden"] for item in batch]).to(device)
@@ -906,3 +911,110 @@ class Brain(nn.Module):
 
         self.rollout.clear()
         return last_loss
+
+    # ------------------------------------------------------------------
+    # Physik v2 (Plan 3b): PPO-Anpassungen (Spec C2)
+    # ------------------------------------------------------------------
+    def _train_v2(self, batch):
+        """PPO über den v2-Buffer: GAMMA 0.99, 4 Epochen, 4×32-Minibatches,
+        KL-Early-Stop 0.02, Entropy pro Kopf-Gruppe (alt 0.004 / neu 0.01 inkl.
+        Kategorial). 20 Epochen auf einem Batch würden σ kollabieren und die
+        Verben töten, bevor Kadaver und Klinge je koinzidieren (RL-Review)."""
+        n = len(batch)
+        if n < 2:
+            return None
+        obs = torch.stack([t["obs"] for t in batch]).to(device)
+        hid = torch.stack([t["hidden"] for t in batch]).to(device)
+        sf = torch.stack([t["slot_feats"] for t in batch]).to(device)
+        sm = torch.stack([t["slot_mask"] for t in batch]).to(device)
+        actions = torch.stack([t["action"] for t in batch]).to(device)
+        tm = torch.stack([t["target_mask"] for t in batch]).to(device)
+        om = torch.stack([t["tool_mask"] for t in batch]).to(device)
+        ti = torch.tensor([t["target_idx"] for t in batch], dtype=torch.long, device=device)
+        oi = torch.tensor([t["tool_idx"] for t in batch], dtype=torch.long, device=device)
+        old_log_probs = torch.stack([t["log_prob"] for t in batch]).view(-1).to(device)
+        values = torch.stack([t["value"] for t in batch]).view(-1).to(device)
+        rewards = torch.tensor([t["reward"] for t in batch], dtype=torch.float32, device=device)
+        dones = torch.tensor(
+            [1.0 if t["done"] else 0.0 for t in batch], dtype=torch.float32, device=device
+        )
+        next_obs = torch.stack([t["next_obs"] for t in batch]).to(device)
+        nsf = torch.stack([t["next_slot_feats"] for t in batch]).to(device)
+        nsm = torch.stack([t["next_slot_mask"] for t in batch]).to(device)
+
+        with torch.no_grad():
+            _, _, next_values, _, _, _ = self.forward_v2(next_obs, hid, nsf, nsm)
+            next_values = next_values.view(-1)
+
+        advantages = torch.zeros_like(rewards)
+        gae = 0.0
+        for t in reversed(range(n)):
+            delta = rewards[t] + GAMMA_V2 * next_values[t] * (1.0 - dones[t]) - values[t]
+            gae = delta + GAMMA_V2 * GAE_LAMBDA * (1.0 - dones[t]) * gae
+            advantages[t] = gae
+        returns = advantages + values
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        # F2 (Review): max(2, …) — mit max(1, …) ergäbe n∈{2..7} mb_size 1 und
+        # der 1er-Skip unten würde JEDEN Minibatch überspringen: finalize_terminal
+        # machte bei 2–7 Transitionen null Gradientenschritte, die −3.0-Terminal-
+        # Transition verfiele (Spec C2 verlangt „geflusht UND trainiert").
+        mb_size = MINIBATCH_SIZE_V2 if n >= ROLLOUT_HORIZON else max(2, n // N_MINIBATCHES_V2)
+        last_loss = None
+        for _ in range(PPO_EPOCHS_V2):
+            perm = torch.randperm(n, device=device)
+            for start in range(0, n, mb_size):
+                idx = perm[start : start + mb_size]
+                if len(idx) < 2:
+                    continue  # 1er-Minibatch: MSE/Std entartet
+                new_log_probs, ent_old, ent_new, new_values, next_hidden = self.evaluate_actions_v2(
+                    obs[idx],
+                    hid[idx],
+                    sf[idx],
+                    sm[idx],
+                    actions[idx],
+                    tm[idx],
+                    ti[idx],
+                    om[idx],
+                    oi[idx],
+                )
+                approx_kl = (old_log_probs[idx] - new_log_probs).mean()
+                if float(approx_kl) > KL_EARLY_STOP_V2:
+                    return last_loss  # KL-Early-Stop: GESAMTES Training abbrechen
+                ratios = torch.exp(new_log_probs - old_log_probs[idx])
+                unclipped = ratios * advantages[idx]
+                clipped_r = torch.clamp(ratios, 1.0 - PPO_CLIP, 1.0 + PPO_CLIP) * advantages[idx]
+                actor_loss = -torch.min(unclipped, clipped_r).mean()
+                critic_loss = F.mse_loss(new_values.view(-1), returns[idx])
+                world_loss = self._world_loss_v2(
+                    next_hidden, actions[idx], next_obs[idx], nsf[idx], nsm[idx], rewards[idx]
+                )
+                loss = (
+                    ACTOR_COEF * actor_loss
+                    + CRITIC_COEF * critic_loss
+                    + WORLD_COEF * world_loss
+                    - ENTROPY_COEF * ent_old.mean()
+                    - ENTROPY_COEF_NEW * ent_new.mean()
+                )
+                self.optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(self.parameters(), GRAD_CLIP)
+                self.optimizer.step()
+                last_loss = float(loss.detach().cpu())
+        return last_loss
+
+    def finalize_terminal(self, death_reward=DEATH_REWARD_V2):
+        """Echte Terminal-Transition beim Tod (C2/C3): done=True erreicht den
+        Buffer, r_death (−3.0) wird GENAU EINMAL auf die letzte Transition
+        gemünzt (Aufrufort: der ursachen-agnostische Todes-Aggregationspunkt
+        Simulation.remove_dead), der Restbuffer wird geflusht und trainiert.
+        Heute stirbt ein Agent, bevor store_transition den Todes-Tick je sieht
+        — der Buffer verfiel untrainiert."""
+        if not self.rollout.storage:
+            return None
+        last = self.rollout.storage[-1]
+        last["reward"] = max(-REWARD_CLAMP, min(REWARD_CLAMP, last["reward"] + death_reward))
+        last["done"] = True
+        loss = self._train_v2(self.rollout.storage) if len(self.rollout) >= 2 else None
+        self.rollout.clear()
+        return loss
