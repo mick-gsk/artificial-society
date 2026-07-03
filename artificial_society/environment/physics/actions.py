@@ -150,6 +150,9 @@ class ActionResult:
     health_delta: float = 0.0  # Toxin-Schaden (≤ 0)
     fragments: list = field(default_factory=list)
     extracted: PhysObject | None = None
+    remainder: PhysObject | None = (
+        None  # cut: physische Fortsetzung des Ziels (3b, Causal-Target C4)
+    )
     bite_kg: float = 0.0
     work_j: float = 0.0
 
@@ -333,7 +336,12 @@ def do_cut(
     layer.discovery.register(extracted.props)
     layer.metrics["cuts_with_tool" if blade_held is not None else "cuts_bare_hand"] += 1
     return ActionResult(
-        ok=True, verb="cut", energy_delta_sim=energy_delta, extracted=extracted, work_j=work_j
+        ok=True,
+        verb="cut",
+        energy_delta_sim=energy_delta,
+        extracted=extracted,
+        remainder=remainder,
+        work_j=work_j,
     )
 
 

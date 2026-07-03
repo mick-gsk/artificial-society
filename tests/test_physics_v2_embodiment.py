@@ -16,7 +16,10 @@ def test_v2_sim_embodied_alle_agenten():
     for a in sim.agents:
         assert a.physics_v2 is True
         assert isinstance(a.body, Body)
-        assert a.body.body_mass == BODY_MASS_DEFAULT_KG and a.body.strength == 0.5
+        assert a.body.body_mass == BODY_MASS_DEFAULT_KG
+        # Plan 3b (Spec C5): strength kommt aus dem Gen, nicht mehr 3a-Default 0.5.
+        assert a.body.strength == a.genes["strength"]
+        assert 0.1 <= a.body.strength <= 0.9
         assert isinstance(a.hands, Hands) and a.hands.held == []
 
 

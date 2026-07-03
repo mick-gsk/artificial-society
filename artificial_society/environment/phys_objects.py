@@ -299,19 +299,44 @@ cal(
 # ---------------------------------------------------------------------------
 # Verwesung (Spec B3.4): wirkt aus Eigenschaften (feucht + nahrhaft), nie aus Labels
 # ---------------------------------------------------------------------------
-def tick_decay(layer: ObjectLayer) -> None:
-    """Ein Verwesungs-Tick über alle Boden-Objekte: Masse und nutrition sinken
-    exponentiell, toxicity steigt bis zur Kappe. Verweste Masse fließt
-    bilanziert in ledger['decayed'] (kein Culling, kein Leck)."""
+EPSILON_CULL_MASS_KG = 1e-6  # F4 (3a-Final-Review): Husks unterhalb dieser Masse
+# werden bilanziert entfernt (Rest → ledger['decayed']) — sonst fluten asymptotisch
+# nie verschwindende Winz-Objekte die 8 Wahrnehmungs-Slots der Agenten (Plan 3b, C1).
+
+
+def _decay_obj(obj, layer: ObjectLayer) -> None:
+    """Ein Verwesungs-Schritt für EIN Objekt (eigenschaftsbasiertes Gate, B3.4)."""
+    moisture = float(obj.props[IDX2["moisture"]])
+    nutrition = float(obj.props[IDX2["nutrition"]])
+    if moisture < DECAY_MOISTURE_MIN or nutrition <= 0.0:
+        return
+    verlust = obj.mass * DECAY_RATE
+    obj.mass -= verlust
+    layer.ledger["decayed"] += verlust
+    obj.props[IDX2["nutrition"]] = nutrition * (1.0 - DECAY_RATE)
+    tox = float(obj.props[IDX2["toxicity"]])
+    if tox < TOX_SPOILAGE_CAP:
+        obj.props[IDX2["toxicity"]] = min(TOX_SPOILAGE_CAP, tox + TOX_SPOILAGE_PER_TICK)
+
+
+def tick_decay(layer: ObjectLayer, hands_list=()) -> None:
+    """Ein Verwesungs-Tick über alle Boden-Objekte UND die Hände lebender
+    Agenten (F5: Frischhalte-Loophole zu — Tragen konserviert nicht). Masse und
+    nutrition sinken exponentiell, toxicity steigt bis zur Kappe; verweste
+    Masse fließt bilanziert in ledger['decayed'] (kein Leck). ε-Cull (F4):
+    Objekte unter EPSILON_CULL_MASS_KG werden bilanziert entfernt — am Boden
+    UND aus der Hand, unabhängig vom Verwesungs-Gate."""
+    culls = []
     for obj, _pos in layer.all_objects():
-        moisture = float(obj.props[IDX2["moisture"]])
-        nutrition = float(obj.props[IDX2["nutrition"]])
-        if moisture < DECAY_MOISTURE_MIN or nutrition <= 0.0:
-            continue
-        verlust = obj.mass * DECAY_RATE
-        obj.mass -= verlust
-        layer.ledger["decayed"] += verlust
-        obj.props[IDX2["nutrition"]] = nutrition * (1.0 - DECAY_RATE)
-        tox = float(obj.props[IDX2["toxicity"]])
-        if tox < TOX_SPOILAGE_CAP:
-            obj.props[IDX2["toxicity"]] = min(TOX_SPOILAGE_CAP, tox + TOX_SPOILAGE_PER_TICK)
+        _decay_obj(obj, layer)
+        if obj.mass < EPSILON_CULL_MASS_KG:
+            culls.append(obj)
+    for obj in culls:
+        layer.ledger["decayed"] += obj.mass
+        layer.remove(obj)
+    for hands in hands_list:
+        for obj in list(hands.held):
+            _decay_obj(obj, layer)
+            if obj.mass < EPSILON_CULL_MASS_KG:
+                layer.ledger["decayed"] += obj.mass
+                hands.release(obj)

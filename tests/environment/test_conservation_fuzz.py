@@ -97,7 +97,7 @@ def test_ledger_fuzzer_50_seeds_x_200_aktionen():
                 if ziele:
                     do_eat(body, hands, layer, pos, rng.choice(ziele))
             elif aktion == "decay":
-                tick_decay(layer)
+                tick_decay(layer, hands_list=(hands,))
             elif aktion == "overload":
                 body.fatigue = min(1.0, body.fatigue + 0.5)
                 enforce_carry_budget(body, hands, layer, pos)

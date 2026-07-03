@@ -6,18 +6,31 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 
-from artificial_society.agents.brain import INPUT_SIZE, Brain
+from artificial_society.agents.brain import INPUT_SIZE, V1_HEAD_DIMS, Brain
 from artificial_society.agents.communication import CommunicationSystem
 from artificial_society.agents.emotional_memory import EmotionalMemory
 from artificial_society.agents.endocrine import EndocrineSystem
-from artificial_society.agents.genetics import inherit_genes, random_genes
+from artificial_society.agents.genetics import ensure_strength_gene, inherit_genes, random_genes
 from artificial_society.agents.knowledge import KnowledgeGraph
 from artificial_society.agents.life_stage import get_stage_stats
 from artificial_society.agents.memory import EpisodicMemory
+from artificial_society.agents.perception_v2 import (
+    NoveltyBuckets,
+    admissible_masks,
+    build_slots,
+    resolve_slot_of,
+)
 from artificial_society.agents.theory_of_mind import TheoryOfMind
 from artificial_society.environment.herbs import available_herbs, collect_herb
 from artificial_society.environment.materials import get_vector, material_reward
-from artificial_society.environment.physics.actions import enforce_carry_budget
+from artificial_society.environment.physics.actions import (
+    do_cut,
+    do_eat,
+    do_grasp,
+    do_release,
+    do_strike,
+    enforce_carry_budget,
+)
 from artificial_society.environment.physics.body import BODY_MASS_DEFAULT_KG, Body, Hands
 from artificial_society.environment.resources import apply_consumption, clamp, maybe_build_structure
 from artificial_society.environment.structures import (
@@ -29,6 +42,7 @@ from artificial_society.environment.territory import (
     get_home_forage_bonus,
     territory_reward_for_agent,
 )
+from artificial_society.systems.causal_model import CausalModelV2
 from artificial_society.systems.culture import CausalMemory
 from artificial_society.systems.goal_stack import GoalStack
 from artificial_society.systems.goal_stack_ext import agent_tick_with_goals
@@ -184,20 +198,47 @@ def ensure_fields(agent) -> None:
     if not hasattr(agent, "hands"):
         agent.hands = None
     if agent.physics_v2 and agent.body is None:
-        agent.body = Body(body_mass=BODY_MASS_DEFAULT_KG, strength=0.5)
+        agent.body = Body(body_mass=BODY_MASS_DEFAULT_KG, strength=agent.genes.get("strength", 0.5))
     if agent.physics_v2 and agent.hands is None:
         agent.hands = Hands()
+    if agent.physics_v2:
+        # Plan 3b: v2-Brain + Neugier-Apparat idempotent nachrüsten
+        # (Checkpoint-geladene Agenten; frisch gebaute sind schon komplett).
+        if not getattr(agent.brain, "physics_v2", False):
+            print(f"[compat] Agent {agent.id}: v1-Brain im v2-Modus, rebuilding.")
+            agent.brain = Brain(plasticity=agent.genes.get("plasticity", 1.0), physics_v2=True)
+            agent.hidden_state = agent.brain.initial_hidden()
+        if getattr(agent, "causal_model", None) is None:
+            agent.causal_model = CausalModelV2(plasticity=agent.genes.get("plasticity", 1.0))
+        if getattr(agent, "_novelty_buckets", None) is None:
+            agent._novelty_buckets = NoveltyBuckets()
+        if not hasattr(agent, "_causal_pending"):
+            agent._causal_pending = None
+        if not hasattr(agent, "_causal_epistemic_pending"):
+            agent._causal_epistemic_pending = 0.0
+        if not hasattr(agent, "curiosity_last"):
+            agent.curiosity_last = {"nextslot": 0.0, "causal": 0.0, "novelty": 0.0}
 
 
 def attach_body(agent) -> None:
-    """Physik-v2-Embodiment (Plan 3a): Body + Hände mit Default-Kraft 0.5.
+    """Physik-v2-Embodiment: Body + Hände aus dem strength-Gen, v2-Brain,
+    Causal Model und Novelty-Buckets (Plan 3b). Zieht RNG nur im v2-Pfad.
 
-    Das strength-Gen ersetzt den Default in Plan 3b; die Körpermasse ist real
-    geankert (BODY_MASS_DEFAULT_KG, cal 'body_mass'). Zieht keine RNG.
+    Das v2-Brain wird VOR inherit_weights_from gebaut (spawn_child_from_parent
+    ruft attach_body zuerst) — Eltern- und Kind-Brain sind dann form-gleich.
     """
     agent.physics_v2 = True
-    agent.body = Body(body_mass=BODY_MASS_DEFAULT_KG, strength=0.5)
+    ensure_strength_gene(agent.genes)
+    agent.body = Body(body_mass=BODY_MASS_DEFAULT_KG, strength=agent.genes["strength"])
     agent.hands = Hands()
+    plast = agent.genes.get("plasticity", 1.0)
+    agent.brain = Brain(plasticity=plast, physics_v2=True)
+    agent.hidden_state = agent.brain.initial_hidden()
+    agent.causal_model = CausalModelV2(plasticity=plast)
+    agent._novelty_buckets = NoveltyBuckets()
+    agent._causal_pending = None
+    agent._causal_epistemic_pending = 0.0
+    agent.curiosity_last = {"nextslot": 0.0, "causal": 0.0, "novelty": 0.0}
 
 
 def _inventory_value_state(agent) -> dict:
@@ -852,6 +893,133 @@ class Agent:
             if sleep_drive < 0.20:
                 self.is_sleeping = False
 
+    def _resolve_causal_pending(self, view) -> None:
+        """C4: löst das Causal-Pending des Vortricks gegen die aktuelle
+        Wahrnehmung auf — dasselbe Objekt (id-basiert) einen Tick später.
+        Aus der Wahrnehmung gefallen ⇒ maskiert, kein Loss, Epistemik 0."""
+        self._causal_epistemic_pending = 0.0
+        pending = getattr(self, "_causal_pending", None)
+        if pending is None:
+            return
+        self._causal_pending = None
+        slot = resolve_slot_of(view, pending["target"])
+        if slot < 0:
+            return
+        out = self.causal_model.observe(
+            pending["h"],
+            pending["act"],
+            pending["embed"],
+            torch.as_tensor(view.feats[slot]),
+        )
+        self._causal_epistemic_pending = out["epistemic"]
+
+    def _execute_embodied(self, world, brain_step, view):
+        """C2/B4: Mapping des aktiven Verbs auf do_grasp/do_release/do_strike/
+        do_cut/do_eat — EINE verkörperte Aktion pro Tick, an der Position der
+        Wahrnehmung (vor primitive_move). ActionResult-Deltas gehen auf
+        energy/health; D4-Metriken (Verb-Raten, DiscoveryV2 je Agent) werden
+        an der ObjectLayer gepflegt. Kein Reward hier (C3 zahlt Physiologie)."""
+        self._causal_next_target = None
+        verb = brain_step["verb"]
+        if verb is None:
+            return None
+        layer = world.objects
+        metrics = layer.metrics
+        target_idx = brain_step["target_idx"]
+        tool_idx = brain_step["tool_idx"]
+        target = view.objs[target_idx] if target_idx >= 0 else None
+        tool = view.objs[tool_idx] if tool_idx >= 0 else None
+        if target is None:
+            noop = metrics.setdefault("verbs_noop", {})
+            noop[verb] = noop.get(verb, 0) + 1
+            return None
+        effort = brain_step["effort"]
+
+        if verb == "grasp":
+            result = do_grasp(self.body, self.hands, layer, self.pos, target)
+        elif verb == "release":
+            result = do_release(self.body, self.hands, layer, self.pos, target)
+        elif verb == "strike":
+            if tool is None:
+                return None  # act_v2 verhindert das; defensiv trotzdem No-op
+            n_discovery = len(layer.discovery.entries)
+            result = do_strike(self.body, self.hands, layer, self.pos, tool, target, effort, random)
+        elif verb == "cut":
+            n_discovery = len(layer.discovery.entries)
+            result = do_cut(self.body, self.hands, layer, self.pos, tool, target, effort)
+        elif verb == "eat":
+            result = do_eat(self.body, self.hands, layer, self.pos, target)
+        else:
+            return None
+
+        if result.energy_delta_sim:
+            self.energy = max(0.0, min(MAX_ENERGY, self.energy + result.energy_delta_sim))
+        if result.health_delta:
+            self.health = max(0.0, self.health + result.health_delta)
+            if self.health <= 0:
+                self.alive = False  # Toxin-Tod: Terminal via remove_dead (Task 15)
+
+        # D4 (Review F4): verbs_fired zählt Ausführungs-VERSUCHE — auch ok=False
+        # (z. B. target_out_of_reach nach Überlast-Drop). verbs_failed zählt die
+        # ok=False-Teilmenge separat: die Pilot-Diagnostik braucht Versuchsrate
+        # UND Erfolgsrate der Policy (Erfolge = fired − failed).
+        fired = metrics.setdefault("verbs_fired", {})
+        fired[verb] = fired.get(verb, 0) + 1
+        if not result.ok:
+            failed = metrics.setdefault("verbs_failed", {})
+            failed[verb] = failed.get(verb, 0) + 1
+        if verb in ("strike", "cut"):
+            gewachsen = len(layer.discovery.entries) - n_discovery
+            if gewachsen:
+                je_agent = metrics.setdefault("discovery_events_by_agent", {})
+                je_agent[self.id] = je_agent.get(self.id, 0) + gewachsen
+
+        # C4: das Causal-Target folgt der physischen Fortsetzung des Objekts —
+        # strike-Zerstörung: massereichstes Fragment; cut: remainder.
+        naechstes = target
+        if verb == "strike" and result.fragments:
+            naechstes = max(result.fragments, key=lambda f: f.mass)
+        elif verb == "cut" and result.remainder is not None:
+            naechstes = result.remainder
+        self._causal_next_target = naechstes
+        return result
+
+    def _assemble_curiosity_v2(self, brain_step, next_features_raw, next_view, world):
+        """C4: curiosity = 0.25·nextslot_err + 0.50·causal_epistemic +
+        0.25·novelty, geclampt [0, 2]. Loggt die Zerlegung (D4: drei Quellen
+        separat) und legt das Causal-Pending für den nächsten Tick an."""
+        nextslot_err = self.brain.nextslot_error(
+            brain_step, next_features_raw, next_view.feats, next_view.mask
+        )
+        causal_epistemic = self._causal_epistemic_pending
+        novelty = self._novelty_buckets.observe_view(next_view)
+        curiosity = max(
+            0.0, min(2.0, 0.25 * nextslot_err + 0.50 * causal_epistemic + 0.25 * novelty)
+        )
+        self.curiosity_last = {
+            "nextslot": nextslot_err,
+            "causal": causal_epistemic,
+            "novelty": novelty,
+        }
+        sums = world.objects.metrics.setdefault(
+            "curiosity_sums", {"nextslot": 0.0, "causal": 0.0, "novelty": 0.0}
+        )
+        sums["nextslot"] += nextslot_err
+        sums["causal"] += causal_epistemic
+        sums["novelty"] += novelty
+        target = getattr(self, "_causal_next_target", None)
+        if target is not None and brain_step["target_idx"] >= 0:
+            # C4: Input = detach(gru_h) ⊕ verkörperter Aktions-Vektor (22)
+            # ⊕ detach(Slot-Embed des gewählten Ziels); Target = dasselbe
+            # Objekt im nächsten Tick (Auflösung: _resolve_causal_pending).
+            self._causal_pending = {
+                "h": brain_step["next_hidden"],
+                "act": brain_step["action_tensor"].squeeze(0)[V1_HEAD_DIMS:],
+                "embed": brain_step["slot_embeds"][brain_step["target_idx"]],
+                "target": target,
+            }
+        return curiosity
+
     def _record_macro_if_successful(self, mode: str, reward: float) -> float:
         """
         Emergenz v3: Verfolgt Aktionssequenzen und speichert erfolgreiche
@@ -1084,6 +1252,11 @@ class Agent:
 
         ensure_fields(self)
 
+        if self.physics_v2:
+            # C3: ΔE/ΔH über den GANZEN Tick (Metabolik, Arbeit, Essen, Toxin,
+            # Schlaf-Regeneration, Koop-Transfers — alles Physiologie).
+            e_start, h_start = self.energy, self.health
+
         self.endocrine.update(self, world)
         mods = self.endocrine.modifiers()
         stage = get_stage_stats(self.age)
@@ -1140,22 +1313,33 @@ class Agent:
         if self.hidden_state is None:
             self.hidden_state = self.brain.initial_hidden()
 
-        self._planning_stride = (
-            2 if getattr(self, "goal_stack", None) and not self.goal_stack.is_empty() else 4
-        )
-        use_planning = tick >= getattr(self, "_next_planning_tick", 0)
-        if use_planning:
-            self._next_planning_tick = tick + self._planning_stride
+        if self.physics_v2:
+            # v2 (C1/C2/C5): Objekt-Slots wahrnehmen, Causal-Pending des
+            # Vortricks auflösen, dann Policy-Sampling OHNE Planner —
+            # plan_action/imagine_rollout sind mit der v2-Architektur
+            # inkompatibel (encoder(pred_next_obs) ohne obj_ctx; argmax).
+            view = build_slots(self, world.objects)
+            self._resolve_causal_pending(view)
+            brain_step = self.brain.act_v2(
+                features, self.hidden_state, view.feats, view.mask, admissible_masks(view)
+            )
+        else:
+            self._planning_stride = (
+                2 if getattr(self, "goal_stack", None) and not self.goal_stack.is_empty() else 4
+            )
+            use_planning = tick >= getattr(self, "_next_planning_tick", 0)
+            if use_planning:
+                self._next_planning_tick = tick + self._planning_stride
 
-        research_mode = self._need_inv_cooldown <= 0 or (
-            getattr(self, "goal_stack", None) is not None and not self.goal_stack.is_empty()
-        )
-        brain_step = self.brain.act(
-            features,
-            self.hidden_state,
-            use_planning=use_planning,
-            research_mode=research_mode,
-        )
+            research_mode = self._need_inv_cooldown <= 0 or (
+                getattr(self, "goal_stack", None) is not None and not self.goal_stack.is_empty()
+            )
+            brain_step = self.brain.act(
+                features,
+                self.hidden_state,
+                use_planning=use_planning,
+                research_mode=research_mode,
+            )
         self.hidden_state = brain_step["next_hidden"]
         action_list = brain_step["action_list"]
         action = {
@@ -1197,6 +1381,14 @@ class Agent:
                     action["move_y"] = 0.0
                     action["forage"] = 0.0
                     action["attack"] = 0.0
+
+        if self.physics_v2:
+            self._causal_next_target = None  # pro Tick frisch (auch im Schlaf)
+            if not self.is_sleeping:
+                # EINE verkörperte Aktion pro Tick (B4), ausgeführt an der
+                # Wahrnehmungs-Position (vor primitive_move — die gesampelten
+                # Zulässigkeits-Masken bleiben konsistent zur Ausführung).
+                self._execute_embodied(world, brain_step, view)
 
         self.primitive_move(world, action)
         current_cell = world.get_cell(*self.pos)
@@ -1274,19 +1466,23 @@ class Agent:
             economy.maybe_trade(self, agents)
 
         next_features_raw = self.local_features(world, agents)
-        intrinsic = self.brain.intrinsic_reward(
-            brain_step["hidden_in"],
-            brain_step["action_tensor"],
-            next_features_raw,
-        )
-        reward += 0.3 * intrinsic
+        if not self.physics_v2:
+            # v1-Intrinsic (inkl. rew_err-Mechanik) und NGU-Episodic laufen NUR
+            # im v1 — der v2 ersetzt beides durch die C4-Neugier (rew_err ist
+            # ersatzlos gestrichen; Planner/NGU sind im v2 aus).
+            intrinsic = self.brain.intrinsic_reward(
+                brain_step["hidden_in"],
+                brain_step["action_tensor"],
+                next_features_raw,
+            )
+            reward += 0.3 * intrinsic
 
-        next_obs_t = torch.tensor(
-            next_features_raw,
-            dtype=torch.float32,
-            device=brain_step["hidden_in"].device,
-        )
-        self.brain.episodic_memory.novelty(next_obs_t)
+            next_obs_t = torch.tensor(
+                next_features_raw,
+                dtype=torch.float32,
+                device=brain_step["hidden_in"].device,
+            )
+            self.brain.episodic_memory.novelty(next_obs_t)
 
         context_vec = np.asarray(next_features_raw, dtype=np.float32)
         reward = _maybe_mark_language(self, current_cell, tick, context_vec, reward)
@@ -1295,19 +1491,53 @@ class Agent:
         _compact_material_inventory(self, getattr(self, "_inventory_cap", 24))
 
         cognition_mult = mods.get("cognition", 1.0)
-        effective_reward = reward * cognition_mult
-        self.brain.store_transition(
-            brain_step["obs_tensor"],
-            brain_step["hidden_in"],
-            brain_step["action_tensor"],
-            brain_step["log_prob"],
-            brain_step["value"],
-            effective_reward,
-            not self.alive,
-            next_features_raw,
-        )
+        if self.physics_v2:
+            # C3: nur Überleben + Neugier. Der bis hier akkumulierte v1-Reward
+            # (Forage-Event, Koop, Attack, Territorium, Sprache, Social
+            # Learning, Trade) wird bewusst VERWORFEN — die Mechanik lief, sie
+            # zahlt nur nicht (B6). Keine cognition-Skalierung: C3 exakt.
+            # r_death (−3.0) kommt NICHT hier, sondern genau einmal in
+            # Brain.finalize_terminal am Todes-Aggregationspunkt remove_dead.
+            next_view = build_slots(self, world.objects)
+            curiosity = self._assemble_curiosity_v2(brain_step, next_features_raw, next_view, world)
+            reward = (
+                0.6 * (self.energy - e_start) / 45.0
+                + 0.6 * (self.health - h_start) / 50.0
+                - 0.3 * max(0.0, (60.0 - self.energy) / 60.0)
+                + 0.3 * curiosity
+            )
+            effective_reward = reward
+        else:
+            effective_reward = reward * cognition_mult
+        if self.physics_v2:
+            self.brain.store_transition_v2(
+                brain_step,
+                effective_reward,
+                not self.alive,
+                next_features_raw,
+                next_view.feats,
+                next_view.mask,
+            )
+        else:
+            self.brain.store_transition(
+                brain_step["obs_tensor"],
+                brain_step["hidden_in"],
+                brain_step["action_tensor"],
+                brain_step["log_prob"],
+                brain_step["value"],
+                effective_reward,
+                not self.alive,
+                next_features_raw,
+            )
 
-        loss = self.brain.maybe_train()
+        # M-1 (Final-Review): im v2-Pfad NICHT trainieren, wenn der Agent in
+        # diesem Tick gestorben ist. Sonst kann maybe_train einen exakt
+        # gefüllten 128er-Buffer VOR remove_dead/finalize_terminal flushen —
+        # der Todes-Malus (-3.0) haette dann keinen Buffer mehr zum Anhängen
+        # und verfiele still. finalize_terminal (via remove_dead) übernimmt
+        # Flush + Malus + Training für gestorbene v2-Agenten selbst. Der
+        # v1-Pfad bleibt unveraendert (kein finalize_terminal-Aequivalent).
+        loss = None if self.physics_v2 and not self.alive else self.brain.maybe_train()
         if loss is not None:
             self.last_loss = loss
 
