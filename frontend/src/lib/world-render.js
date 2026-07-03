@@ -856,6 +856,14 @@ export class WorldScene {
       return;
     }
     const { w, h } = this.grid;
+
+    // Ash FIRST, before the big-world throttle below: `cells.ash` only ships
+    // every 5th sim tick, so a fresh ash array landing on a throttled render
+    // frame would otherwise be dropped silently and not retried for ~5 more
+    // ticks — on exactly the big grids the throttle targets. Ash arrives
+    // rarely and its fill is cheap, so it is never throttled.
+    this._fillAshData(cells);
+
     // big worlds refresh the data buffer every 3rd frame (as the canvas painter
     // did) — but always fill once right after a rebuild so no blank frame shows.
     if (this._terFilled && w * h > 20000 && this._frameNo % 3) return;
@@ -878,8 +886,6 @@ export class WorldScene {
       d[p + 3] = m > 1 ? 255 : m < 0 ? 0 : (m * 255) | 0;
     }
     this._terDataTex.source.update();
-
-    this._fillAshData(cells);
   }
 
   // Refresh the ash overlay ONLY on frames that ship a fresh `cells.ash`
