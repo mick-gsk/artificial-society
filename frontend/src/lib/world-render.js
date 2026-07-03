@@ -201,7 +201,10 @@ export class WorldScene {
     // Follow camera (B5). When set to a living agent id the ticker eases
     // worldRoot so that agent stays centred; a manual drag clears it. panToCell /
     // panToAgent implement the inspector's "jump" without engaging follow.
+    // onFollowChange(id|null) lets the owner keep its follow button in sync when
+    // the scene clears follow itself (manual drag / followed agent gone).
     this.followId = null;
+    this.onFollowChange = null;
 
     // Action-line markers: a pool of {kind, from, to, cx, cy, ttl, life, color}.
     // `from`/`to` are agent-record refs (not fixed coords) so a line follows the
@@ -332,9 +335,11 @@ export class WorldScene {
     // A manual pan breaks follow-mode — once the user grabs the world we stop
     // chasing the agent. Fires on the first move past the click threshold so a
     // plain click (which selects) doesn't cancel a follow the user just started.
-    canvas.addEventListener("pointermove", (e) => {
+    // Notify the owner so its follow button can drop out of the "on" state.
+    canvas.addEventListener("pointermove", () => {
       if (this._drag && this.followId != null && this._drag.moved >= 5) {
         this.followId = null;
+        this.onFollowChange?.(null);
       }
     });
     canvas.addEventListener("pointermove", (e) => {
@@ -1138,6 +1143,9 @@ export class WorldScene {
       // behaviour fields for action markers + intent line (falsy → absent).
       rec.nd = a.nd ?? 0;
       rec.tg = a.tg ?? null;
+      rec.gl = a.gl ?? 0;
+      rec.gp = a.gp ?? 0;
+      rec.gm = a.gm ?? 0;
       rec.gx = a.gx ?? null;
       rec.gy = a.gy ?? null;
       rec.fl = a.fl ?? 0;
@@ -1605,6 +1613,7 @@ export class WorldScene {
         this._clampPan();
       } else if (!rec) {
         this.followId = null; // followed agent gone → stop following
+        this.onFollowChange?.(null);
       }
     }
 

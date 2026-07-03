@@ -33,7 +33,11 @@
   function select(id) {
     selectedId = id;
     following = false;
-    if (scene) scene.followId = null;
+    if (scene) {
+      scene.followId = null;
+      scene.selectedId = id; // keep the canvas ring/label in sync (esp. on close)
+      if (id == null) scene.setSelectedLabel("");
+    }
     if (id == null) {
       sel = null;
       selDetail = null;
@@ -77,6 +81,9 @@
     await scene.init(host);
     scene.onHud = (h) => (hud = { ...hud, ...h });
     scene.onPick = (id) => select(id);
+    // scene cleared follow itself (manual drag / followed agent gone) — reflect
+    // it in the button state.
+    scene.onFollowChange = (id) => (following = id != null);
     scene.onHover = (id) => {
       if (id == null) {
         hover = null;

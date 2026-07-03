@@ -4,6 +4,7 @@
   // first detail frame arrives), and the whole `frame` (for global context).
   // All German-labelled; presentation only — the "why" string comes from
   // warum.js, the camera jumps go back up through callbacks.
+  import { untrack } from "svelte";
   import {
     warumLine,
     needWord,
@@ -58,20 +59,25 @@
   };
 
   // --- client-side reward ring buffer for the footer sparkline ----------------
-  // Keyed by agent id so switching selection starts a fresh trace.
+  // Keyed by agent id so switching selection starts a fresh trace. The effect
+  // depends ONLY on sel.id + the detail object identity (a fresh object each
+  // frame it lands); the buffer itself is read via untrack() so writing it does
+  // not re-trigger the effect (which would be an infinite update loop).
   let rewBufId = null;
   let rewBuf = $state([]);
   $effect(() => {
     const id = sel?.id ?? null;
-    if (id !== rewBufId) {
-      rewBufId = id;
-      rewBuf = [];
-    }
-    const r = detail?.rew;
-    if (id != null && r != null) {
-      // append only on a fresh detail (avoid dupes across ticker re-renders)
-      rewBuf = [...rewBuf, r].slice(-60);
-    }
+    const d = detail; // depend on the detail object identity
+    untrack(() => {
+      if (id !== rewBufId) {
+        rewBufId = id;
+        rewBuf = [];
+      }
+      const r = d?.rew;
+      if (id != null && r != null) {
+        rewBuf = [...rewBuf, r].slice(-60);
+      }
+    });
   });
 
   let why = $derived(warumLine(sel));
