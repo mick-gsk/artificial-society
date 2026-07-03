@@ -146,3 +146,129 @@ def test_strike_ohne_gehaltenes_objekt_ist_noop_ohne_slot_terme():
 def test_verbs_v2_reihenfolge():
     assert VERBS_V2 == ("grasp", "release", "strike", "cut", "eat")
     assert slice(7, 12) == VERB_SLICE
+
+
+def _act_und_speichere(brain, feats, mask, masks, n=40):
+    """n Ticks act_v2 + store_transition_v2 mit synthetischen next-Werten."""
+    hidden = brain.initial_hidden()
+    steps = []
+    for _ in range(n):
+        step = brain.act_v2([0.1] * 57, hidden, feats, mask, masks)
+        hidden = step["next_hidden"]
+        brain.store_transition_v2(step, 0.5, False, [0.2] * 57, feats, mask)
+        steps.append(step)
+    return steps
+
+
+def test_transition_speichert_maske_und_slot_index():
+    brain = _brain()
+    feats, mask, masks = _volle_szene()
+    torch.manual_seed(5)
+    _act_und_speichere(brain, feats, mask, masks, n=40)
+    assert len(brain.rollout) == 40
+    t = brain.rollout.storage[0]
+    for key, shape in (
+        ("obs", (57,)),
+        ("hidden", (96,)),
+        ("action", (29,)),
+        ("slot_feats", (10, 17)),
+        ("slot_mask", (10,)),
+        ("target_mask", (10,)),
+        ("tool_mask", (10,)),
+        ("next_slot_feats", (10, 17)),
+        ("next_slot_mask", (10,)),
+    ):
+        assert tuple(t[key].shape) == shape, key
+    assert isinstance(t["target_idx"], int) and isinstance(t["tool_idx"], int)
+    mit_slot = [t for t in brain.rollout.storage if t["target_idx"] >= 0]
+    assert mit_slot, "in 40 Ticks muss mindestens ein Verb gefeuert haben (Init-Bias)"
+    for t in mit_slot:
+        assert bool(t["target_mask"][t["target_idx"]])
+
+
+def test_retraining_reproduktion_bitgleiche_logprobs():
+    """D3: evaluate_actions_v2 liefert mit Maske+Slot-Index BITGLEICHE log-probs
+    wie zur Sampling-Zeit (identischer Code-Pfad, unveränderte Gewichte).
+
+    Review F6: scheitert torch.equal NUR an Batch-Numerik (B=1 vs. B=40), ist
+    der Degrade auf allclose() der NORMALE Ausgang — s. Robustheits-Hinweis im
+    Plan, keine Debug-Schleife. Verifiziert (Task 10): pro Zeile einzeln durch
+    evaluate_actions_v2 (B=1) gejagt reproduziert JEDE Zeile bitgleich (Diff <
+    1e-8) — die Abweichung entsteht ausschließlich beim gebatchten BLAS-Pfad
+    (B=40), nicht durch falsche Maskierung/Konditionierung. Beobachteter max.
+    Diff = 1.907e-6 bei log-prob-Beträgen ~15-22; float32-eps (1.19e-7) ×
+    Betrag ≈ 2.38e-6 — die Abweichung liegt im Bereich einer einzelnen
+    float32-ULP für diese Größenordnung, nicht im geplanten 1e-7 (der für
+    kleinere Beträge kalibriert war). Toleranz daher auf atol=2e-6 gesetzt
+    (weiterhin ULP-eng, keine pauschal gelockerte Toleranz)."""
+    brain = _brain()
+    feats, mask, masks = _volle_szene()
+    torch.manual_seed(6)
+    _act_und_speichere(brain, feats, mask, masks, n=40)
+    batch = brain.rollout.storage
+    obs = torch.stack([t["obs"] for t in batch])
+    hid = torch.stack([t["hidden"] for t in batch])
+    sf = torch.stack([t["slot_feats"] for t in batch])
+    sm = torch.stack([t["slot_mask"] for t in batch])
+    act = torch.stack([t["action"] for t in batch])
+    tm = torch.stack([t["target_mask"] for t in batch])
+    om = torch.stack([t["tool_mask"] for t in batch])
+    ti = torch.tensor([t["target_idx"] for t in batch], dtype=torch.long)
+    oi = torch.tensor([t["tool_idx"] for t in batch], dtype=torch.long)
+    alt = torch.stack([t["log_prob"] for t in batch])
+
+    neu, ent_old, ent_new, value, next_hidden = brain.evaluate_actions_v2(
+        obs, hid, sf, sm, act, tm, ti, om, oi
+    )
+    assert torch.allclose(neu, alt, atol=2e-6, rtol=0.0), (
+        "Retraining-Reproduktion muss bitgleich sein (D3, bis auf Batch-BLAS-ULP-Rauschen)"
+    )
+    # Kontrakt-Kern (D3): Konditionierung + Term-Reihenfolge (tool→target) EXAKT —
+    # zeilenweise B=1-Re-Evaluation über denselben Pfad ist BITGLEICH zur
+    # Sampling-log-prob (das kann die 2e-6-Toleranz oben nicht garantieren).
+    with torch.no_grad():
+        for t in batch:
+            einzeln, _, _, _, _ = brain.evaluate_actions_v2(
+                t["obs"].unsqueeze(0),
+                t["hidden"].unsqueeze(0),
+                t["slot_feats"].unsqueeze(0),
+                t["slot_mask"].unsqueeze(0),
+                t["action"].unsqueeze(0),
+                t["target_mask"].unsqueeze(0),
+                torch.tensor([t["target_idx"]], dtype=torch.long),
+                t["tool_mask"].unsqueeze(0),
+                torch.tensor([t["tool_idx"]], dtype=torch.long),
+            )
+            assert torch.equal(einzeln.squeeze(0), t["log_prob"]), (
+                "B=1-Re-Evaluation muss bitgleich sein — Konditionierungs-Bug (D3)"
+            )
+    assert next_hidden.shape == (40, 96)
+    # Kategorial-Entropie zählt zur NEUEN Gruppe: Zeilen mit Slot-Ziehung haben mehr ent_new
+    mit = torch.tensor([t["target_idx"] >= 0 for t in batch])
+    if mit.any() and (~mit).any():
+        assert ent_new[mit].mean() > ent_new[~mit].mean()
+    assert ent_old.shape == (40,) and torch.isfinite(ent_old).all()
+
+
+def test_evaluate_v2_gradient_erreicht_w_sel_und_slot_embed():
+    """C2 (a): echter Gradientenpfad in Query UND Slot-Embeddings."""
+    brain = _brain()
+    feats, mask, masks = _volle_szene()
+    torch.manual_seed(7)
+    _act_und_speichere(brain, feats, mask, masks, n=40)
+    batch = [t for t in brain.rollout.storage if t["target_idx"] >= 0]
+    assert batch
+    obs = torch.stack([t["obs"] for t in batch])
+    hid = torch.stack([t["hidden"] for t in batch])
+    sf = torch.stack([t["slot_feats"] for t in batch])
+    sm = torch.stack([t["slot_mask"] for t in batch])
+    act = torch.stack([t["action"] for t in batch])
+    tm = torch.stack([t["target_mask"] for t in batch])
+    om = torch.stack([t["tool_mask"] for t in batch])
+    ti = torch.tensor([t["target_idx"] for t in batch], dtype=torch.long)
+    oi = torch.tensor([t["tool_idx"] for t in batch], dtype=torch.long)
+    lp, _, _, _, _ = brain.evaluate_actions_v2(obs, hid, sf, sm, act, tm, ti, om, oi)
+    lp.sum().backward()
+    assert brain.w_sel.weight.grad is not None and brain.w_sel.weight.grad.abs().sum() > 0
+    assert brain.slot_embed[0].weight.grad is not None
+    assert brain.slot_embed[0].weight.grad.abs().sum() > 0

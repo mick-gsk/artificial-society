@@ -467,6 +467,77 @@ class Brain(nn.Module):
                 "research_drive": float(action_list[RESEARCH_DRIVE_DIM]),
             }
 
+    def store_transition_v2(
+        self, brain_step, reward, done, next_obs, next_slot_feats, next_slot_mask
+    ):
+        """v2-Transition (C2): speichert zusätzlich Slot-Features, Slot-Maske,
+        zulässige Masken und gezogene Indizes — evaluate_actions_v2 reproduziert
+        damit exakt dieselbe log-prob-Konditionierung (variable Struktur)."""
+        self.rollout.add(
+            {
+                "obs": brain_step["obs_tensor"].detach().squeeze(0),
+                "hidden": brain_step["hidden_in"].detach().squeeze(0),
+                "action": brain_step["action_tensor"].detach().squeeze(0),
+                "log_prob": brain_step["log_prob"].detach().squeeze(0),
+                "value": brain_step["value"].detach().squeeze(0),
+                "reward": max(-REWARD_CLAMP, min(REWARD_CLAMP, reward)),
+                "done": done,
+                "next_obs": torch.tensor(next_obs, dtype=torch.float32, device=device),
+                "slot_feats": brain_step["slot_feats"].detach().squeeze(0),
+                "slot_mask": brain_step["slot_mask"].detach().squeeze(0),
+                "target_mask": brain_step["target_mask"].detach().squeeze(0),
+                "tool_mask": brain_step["tool_mask"].detach().squeeze(0),
+                "target_idx": int(brain_step["target_idx"]),
+                "tool_idx": int(brain_step["tool_idx"]),
+                "next_slot_feats": torch.as_tensor(
+                    np.asarray(next_slot_feats), dtype=torch.float32, device=device
+                ),
+                "next_slot_mask": torch.as_tensor(
+                    np.asarray(next_slot_mask), dtype=torch.bool, device=device
+                ),
+            }
+        )
+
+    def evaluate_actions_v2(
+        self,
+        obs,
+        hid,
+        slot_feats,
+        slot_mask,
+        actions,
+        target_mask,
+        target_idx,
+        tool_mask,
+        tool_idx,
+    ):
+        """PPO-Retraining-Forward (C2): reproduziert die Sampling-log-prob
+        bitgleich über denselben Code-Pfad (_continuous_log_prob, _slot_logits,
+        _categorical_terms). idx = −1 ⇒ die Zeile hat keinen Slot-Term.
+        Rückgabe: (log_prob, ent_alt (Dims 0..6), ent_neu (Dims 7..28 +
+        Kategorial), value, next_hidden)."""
+        mean, std, value, next_hidden, embeds, _ = self.forward_v2(obs, hid, slot_feats, slot_mask)
+        log_prob, dist = self._continuous_log_prob(mean, std, actions)
+        ent_per_dim = dist.entropy()
+        ent_old = ent_per_dim[:, :V1_HEAD_DIMS].sum(dim=-1)
+        ent_new = ent_per_dim[:, V1_HEAD_DIMS:].sum(dim=-1)
+
+        for idx, mask_b, query_slice in (
+            (tool_idx, tool_mask, TOOL_QUERY_SLICE),
+            (target_idx, target_mask, TARGET_QUERY_SLICE),
+        ):
+            rows = idx >= 0
+            if not bool(rows.any()):
+                continue
+            logits = self._slot_logits(actions[rows][:, query_slice], embeds[rows], mask_b[rows])
+            lp, ent = self._categorical_terms(logits, idx[rows])
+            lp_full = torch.zeros_like(log_prob)
+            lp_full[rows] = lp
+            ent_full = torch.zeros_like(ent_new)
+            ent_full[rows] = ent
+            log_prob = log_prob + lp_full
+            ent_new = ent_new + ent_full  # Kategorial-Entropie → 0.01-Gruppe (C2)
+        return log_prob, ent_old, ent_new, value, next_hidden
+
     def predict_world(self, hidden_tensor, action_tensor):
         # Beide Tensoren auf 2D normalisieren, damit torch.cat immer funktioniert
         hidden_tensor = _ensure_2d(hidden_tensor)
