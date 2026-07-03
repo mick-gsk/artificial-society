@@ -32,6 +32,8 @@ import { ACT_KEY, buildFigureAtlas } from "./figures.js";
 
 import { buildTerrainMesh, makeDataTexture, makeLutTexture } from "./terrain-shader.js";
 
+import { createParticleSystem } from "./particles.js";
+
 const STAGE_SCALE = [0.62, 1.0, 1.06]; // child, adult, elder (figure size)
 const STAGE_KEY = ["child", "adult", "elder"]; // st index → atlas stage key
 // Agents never shrink below this many on-screen px tall — figures stay legible
@@ -138,6 +140,12 @@ export class WorldScene {
     // glow but over the fx/trail scribbles. Redrawn each tick from a pool of
     // marker records with a ttl — no per-frame allocation in the steady state.
     this.actionLayer = new Graphics();
+    // Pooled particle system (R5): rain, fire, smoke, dust, spores, birth/death,
+    // discovery sparks. Its ParticleContainer sits between the action lines and
+    // the figure glow so weather reads under the figures' luminous halos but over
+    // the fx/action scribbles. Fire's additive light lives in glowLayer, not here.
+    // Created in init() once the Application (GL context) exists.
+    this.particles = null;
     this.glowLayer = new Container();
     this.figureLayer = new Container();
     this.emoteLayer = new Container();
@@ -152,6 +160,26 @@ export class WorldScene {
     this._bursts = []; // {cx, cy, age, color} — knapping sparks, discoveries, fire
     this._biomeArr = null;
     this._events = [];
+
+    // -- particle-system bookkeeping (R5) -------------------------------------
+    // Fire sources this frame in WORLD px ([x,y,...]) — filled by _paintItems
+    // (FIRE items) and update() (fire events), consumed by _tick to emit flames,
+    // smoke and to place the additive night-glow sprites in glowLayer.
+    this._fireSources = [];
+    // Chimney sources (camp structures) in WORLD px — smoke only.
+    this._chimneys = [];
+    // Reused additive glow sprites for fire light sources (grow the pool as
+    // needed, hide the surplus). alpha ∝ (1 - daylight) → fires light the night.
+    this._fireGlows = [];
+    // Global client wind vector {x,y} in world px/s, rotates slowly off time.
+    this._wind = { x: 0, y: 0 };
+    // Birth/death lifecycle: which agent ids we saw last frame (for genuinely-new
+    // detection), a first-frame guard so a fresh connect doesn't burst every
+    // agent as "born", and the death-fade list (records kept ~600 ms after their
+    // id vanishes: figure fades out, a wisp rises, THEN destroy).
+    this._agentConnected = false; // set true after the first _syncAgents
+    this._dying = []; // {rec, age} — mid-death-fade records (out of this.agents)
+    this._deathGlowTex = null; // radial texture for fire glows (built in init)
 
     // Debug-only cell grid. Off by default (the shader terrain reads as an
     // organic landscape, not a game board). Flip at runtime via
@@ -267,6 +295,19 @@ export class WorldScene {
     this._itemTex = makeItemTextures();
     this._toolTex = makeToolTextures();
     this._structTex = makeStructureTextures();
+
+    // Pooled particle system (R5). Its ParticleContainer is inserted into
+    // worldRoot right before the glow layer (over action lines, under figure
+    // glow). One shared atlas → one draw call; a fixed pool with an 800 cap.
+    this.particles = createParticleSystem({ container: this.worldRoot });
+    const glowIdx = this.worldRoot.getChildIndex(this.glowLayer);
+    this.worldRoot.setChildIndex(this.particles.container, glowIdx);
+    // Radial texture for the additive fire glows (a soft warm falloff).
+    this._deathGlowTex = makeRadialTexture(64, [
+      [0, "rgba(255,196,120,1)"],
+      [0.5, "rgba(255,150,70,0.5)"],
+      [1, "rgba(255,120,50,0)"],
+    ]);
 
     // Floating "why" label over the selected agent. Lives on the emote layer so
     // it renders above figures; positioned in the ticker, text set from World via
@@ -950,7 +991,15 @@ export class WorldScene {
         if (!this._specialSet.has(sk)) {
           const [k, pos] = sk.split("@");
           const [x, y] = pos.split(",").map(Number);
-          this._bursts.push({ cx: x, cy: y, age: 0, color: BURST_COLOR[k] ?? 0xffd166 });
+          const color = BURST_COLOR[k] ?? 0xffd166;
+          this._bursts.push({ cx: x, cy: y, age: 0, color });
+          // Discovery (k=9) also throws glut sparks; MID/NEAR only. Emit in world
+          // px — the burst star itself stays in _tick/fxLayer as before.
+          if (k === "9" && this.particles && this._lod !== "far") {
+            const bx = this.offX + (x + 0.5) * this.cellPx;
+            const by = this.offY + (y + 0.5) * this.cellPx;
+            this.particles.emitters.sparks(bx, by, this.cellPx, color);
+          }
         }
       }
     }
@@ -1050,6 +1099,8 @@ export class WorldScene {
     this._structKey = key;
     this.structLayer.removeChildren().forEach((c) => c.destroy());
     const cp = this.cellPx;
+    // Camp chimneys emit smoke — recompute the world-px source list on any change.
+    this._chimneys = [];
     for (const s of structures) {
       const t = this._structTex[s.k];
       if (!t) continue;
@@ -1059,6 +1110,8 @@ export class WorldScene {
       spr.y = this.offY + (s.y + 0.98) * cp;
       spr.scale.set((cp * 1.15) / t.height);
       this.structLayer.addChild(spr);
+      // a camp tent's smoke rises from its peak (a little above the foot).
+      if (s.k === "camp") this._chimneys.push(spr.x, spr.y - cp * 0.9);
     }
     this.structLayer.children.sort((a, b) => a.y - b.y);
   }
@@ -1119,6 +1172,14 @@ export class WorldScene {
           emoteOn: false,
         };
         this.agents.set(a.id, rec);
+        // Birth burst: a genuinely-new id — gold sparks + ring. NOT on the first
+        // sync after connect (every agent is "new" then; that's a connect, not a
+        // wave of births). MID/NEAR only (anti-clutter at far zoom).
+        if (this._agentConnected && this.particles && this._lod !== "far") {
+          const bx = this.offX + (a.x + 0.5) * this.cellPx;
+          const by = this.offY + (a.y + 0.5) * this.cellPx;
+          this.particles.emitters.birth(bx, by, this.cellPx);
+        }
       } else {
         rec.fromX = rec.toX;
         rec.fromY = rec.toY;
@@ -1192,16 +1253,29 @@ export class WorldScene {
     }
     for (const [id, rec] of this.agents) {
       if (!seen.has(id)) {
-        rec.glow.destroy();
-        rec.figure.destroy({ children: true }); // takes tool + bundle with it
-        rec.emote.destroy();
+        // Death: don't destroy immediately. Move the record OUT of this.agents
+        // (so selection/hover/markers stop tracking it — World already deselects
+        // when an id vanishes) into _dying, where _tick fades the figure over
+        // ~600 ms and then destroys it. A grey wisp rises from the last cell.
         this.agents.delete(id);
+        this._dying.push({ rec, age: 0 });
+        rec.emote.visible = false;
+        if (this.particles && this._lod !== "far") {
+          const dx = rec._px ?? this.offX + (rec.toX + 0.5) * this.cellPx;
+          const dy = rec._py ?? this.offY + (rec.toY + 0.5) * this.cellPx;
+          this.particles.emitters.deathWisp(dx, dy, this.cellPx);
+        }
         if (this.selectedId === id) {
           this.selectedId = null;
           this.onPick?.(null);
         }
+        if (this.followId === id) {
+          this.followId = null;
+          this.onFollowChange?.(null);
+        }
       }
     }
+    this._agentConnected = true; // subsequent new ids are real births
     // lower agents render in front (simple painter's order)
     this.figureLayer.children.sort((a, b) => a.y - b.y);
   }
@@ -1370,6 +1444,18 @@ export class WorldScene {
     if (this.useShaderTerrain && this._terUniforms) {
       this._terUniforms.uniforms.uTime = this._terTime;
       this._terUniforms.uniforms.uDaylight = this.daylight;
+    }
+
+    // ONE global client wind vector, slowly rotating. Deterministic from the
+    // ticker clock (no Math.random). Direction sweeps with a slow sine; strength
+    // mirrors the sim's own gust feel (abs(sin·)·8) so rain shear / smoke drift
+    // read like the world's weather. Magnitude in world px/s, scaled by cellPx.
+    {
+      const ang = this._terTime * 0.15; // slow direction sweep
+      const gust = Math.abs(Math.sin(this._terTime * 0.11)) * 8; // 0..8, gusty
+      const mag = this.cellPx * (0.4 + gust * 0.12);
+      this._wind.x = Math.cos(ang) * mag;
+      this._wind.y = Math.sin(ang) * mag * 0.25; // mostly horizontal
     }
 
     this.trailLayer.clear();
@@ -1638,36 +1724,102 @@ export class WorldScene {
       }
     }
 
-    // weather is visible weather. Storm rain always draws (particles, not a
-    // ground tint — untouched, replaced by a real particle system in a later
-    // task). The flat fire/drought/blight tint discs are the OLD event look;
-    // when the shader terrain is on it paints those as ground scars instead, so
-    // the discs only draw as a fallback when useShaderTerrain is off.
+    // weather is visible weather — now a real, deterministic particle system.
+    // Storm rain, drought dust and blight spores are EMITTED here from the live
+    // events (the old Math.random() rain scribble is gone). The flat
+    // fire/drought/blight tint discs are the OLD event look; when the shader
+    // terrain is on it paints those as ground scars, so the discs only draw as a
+    // fallback when useShaderTerrain is off.
     const flatEvents = !this.useShaderTerrain;
     for (const e of this._events) {
       const ex = px(e.x);
       const ey = py(e.y);
       const rad = Math.max(1, e.r) * cp;
       if (e.kind === "storm") {
-        const drops = Math.min(70, Math.ceil(e.r * e.r * 1.5));
-        for (let i = 0; i < drops; i++) {
-          const ang = Math.random() * Math.PI * 2;
-          const rr = Math.sqrt(Math.random()) * rad;
-          const dx = ex + Math.cos(ang) * rr;
-          const dy = ey + Math.sin(ang) * rr;
-          this.fxLayer
-            .moveTo(dx, dy)
-            .lineTo(dx - cp * 0.12, dy + cp * 0.4)
-            .stroke({ width: lw, color: 0x9fd4ff, alpha: 0.35 });
-        }
+        // rain particles inside the disc, sheared by wind (emitter uses cell
+        // coords + cellPx internally, in the same world-px space).
+        this.particles?.emitters.rain(ex, ey, e.r, e.i ?? 0.6, cp);
+      } else if (e.kind === "drought") {
+        this.particles?.emitters.dust(ex, ey, rad, cp);
+        if (flatEvents)
+          this.fxLayer.circle(ex, ey, rad).fill({ color: 0xf0b030, alpha: 0.05 });
+      } else if (e.kind === "blight") {
+        this.particles?.emitters.spores(ex, ey, rad, cp);
+        if (flatEvents)
+          this.fxLayer.circle(ex, ey, rad).fill({ color: 0xc774f0, alpha: 0.05 });
       } else if (flatEvents && e.kind === "fire") {
         const fl = 0.06 + 0.05 * Math.sin(this._pulse * 11 + e.x);
         this.fxLayer.circle(ex, ey, rad).fill({ color: 0xff7a3c, alpha: fl });
-      } else if (flatEvents && e.kind === "drought") {
-        this.fxLayer.circle(ex, ey, rad).fill({ color: 0xf0b030, alpha: 0.05 });
-      } else if (flatEvents && e.kind === "blight") {
-        this.fxLayer.circle(ex, ey, rad).fill({ color: 0xc774f0, alpha: 0.05 });
       }
+    }
+
+    // -- fire & smoke particles + additive night-glow -------------------------
+    // Fire sources = FIRE ground items (persistent _fireSprites, at their world
+    // px) PLUS fire EVENTS (this frame's _events). Each throws flames + smoke;
+    // camp chimneys throw smoke only. A soft additive glow sprite (reused pool)
+    // sits on every fire source with alpha ∝ (1 - daylight) → fires light night.
+    if (this.particles) {
+      let gi = 0; // index into the reused fire-glow sprite pool
+      const nightGlow = Math.max(0, 1 - this.daylight);
+      const placeGlow = (gx, gy, scale) => {
+        let g = this._fireGlows[gi];
+        if (!g) {
+          g = new Sprite(this._deathGlowTex);
+          g.anchor.set(0.5);
+          g.blendMode = "add";
+          this.glowLayer.addChild(g);
+          this._fireGlows[gi] = g;
+        }
+        g.visible = true;
+        g.x = gx;
+        g.y = gy;
+        g.scale.set(scale);
+        // even by day a small ember glow; by night it blooms into a light source
+        g.alpha = 0.12 + 0.6 * nightGlow + 0.06 * Math.sin(this._pulse * 7 + gx);
+        gi++;
+      };
+      for (const s of this._fireSprites) {
+        this.particles.emitters.fire(s.x, s.y - cp * 0.2, cp, (s.x * 7) | 0);
+        this.particles.emitters.smoke(s.x, s.y - cp * 0.6, cp, (s.x * 3) | 0);
+        placeGlow(s.x, s.y - cp * 0.4, (cp * 2.4) / 64);
+      }
+      for (const e of this._events) {
+        if (e.kind !== "fire") continue;
+        const ex = px(e.x);
+        const ey = py(e.y);
+        this.particles.emitters.fire(ex, ey, cp, (e.x * 11) | 0);
+        this.particles.emitters.smoke(ex, ey - cp * 0.4, cp, (e.x * 5) | 0);
+        placeGlow(ex, ey, ((Math.max(1, e.r) * cp) / 64) * 1.5);
+      }
+      // camp chimney smoke
+      for (let c = 0; c < this._chimneys.length; c += 2) {
+        this.particles.emitters.smoke(this._chimneys[c], this._chimneys[c + 1], cp, c);
+      }
+      // hide surplus glow sprites from a previous, larger fire set
+      for (; gi < this._fireGlows.length; gi++) this._fireGlows[gi].visible = false;
+    }
+
+    // -- death fades ----------------------------------------------------------
+    // Records whose id vanished linger ~600 ms: figure/glow fade to 0, then the
+    // sprites are destroyed and the record drops from _dying. The rising wisp is
+    // already airborne (emitted in _syncAgents). Fade runs at ALL LODs.
+    if (this._dying.length) {
+      const keep = [];
+      for (const d of this._dying) {
+        d.age += dt;
+        const p = d.age / 0.6;
+        if (p >= 1) {
+          d.rec.glow.destroy();
+          d.rec.figure.destroy({ children: true });
+          d.rec.emote.destroy();
+          continue;
+        }
+        keep.push(d);
+        const a = 1 - p;
+        d.rec.figure.alpha = a;
+        d.rec.glow.alpha = a * 0.16;
+      }
+      this._dying = keep;
     }
 
     // knapping sparks / discovery / fire-lit moments: a short radiant star
@@ -1708,6 +1860,10 @@ export class WorldScene {
     const a = 0.45 + 0.35 * Math.sin(this._pulse * 4);
     for (const g of this.eventLayer.children) g.alpha = a;
 
+    // advance the pooled particle system last (all emitters have fed it this
+    // frame). O(active); the wind vector drives shear/drift inside.
+    this.particles?.update(deltaMS, this._wind);
+
     if (deltaMS > 0) this._fps += (1000 / deltaMS - this._fps) * 0.08;
     this._hudAccum += deltaMS;
     if (this._hudAccum >= 300) {
@@ -1722,6 +1878,7 @@ export class WorldScene {
 
   destroy() {
     this._destroyShaderTerrain();
+    this.particles?.destroy();
     if (this.app) this.app.destroy(true, { children: true });
   }
 }
