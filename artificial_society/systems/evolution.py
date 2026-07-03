@@ -1,5 +1,4 @@
 from artificial_society.agents.agent import Agent
-from artificial_society.agents.memory import EpisodicMemory
 from artificial_society.agents.genetics import inherit_genes
 
 
@@ -22,8 +21,8 @@ class EvolutionSystem:
 
         # Stamm-Bestimmung: fitness-gewichtet statt immer Mutter
         if other_parent is not None:
-            score_a = max(0.01, getattr(parent,       'learning_score', 1.0))
-            score_b = max(0.01, getattr(other_parent, 'learning_score', 1.0))
+            score_a = max(0.01, getattr(parent, "learning_score", 1.0))
+            score_b = max(0.01, getattr(other_parent, "learning_score", 1.0))
             dominant = parent if score_a >= score_b else other_parent
         else:
             dominant = parent
@@ -36,14 +35,17 @@ class EvolutionSystem:
             parent_id=parent.id,
             tribe_id=dominant.tribe_id,
         )
-        if parent.memory.resource_memory:
-            child.memory.resource_memory = parent.memory.resource_memory[-3:]
-        if other_parent and other_parent.memory.resource_memory:
-            # Erbt auch einige Ressourcenerinnerungen des anderen Elternteils
-            extra = other_parent.memory.resource_memory[-2:]
-            for mem in extra:
-                if mem not in child.memory.resource_memory:
-                    child.memory.resource_memory.append(mem)
+        if not getattr(parent, "physics_v2", False):
+            # Plan 4: v2-Kinder erben keine gelernten Ressourcen-Erinnerungen.
+            # Gate auf parent.physics_v2 — child.physics_v2 wird erst durch das
+            # nachgelagerte attach_body() in spawn_child_from_parent True.
+            if parent.memory.resource_memory:
+                child.memory.resource_memory = parent.memory.resource_memory[-3:]
+            if other_parent and other_parent.memory.resource_memory:
+                extra = other_parent.memory.resource_memory[-2:]
+                for mem in extra:
+                    if mem not in child.memory.resource_memory:
+                        child.memory.resource_memory.append(mem)
 
         if parent.tribe_id is not None:
             child.trust[parent.id] = 0.4

@@ -213,37 +213,48 @@ class Simulation:
             # die lokale Gewichts-Vererbungsstärke — daher inherit_strength_gene.
             inherit_strength_gene(child.genes, parent, other_parent)
             attach_body(child)
-        inherit_strength = max(
-            0.20, min(0.75, 0.75 - (child.genes["plasticity"] - 0.3) / (1.8 - 0.3) * 0.55)
-        )
-        child.brain.inherit_weights_from(parent.brain, strength=inherit_strength)
-        if other_parent is not None:
-            child.brain.inherit_weights_from(other_parent.brain, strength=inherit_strength * 0.4)
-        parent_mem = getattr(parent, "causal_memory", None)
-        if parent_mem:
-            child.causal_memory = CausalMemory(capacity=32)
-            for seq in list(parent_mem.sequences.keys())[:INHERIT_SEQUENCES]:
-                child.causal_memory.receive_transmitted(seq, fidelity=INHERIT_FIDELITY)
-        if parent.remedy_knowledge:
-            for disease, herbs in parent.remedy_knowledge.items():
-                if random.random() < INHERIT_FIDELITY:
-                    child.remedy_knowledge[disease] = list(herbs)
-        parent_inv = getattr(parent, "material_inventory", {})
-        parent_discoveries = {
-            m: q
-            for m, q in parent_inv.items()
-            if m.startswith("mat_") and q >= DEATH_MATERIAL_MIN_QTY
-        }
-        if parent_discoveries:
-            child_inv = getattr(child, "material_inventory", {})
-            for mat_id, qty in parent_discoveries.items():
-                if random.random() < INHERIT_FIDELITY:
-                    child_inv[mat_id] = (
-                        child_inv.get(mat_id, 0.0) + qty * DEATH_MATERIAL_TRANSFER_RATIO
-                    )
-            child.material_inventory = child_inv
+        if not self.physics_v2:
+            # Plan 4 (Kultur-Korrektur): im v2-Pfad wird KEIN Gelerntes vererbt —
+            # Kind startet mit frischem Netz (attach_body) + leeren Lern-Stores.
+            # Nur Gene (inkl. strength) gehen ans Kind. Kultur überlebt allein
+            # über soziales Lernen zu Lebzeiten.
+            inherit_strength = max(
+                0.20, min(0.75, 0.75 - (child.genes["plasticity"] - 0.3) / (1.8 - 0.3) * 0.55)
+            )
+            child.brain.inherit_weights_from(parent.brain, strength=inherit_strength)
+            if other_parent is not None:
+                child.brain.inherit_weights_from(
+                    other_parent.brain, strength=inherit_strength * 0.4
+                )
+            parent_mem = getattr(parent, "causal_memory", None)
+            if parent_mem:
+                child.causal_memory = CausalMemory(capacity=32)
+                for seq in list(parent_mem.sequences.keys())[:INHERIT_SEQUENCES]:
+                    child.causal_memory.receive_transmitted(seq, fidelity=INHERIT_FIDELITY)
+            if parent.remedy_knowledge:
+                for disease, herbs in parent.remedy_knowledge.items():
+                    if random.random() < INHERIT_FIDELITY:
+                        child.remedy_knowledge[disease] = list(herbs)
+            parent_inv = getattr(parent, "material_inventory", {})
+            parent_discoveries = {
+                m: q
+                for m, q in parent_inv.items()
+                if m.startswith("mat_") and q >= DEATH_MATERIAL_MIN_QTY
+            }
+            if parent_discoveries:
+                child_inv = getattr(child, "material_inventory", {})
+                for mat_id, qty in parent_discoveries.items():
+                    if random.random() < INHERIT_FIDELITY:
+                        child_inv[mat_id] = (
+                            child_inv.get(mat_id, 0.0) + qty * DEATH_MATERIAL_TRANSFER_RATIO
+                        )
+                child.material_inventory = child_inv
         return child
 
+    # Plan 4 (bekannte Abweichung, bewusst belassen): Todes-Broadcast ist KEIN
+    # Geburts-Erbgang, sondern horizontaler Transfer an anwesende Sippe — aber
+    # beobachtungsfrei (schwächer als der reguläre Sozial-Lern-Kanal). Backlog:
+    # später über Fidelity/Trust/Beobachtung routen. Nicht in diesem Schnitt.
     def _broadcast_death_knowledge(self, agent):
         causal_mem = getattr(agent, "causal_memory", None)
         inv = getattr(agent, "material_inventory", {})
