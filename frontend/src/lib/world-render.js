@@ -30,7 +30,12 @@ import {
 
 import { ACT_KEY, buildFigureAtlas } from "./figures.js";
 
-import { buildTerrainMesh, makeDataTexture, makeLutTexture } from "./terrain-shader.js";
+import {
+  buildTerrainMesh,
+  makeAshTexture,
+  makeDataTexture,
+  makeLutTexture,
+} from "./terrain-shader.js";
 
 import { createParticleSystem } from "./particles.js";
 
@@ -211,12 +216,21 @@ export class WorldScene {
     this._terMesh = null;
     this._terUniforms = null;
     this._terShader = null;
-    this._terData = null; // Uint8Array w*h*4, packed each frame
+    this._terData = null; // Uint8Array w*h*4, packed each frame (R/G/B/A = biome/food/water/moisture)
     this._terDataTex = null;
     this._lutData = new Uint8Array(16 * 2 * 4); // dry row + lush row
     this._lutTex = null;
     this._terTime = 0; // seconds fed to uTime
     this._terFilled = false; // has the data buffer been filled since rebuild?
+
+    // Ash overlay (R6): a separate w*h RGBA8 buffer/texture (R channel only
+    // read by the shader), refreshed ONLY on frames that ship a fresh
+    // `cells.ash` array (server gates it to every 5th tick + only while ash
+    // is actually present). On every other frame the buffer/texture are left
+    // untouched, so the last-known burn scar keeps painting — the client-side
+    // cache the brief calls for.
+    this._ashData = null; // Uint8Array w*h*4, refilled only when cells.ash arrives
+    this._ashTex = null;
 
     // view state
     this._zoom = 1;
@@ -778,6 +792,10 @@ export class WorldScene {
       this._terData = new Uint8Array(w * h * 4);
       this._terFilled = false; // fresh buffer — force a fill on the next frame
       this._terDataTex = makeDataTexture(w, h, this._terData);
+      // Ash starts at zero (no scars on a fresh world/rebuild) — the buffer is
+      // only touched again once a real `cells.ash` array arrives.
+      this._ashData = new Uint8Array(w * h * 4);
+      this._ashTex = makeAshTexture(w, h, this._ashData);
       this._lutTex = makeLutTexture(this._lutData);
       this._packLut(); // ensure LUT reflects any legend already received
       const built = buildTerrainMesh({
@@ -787,6 +805,7 @@ export class WorldScene {
         offX: this.offX,
         offY: this.offY,
         dataTex: this._terDataTex,
+        ashTex: this._ashTex,
         lutTex: this._lutTex,
       });
       this._terMesh = built.mesh;
@@ -812,6 +831,10 @@ export class WorldScene {
       this._terDataTex.destroy(true);
       this._terDataTex = null;
     }
+    if (this._ashTex) {
+      this._ashTex.destroy(true);
+      this._ashTex = null;
+    }
     if (this._lutTex) {
       this._lutTex.destroy(true);
       this._lutTex = null;
@@ -819,13 +842,14 @@ export class WorldScene {
     this._terUniforms = null;
     this._terShader = null;
     this._terData = null;
+    this._ashData = null;
   }
 
   // Pack one RGBA8 texel per cell into the persistent data buffer, then upload.
-  // R = biome index, G = food (÷90→255), B = water (÷100→255), A = 255 (reserved
-  // for moisture in a later task). Cheap: 160 KB at 200×200. The big-world
-  // every-3rd-frame throttle from the canvas painter carries over — the GPU
-  // animates water/light from uTime each frame regardless of buffer refresh.
+  // R = biome index, G = food (÷90→255), B = water (÷100→255), A = moisture
+  // (÷100→255). Cheap: 160 KB at 200×200. The big-world every-3rd-frame
+  // throttle from the canvas painter carries over — the GPU animates
+  // water/light from uTime each frame regardless of buffer refresh.
   _fillTerrainData(cells) {
     if (!this._ensureShaderTerrain()) {
       this._paintTerrain(cells); // fallback flipped on during ensure
@@ -837,7 +861,7 @@ export class WorldScene {
     if (this._terFilled && w * h > 20000 && this._frameNo % 3) return;
     this._terFilled = true;
 
-    const { food, water, biome } = cells;
+    const { food, water, biome, moist } = cells;
     const d = this._terData;
     const n = w * h;
     for (let i = 0; i < n; i++) {
@@ -847,9 +871,34 @@ export class WorldScene {
       d[p + 1] = f > 1 ? 255 : (f * 255) | 0;
       const wt = water[i] / 100;
       d[p + 2] = wt > 1 ? 255 : (wt * 255) | 0;
-      d[p + 3] = 255;
+      // moisture ships every frame (server side), but stay defensive against
+      // an old/replayed frame that predates the field — fall back to a
+      // neutral mid-value rather than leaving the alpha channel stale.
+      const m = moist ? moist[i] / 100 : 0.5;
+      d[p + 3] = m > 1 ? 255 : m < 0 ? 0 : (m * 255) | 0;
     }
     this._terDataTex.source.update();
+
+    this._fillAshData(cells);
+  }
+
+  // Refresh the ash overlay ONLY on frames that ship a fresh `cells.ash`
+  // array (server gates this to every 5th tick, and only while ash is
+  // actually present anywhere — see frame.py). On every other frame this is
+  // a no-op: the existing texture keeps painting the last-known scar, which
+  // is exactly the "client caches the last array" behaviour the brief wants.
+  // R channel only (G/B/A unused; a full RGBA buffer is the simplest way to
+  // reuse the same BufferImageSource path as the main data texture).
+  _fillAshData(cells) {
+    const ash = cells.ash;
+    if (!ash || !this._ashData || !this._ashTex) return;
+    const d = this._ashData;
+    const n = this.grid.w * this.grid.h;
+    for (let i = 0; i < n; i++) {
+      const a = ash[i] / 100;
+      d[i * 4] = a > 1 ? 255 : a < 0 ? 0 : (a * 255) | 0;
+    }
+    this._ashTex.source.update();
   }
 
   // Pack the (up to 8) strongest environment events into the shader's uEvents

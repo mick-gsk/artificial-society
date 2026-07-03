@@ -39,7 +39,14 @@ void main() {
 `;
 
 // uData  : w×h RGBA8, NEAREST. R = biome index, G = food (0..255), B = water
-//          (0..255), A = reserved (moisture, later). One texel per world cell.
+//          (0..255), A = moisture (0..255, world.F["moisture"] 0..100 scaled).
+//          One texel per world cell.
+// uAsh    : w×h RGBA8, NEAREST, R-channel only. Ash (0..255, world.F["ash"]
+//           0..100 scaled). Refreshed only on ticks that ship a fresh
+//           ``cells.ash`` (every 5th tick, and only while ash is actually
+//           present anywhere) — the client re-uploads the same buffer on
+//           other frames, so the scar persists and fades at the sim's pace
+//           instead of flickering back to zero every frame.
 // uLut    : 16×2 RGBA8, NEAREST. Row 0 = dry biome colour, row 1 = lush.
 // uGrid   : (w, h) cell counts — lets us walk the data texture by cell centre.
 // uTime   : seconds, ever-increasing — drives water ripples/sparkle.
@@ -55,6 +62,7 @@ in vec2 vUV;
 out vec4 finalColor;
 
 uniform sampler2D uData;
+uniform sampler2D uAsh;
 uniform sampler2D uLut;
 
 uniform vec2 uGrid;
@@ -250,6 +258,40 @@ void main() {
     }
   }
 
+  // --- lasting ground marks: moisture + ash. Applied AFTER the biome/water/
+  // shore colour and the active event scars, BEFORE the daylight tint (same
+  // ordering as the event pass above) — these are properties of the ground
+  // itself, so the day/night light still falls on top of them. Both skip
+  // water cells: a lake doesn't get "drier" or ashy. Sampled at the nearest
+  // cell centre (like dom above) rather than the 4-neighbour blend — subtle
+  // ground state, not a hard-edged feature. ---
+  if (waterMask < 0.6) {
+    vec2 nearestUV = (floor(cellPos + 0.5) + 0.5) / uGrid;
+
+    // Moisture: 0..1 from uData's alpha channel. Wet ground reads darker +
+    // more saturated; dry ground bleaches toward a sandy, desaturated tone.
+    // Kept dezent (~±10% luminance across the whole range) so the biome
+    // colour stays dominant.
+    float moist = texture(uData, nearestUV).a;
+    float moistCentered = moist - 0.5; // -0.5 (bone dry) .. +0.5 (saturated)
+    rgb *= 1.0 - moistCentered * 0.20; // wet → up to 10% darker, dry → up to 10% brighter
+    vec3 dryTone = vec3(0.82, 0.74, 0.56); // sandy/bleached
+    rgb = mix(rgb, dryTone, clamp(-moistCentered, 0.0, 1.0) * 0.18);
+    rgb = desaturate(rgb, clamp(-moistCentered, 0.0, 1.0) * 0.15);
+    rgb = desaturate(rgb, clamp(moistCentered, 0.0, 1.0) * 0.1);
+
+    // Ash: 0..1 from uAsh's red channel (separate texture, refreshed only on
+    // ticks that ship fresh ash data — see world-render.js). Burn scars blend
+    // the ground toward grey-black; up to ~70% at ash=100 per the spec.
+    float ash = texture(uAsh, nearestUV).r;
+    if (ash > 0.0) {
+      vec3 charTone = vec3(0.08, 0.07, 0.07);
+      vec3 ashed = desaturate(rgb, ash * 0.85);
+      ashed = mix(ashed, charTone, ash * 0.5);
+      rgb = mix(rgb, ashed, clamp(ash, 0.0, 1.0) * 0.7);
+    }
+  }
+
   // --- daylight: replicate the CPU painter's dawn/dusk warmth + night blue. ---
   float dl = uDaylight;
   float day = 0.45 + 0.55 * dl;
@@ -285,6 +327,27 @@ export function makeDataTexture(w, h, buffer) {
   return new Texture({ source });
 }
 
+// Build the ash overlay texture: w×h RGBA8, same BufferImageSource path as
+// the main data texture, but only the R channel is read by the shader (G/B/A
+// unused — simpler than a dedicated single-channel format, and the buffer is
+// cheap: w*h*4 bytes, refreshed only on the rare ticks that ship fresh ash).
+// Caller keeps and refills `buffer`, then calls `texture.source.update()` —
+// but only when a fresh ``cells.ash`` array actually arrived; on other frames
+// the caller simply leaves the existing texture untouched so the last-known
+// scar keeps painting (the client-side cache the brief asks for).
+export function makeAshTexture(w, h, buffer) {
+  const source = new BufferImageSource({
+    resource: buffer,
+    width: w,
+    height: h,
+    format: "rgba8unorm",
+    scaleMode: "nearest",
+    alphaMode: "no-premultiply-alpha",
+    addressMode: "clamp-to-edge",
+  });
+  return new Texture({ source });
+}
+
 // Build the 16×2 palette LUT texture (dry row + lush row) from a Uint8Array of
 // 16*2*4 bytes. Caller fills it from the biome legend; rebuilt rarely.
 export function makeLutTexture(buffer) {
@@ -305,7 +368,7 @@ export function makeLutTexture(buffer) {
 // its animatable uniform group so the caller can drive uTime/uDaylight per tick
 // and repoint uGrid on resize. Throws if the shader fails to compile — the caller
 // catches this and falls back to the CPU painter.
-export function buildTerrainMesh({ w, h, cellPx, offX, offY, dataTex, lutTex }) {
+export function buildTerrainMesh({ w, h, cellPx, offX, offY, dataTex, ashTex, lutTex }) {
   const x0 = offX;
   const y0 = offY;
   const x1 = offX + w * cellPx;
@@ -333,6 +396,7 @@ export function buildTerrainMesh({ w, h, cellPx, offX, offY, dataTex, lutTex }) 
     gl: { vertex: TERRAIN_VERT, fragment: TERRAIN_FRAG },
     resources: {
       uData: dataTex.source,
+      uAsh: ashTex.source,
       uLut: lutTex.source,
       terrainUniforms: uniforms,
     },
