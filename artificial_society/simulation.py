@@ -12,6 +12,7 @@ from artificial_society.agents.agent import (
     attach_body,
     ensure_fields,
 )
+from artificial_society.agents.brain import ACTION_SIZE_V2, OBJ_CTX_DIM
 from artificial_society.agents.genetics import inherit_strength as inherit_strength_gene
 from artificial_society.environment.materials import DISCOVERY_REGISTRY
 from artificial_society.environment.phys_objects import seed_initial
@@ -37,6 +38,12 @@ MIN_POPULATION = 8
 RESPAWN_COUNT = 6
 CHECKPOINT_INTERVAL = 500
 CHECKPOINT_PATH = "checkpoint.pkl"
+# C5 (Plan 3b): Format-Version des Pickle-Payloads. v2 führt neue Brain-Formen
+# (29 Köpfe, 192er GRU), Causal-Model und Transition-Felder ein — Version 2.
+# Fehlender Key ⇒ Version 1 (Legacy bis 3a): lädt WEITERHIN mit physics_v2=False
+# (3a-Garantie — v1-Bestand bleibt resumierbar); unbekannte Versionen re-raisen
+# hart statt still frisch zu starten.
+CHECKPOINT_FORMAT_VERSION = 2
 
 IMMUNITY_WINDOW_DEFAULT = 200
 
@@ -413,6 +420,7 @@ class Simulation:
             with open(CHECKPOINT_PATH, "wb") as f:
                 pickle.dump(
                     {
+                        "format_version": CHECKPOINT_FORMAT_VERSION,
                         "agents": self.agents,
                         "tick": self.tick,
                         "physics_v2": self.physics_v2,
@@ -432,6 +440,13 @@ class Simulation:
         try:
             with open(CHECKPOINT_PATH, "rb") as f:
                 data = pickle.load(f)
+            version = int(data.get("format_version", 1))
+            if version not in (1, CHECKPOINT_FORMAT_VERSION):
+                raise CheckpointIncompatibleError(
+                    f"checkpoint format_version={version} unbekannt "
+                    f"(unterstützt: 1 = Legacy/3a, {CHECKPOINT_FORMAT_VERSION} = aktuell) — "
+                    "Checkpoint löschen oder mit der passenden Code-Version laden"
+                )
             saved_flag = bool(data.get("physics_v2", False))
             if saved_flag != self.physics_v2:
                 raise CheckpointIncompatibleError(
@@ -439,6 +454,27 @@ class Simulation:
                     f"{self.physics_v2} — Checkpoint löschen oder Flag angleichen"
                 )
             self.agents = data.get("agents", [])
+            if self.physics_v2:
+                # C5-Kern: v2-Brain-Formen-Guard VOR ensure_fields — sonst
+                # würde der [compat]-Rebuild fremde Checkpoints still
+                # „reparieren" (Gewichtsverlust) bzw. fremde v2-Formen später
+                # im Forward stumm crashen. Fängt auch 3a-Ära-v2-Checkpoints
+                # (Version 1 mit physics_v2=True und v1-Brains) klar ab.
+                for agent in self.agents:
+                    brain = getattr(agent, "brain", None)
+                    if brain is None:
+                        continue
+                    if (
+                        not getattr(brain, "physics_v2", False)
+                        or brain.gru.input_size != 128 + OBJ_CTX_DIM
+                        or brain.policy_mean.out_features != ACTION_SIZE_V2
+                    ):
+                        raise CheckpointIncompatibleError(
+                            f"Agent {agent.id}: Brain-Formen passen nicht zur "
+                            "v2-Architektur (Plan 3b: 29 Köpfe, 192er GRU) — "
+                            "Checkpoint stammt aus einer anderen Code-Version; "
+                            "löschen oder mit passender Version laden"
+                        )
             self.tick = data.get("tick", 0)
             self.world = data.get("world", self.world)
             # Checkpoints from before the struct-of-arrays cell storage hold
