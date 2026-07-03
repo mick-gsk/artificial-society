@@ -14,10 +14,23 @@ from artificial_society.agents.genetics import ensure_strength_gene, inherit_gen
 from artificial_society.agents.knowledge import KnowledgeGraph
 from artificial_society.agents.life_stage import get_stage_stats
 from artificial_society.agents.memory import EpisodicMemory
+from artificial_society.agents.perception_v2 import (
+    NoveltyBuckets,
+    admissible_masks,
+    build_slots,
+    resolve_slot_of,
+)
 from artificial_society.agents.theory_of_mind import TheoryOfMind
 from artificial_society.environment.herbs import available_herbs, collect_herb
 from artificial_society.environment.materials import get_vector, material_reward
-from artificial_society.environment.physics.actions import enforce_carry_budget
+from artificial_society.environment.physics.actions import (
+    do_cut,
+    do_eat,
+    do_grasp,
+    do_release,
+    do_strike,
+    enforce_carry_budget,
+)
 from artificial_society.environment.physics.body import BODY_MASS_DEFAULT_KG, Body, Hands
 from artificial_society.environment.resources import apply_consumption, clamp, maybe_build_structure
 from artificial_society.environment.structures import (
@@ -29,6 +42,7 @@ from artificial_society.environment.territory import (
     get_home_forage_bonus,
     territory_reward_for_agent,
 )
+from artificial_society.systems.causal_model import CausalModelV2
 from artificial_society.systems.culture import CausalMemory
 from artificial_society.systems.goal_stack import GoalStack
 from artificial_society.systems.goal_stack_ext import agent_tick_with_goals
@@ -187,18 +201,44 @@ def ensure_fields(agent) -> None:
         agent.body = Body(body_mass=BODY_MASS_DEFAULT_KG, strength=agent.genes.get("strength", 0.5))
     if agent.physics_v2 and agent.hands is None:
         agent.hands = Hands()
+    if agent.physics_v2:
+        # Plan 3b: v2-Brain + Neugier-Apparat idempotent nachrüsten
+        # (Checkpoint-geladene Agenten; frisch gebaute sind schon komplett).
+        if not getattr(agent.brain, "physics_v2", False):
+            print(f"[compat] Agent {agent.id}: v1-Brain im v2-Modus, rebuilding.")
+            agent.brain = Brain(plasticity=agent.genes.get("plasticity", 1.0), physics_v2=True)
+            agent.hidden_state = agent.brain.initial_hidden()
+        if getattr(agent, "causal_model", None) is None:
+            agent.causal_model = CausalModelV2(plasticity=agent.genes.get("plasticity", 1.0))
+        if getattr(agent, "_novelty_buckets", None) is None:
+            agent._novelty_buckets = NoveltyBuckets()
+        if not hasattr(agent, "_causal_pending"):
+            agent._causal_pending = None
+        if not hasattr(agent, "_causal_epistemic_pending"):
+            agent._causal_epistemic_pending = 0.0
+        if not hasattr(agent, "curiosity_last"):
+            agent.curiosity_last = {"nextslot": 0.0, "causal": 0.0, "novelty": 0.0}
 
 
 def attach_body(agent) -> None:
-    """Physik-v2-Embodiment: Body + Hände; Kraft aus dem strength-Gen (Plan 3b).
+    """Physik-v2-Embodiment: Body + Hände aus dem strength-Gen, v2-Brain,
+    Causal Model und Novelty-Buckets (Plan 3b). Zieht RNG nur im v2-Pfad.
 
-    ensure_strength_gene zieht RNG NUR hier (v2-Pfad) — nie in random_genes
-    (Golden). Die Körpermasse ist real geankert (BODY_MASS_DEFAULT_KG).
+    Das v2-Brain wird VOR inherit_weights_from gebaut (spawn_child_from_parent
+    ruft attach_body zuerst) — Eltern- und Kind-Brain sind dann form-gleich.
     """
     agent.physics_v2 = True
     ensure_strength_gene(agent.genes)
     agent.body = Body(body_mass=BODY_MASS_DEFAULT_KG, strength=agent.genes["strength"])
     agent.hands = Hands()
+    plast = agent.genes.get("plasticity", 1.0)
+    agent.brain = Brain(plasticity=plast, physics_v2=True)
+    agent.hidden_state = agent.brain.initial_hidden()
+    agent.causal_model = CausalModelV2(plasticity=plast)
+    agent._novelty_buckets = NoveltyBuckets()
+    agent._causal_pending = None
+    agent._causal_epistemic_pending = 0.0
+    agent.curiosity_last = {"nextslot": 0.0, "causal": 0.0, "novelty": 0.0}
 
 
 def _inventory_value_state(agent) -> dict:
@@ -853,6 +893,97 @@ class Agent:
             if sleep_drive < 0.20:
                 self.is_sleeping = False
 
+    def _resolve_causal_pending(self, view) -> None:
+        """C4: löst das Causal-Pending des Vortricks gegen die aktuelle
+        Wahrnehmung auf — dasselbe Objekt (id-basiert) einen Tick später.
+        Aus der Wahrnehmung gefallen ⇒ maskiert, kein Loss, Epistemik 0."""
+        self._causal_epistemic_pending = 0.0
+        pending = getattr(self, "_causal_pending", None)
+        if pending is None:
+            return
+        self._causal_pending = None
+        slot = resolve_slot_of(view, pending["target"])
+        if slot < 0:
+            return
+        out = self.causal_model.observe(
+            pending["h"],
+            pending["act"],
+            pending["embed"],
+            torch.as_tensor(view.feats[slot]),
+        )
+        self._causal_epistemic_pending = out["epistemic"]
+
+    def _execute_embodied(self, world, brain_step, view):
+        """C2/B4: Mapping des aktiven Verbs auf do_grasp/do_release/do_strike/
+        do_cut/do_eat — EINE verkörperte Aktion pro Tick, an der Position der
+        Wahrnehmung (vor primitive_move). ActionResult-Deltas gehen auf
+        energy/health; D4-Metriken (Verb-Raten, DiscoveryV2 je Agent) werden
+        an der ObjectLayer gepflegt. Kein Reward hier (C3 zahlt Physiologie)."""
+        self._causal_next_target = None
+        verb = brain_step["verb"]
+        if verb is None:
+            return None
+        layer = world.objects
+        metrics = layer.metrics
+        target_idx = brain_step["target_idx"]
+        tool_idx = brain_step["tool_idx"]
+        target = view.objs[target_idx] if target_idx >= 0 else None
+        tool = view.objs[tool_idx] if tool_idx >= 0 else None
+        if target is None:
+            noop = metrics.setdefault("verbs_noop", {})
+            noop[verb] = noop.get(verb, 0) + 1
+            return None
+        effort = brain_step["effort"]
+
+        if verb == "grasp":
+            result = do_grasp(self.body, self.hands, layer, self.pos, target)
+        elif verb == "release":
+            result = do_release(self.body, self.hands, layer, self.pos, target)
+        elif verb == "strike":
+            if tool is None:
+                return None  # act_v2 verhindert das; defensiv trotzdem No-op
+            n_discovery = len(layer.discovery.entries)
+            result = do_strike(self.body, self.hands, layer, self.pos, tool, target, effort, random)
+        elif verb == "cut":
+            n_discovery = len(layer.discovery.entries)
+            result = do_cut(self.body, self.hands, layer, self.pos, tool, target, effort)
+        elif verb == "eat":
+            result = do_eat(self.body, self.hands, layer, self.pos, target)
+        else:
+            return None
+
+        if result.energy_delta_sim:
+            self.energy = max(0.0, min(MAX_ENERGY, self.energy + result.energy_delta_sim))
+        if result.health_delta:
+            self.health = max(0.0, self.health + result.health_delta)
+            if self.health <= 0:
+                self.alive = False  # Toxin-Tod: Terminal via remove_dead (Task 15)
+
+        # D4 (Review F4): verbs_fired zählt Ausführungs-VERSUCHE — auch ok=False
+        # (z. B. target_out_of_reach nach Überlast-Drop). verbs_failed zählt die
+        # ok=False-Teilmenge separat: die Pilot-Diagnostik braucht Versuchsrate
+        # UND Erfolgsrate der Policy (Erfolge = fired − failed).
+        fired = metrics.setdefault("verbs_fired", {})
+        fired[verb] = fired.get(verb, 0) + 1
+        if not result.ok:
+            failed = metrics.setdefault("verbs_failed", {})
+            failed[verb] = failed.get(verb, 0) + 1
+        if verb in ("strike", "cut"):
+            gewachsen = len(layer.discovery.entries) - n_discovery
+            if gewachsen:
+                je_agent = metrics.setdefault("discovery_events_by_agent", {})
+                je_agent[self.id] = je_agent.get(self.id, 0) + gewachsen
+
+        # C4: das Causal-Target folgt der physischen Fortsetzung des Objekts —
+        # strike-Zerstörung: massereichstes Fragment; cut: remainder.
+        naechstes = target
+        if verb == "strike" and result.fragments:
+            naechstes = max(result.fragments, key=lambda f: f.mass)
+        elif verb == "cut" and result.remainder is not None:
+            naechstes = result.remainder
+        self._causal_next_target = naechstes
+        return result
+
     def _record_macro_if_successful(self, mode: str, reward: float) -> float:
         """
         Emergenz v3: Verfolgt Aktionssequenzen und speichert erfolgreiche
@@ -1141,22 +1272,33 @@ class Agent:
         if self.hidden_state is None:
             self.hidden_state = self.brain.initial_hidden()
 
-        self._planning_stride = (
-            2 if getattr(self, "goal_stack", None) and not self.goal_stack.is_empty() else 4
-        )
-        use_planning = tick >= getattr(self, "_next_planning_tick", 0)
-        if use_planning:
-            self._next_planning_tick = tick + self._planning_stride
+        if self.physics_v2:
+            # v2 (C1/C2/C5): Objekt-Slots wahrnehmen, Causal-Pending des
+            # Vortricks auflösen, dann Policy-Sampling OHNE Planner —
+            # plan_action/imagine_rollout sind mit der v2-Architektur
+            # inkompatibel (encoder(pred_next_obs) ohne obj_ctx; argmax).
+            view = build_slots(self, world.objects)
+            self._resolve_causal_pending(view)
+            brain_step = self.brain.act_v2(
+                features, self.hidden_state, view.feats, view.mask, admissible_masks(view)
+            )
+        else:
+            self._planning_stride = (
+                2 if getattr(self, "goal_stack", None) and not self.goal_stack.is_empty() else 4
+            )
+            use_planning = tick >= getattr(self, "_next_planning_tick", 0)
+            if use_planning:
+                self._next_planning_tick = tick + self._planning_stride
 
-        research_mode = self._need_inv_cooldown <= 0 or (
-            getattr(self, "goal_stack", None) is not None and not self.goal_stack.is_empty()
-        )
-        brain_step = self.brain.act(
-            features,
-            self.hidden_state,
-            use_planning=use_planning,
-            research_mode=research_mode,
-        )
+            research_mode = self._need_inv_cooldown <= 0 or (
+                getattr(self, "goal_stack", None) is not None and not self.goal_stack.is_empty()
+            )
+            brain_step = self.brain.act(
+                features,
+                self.hidden_state,
+                use_planning=use_planning,
+                research_mode=research_mode,
+            )
         self.hidden_state = brain_step["next_hidden"]
         action_list = brain_step["action_list"]
         action = {
@@ -1198,6 +1340,14 @@ class Agent:
                     action["move_y"] = 0.0
                     action["forage"] = 0.0
                     action["attack"] = 0.0
+
+        if self.physics_v2:
+            self._causal_next_target = None  # pro Tick frisch (auch im Schlaf)
+            if not self.is_sleeping:
+                # EINE verkörperte Aktion pro Tick (B4), ausgeführt an der
+                # Wahrnehmungs-Position (vor primitive_move — die gesampelten
+                # Zulässigkeits-Masken bleiben konsistent zur Ausführung).
+                self._execute_embodied(world, brain_step, view)
 
         self.primitive_move(world, action)
         current_cell = world.get_cell(*self.pos)
@@ -1297,16 +1447,29 @@ class Agent:
 
         cognition_mult = mods.get("cognition", 1.0)
         effective_reward = reward * cognition_mult
-        self.brain.store_transition(
-            brain_step["obs_tensor"],
-            brain_step["hidden_in"],
-            brain_step["action_tensor"],
-            brain_step["log_prob"],
-            brain_step["value"],
-            effective_reward,
-            not self.alive,
-            next_features_raw,
-        )
+        if self.physics_v2:
+            # v2-Transition (C2): Slot-Kontext + Masken + Indizes; next_view =
+            # Wahrnehmung NACH der Aktion (Task 15 nutzt sie auch für die Neugier).
+            next_view = build_slots(self, world.objects)
+            self.brain.store_transition_v2(
+                brain_step,
+                effective_reward,
+                not self.alive,
+                next_features_raw,
+                next_view.feats,
+                next_view.mask,
+            )
+        else:
+            self.brain.store_transition(
+                brain_step["obs_tensor"],
+                brain_step["hidden_in"],
+                brain_step["action_tensor"],
+                brain_step["log_prob"],
+                brain_step["value"],
+                effective_reward,
+                not self.alive,
+                next_features_raw,
+            )
 
         loss = self.brain.maybe_train()
         if loss is not None:
