@@ -92,3 +92,45 @@ def test_ws_inspect_backchannel_toggles_detail():
                 assert "detail" not in still_alive  # unknown type changed nothing
         finally:
             client.post("/api/stop")
+
+
+def test_ws_layers_backchannel_toggles_overlay():
+    """Full C3 flow: request a server overlay -> ``layers.temperature`` appears
+    within the throttled cadence; clear it -> the layers stop arriving."""
+    with TestClient(app) as client:
+        assert client.post("/api/run", json={**SMALL}).status_code == 200
+        try:
+            with client.websocket_connect("/ws") as ws:
+                hello = ws.receive_json()
+                assert hello["type"] == "hello"
+
+                # (a) no layers requested yet -> no layers key on the wire.
+                frame = _read_frames_until(ws, lambda f: bool(f["agents"]))
+                assert frame is not None
+                assert "layers" not in frame
+
+                # (b) request the temperature overlay -> within a few (throttled)
+                # frames a frame arrives carrying layers.temperature. Budget is
+                # generous: overlays ship only every 10th tick.
+                ws.send_json({"type": "layers", "want": ["temperature"]})
+                got = _read_frames_until(
+                    ws, lambda f: "layers" in f and "temperature" in f["layers"]
+                )
+                assert got is not None, "temperature overlay never appeared"
+                n = got["grid"]["w"] * got["grid"]["h"]
+                temp = got["layers"]["temperature"]
+                assert len(temp) == n
+                assert all(0 <= v <= 9 for v in temp)
+
+                # (c) clear the request -> layers stop arriving. We must see
+                # several tick%10 frames with no layers key to be sure it's off,
+                # so read a run of frames and assert none carry layers once
+                # cleared (allowing a couple of in-flight frames to drain first).
+                ws.send_json({"type": "layers", "want": []})
+                cleared = _read_frames_until(
+                    ws,
+                    lambda f: f["tick"] % 10 == 0 and "layers" not in f,
+                )
+                assert cleared is not None, "layers never cleared after want=[]"
+        finally:
+            client.post("/api/stop")

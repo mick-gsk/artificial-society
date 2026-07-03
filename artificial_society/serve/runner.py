@@ -71,6 +71,13 @@ class SimulationRunner:
         # Deliberately *not* reset by ``start()`` so registrations survive a run
         # restart (a client keeps inspecting agent N across a fresh run).
         self._inspect: dict[int, int] = {}
+        # Connection-scoped analysis-overlay requests: WS token -> the set of
+        # server-computed layer names ({"temperature","danger","disease"}) the
+        # client currently wants painted. Same lock / same "survives a run
+        # restart" contract as ``_inspect``; the worker copies the union once per
+        # tick and hands it to ``build_frame`` (which only ships the layers every
+        # 10th tick, so this is cheap even with several clients).
+        self._layers: dict[int, frozenset[str]] = {}
 
     # -- introspection ------------------------------------------------------
 
@@ -130,10 +137,25 @@ class SimulationRunner:
             else:
                 self._inspect[token] = int(agent_id)
 
+    def set_layers(self, token: int, names: list[str]) -> None:
+        """Register the analysis overlays one WS client wants server-computed.
+
+        ``names`` is the client's *full* current selection of server layers; an
+        empty list removes the token's entry entirely. The worker paints the
+        union of all clients' selections. Mirrors ``set_inspect`` (token-scoped,
+        under ``self._lock``)."""
+        with self._lock:
+            if names:
+                self._layers[token] = frozenset(str(n) for n in names)
+            else:
+                self._layers.pop(token, None)
+
     def clear_client(self, token: int) -> None:
-        """Drop a client's inspection registration on disconnect (idempotent)."""
+        """Drop a client's inspection + overlay registrations on disconnect
+        (idempotent)."""
         with self._lock:
             self._inspect.pop(token, None)
+            self._layers.pop(token, None)
 
     # -- control ------------------------------------------------------------
 
@@ -201,11 +223,17 @@ class SimulationRunner:
                     # across it, so the event loop's set_inspect never blocks on
                     # the sim thread and vice versa.
                     inspect_ids = frozenset(self._inspect.values())
+                    # Same snapshot-under-lock for the analysis-overlay union.
+                    layer_names = (
+                        frozenset().union(*self._layers.values())
+                        if self._layers
+                        else frozenset()
+                    )
                 # Build a live frame at most every FRAME_INTERVAL, and only when a
                 # dashboard is watching. build_frame is read-only and only this
                 # thread touches the sim, so it is safe outside the lock.
                 if want_frame and (time.monotonic() - self._last_frame_t) >= FRAME_INTERVAL:
-                    frame = build_frame(sim, inspect_ids)
+                    frame = build_frame(sim, inspect_ids, layer_names)
                     with self._lock:
                         self._last_frame = frame
                         self._last_frame_t = time.monotonic()

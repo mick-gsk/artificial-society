@@ -114,20 +114,34 @@ def graph_png() -> Response:
 async def _ws_reader(sock: WebSocket, token: int) -> None:
     """Back-channel: read client requests and hand them to the runner.
 
-    Runs as a sibling task to the sender loop. The only understood message today
-    is ``{"type": "inspect", "id": <int|null>}`` — ``id`` selects the agent the
-    client wants a deep ``detail`` blob for on the next frame, ``null`` clears it.
-    Unknown types are silently ignored (forward-compat: e.g. a future
-    ``"layers"`` message). Any receive/decode error (client disconnect, malformed
-    JSON) simply ends this task; it never propagates to kill the sender.
+    Runs as a sibling task to the sender loop. Understood messages:
+      * ``{"type": "inspect", "id": <int|null>}`` — ``id`` selects the agent the
+        client wants a deep ``detail`` blob for on the next frame, ``null`` clears
+        it.
+      * ``{"type": "layers", "want": [<name>, ...]}`` — the client's full current
+        selection of server-computed analysis overlays; an empty/absent list
+        clears the request. Only string names are kept and the list is capped
+        (defensive against a malformed client) before it reaches the runner.
+    Unknown types are silently ignored (forward-compat). Any receive/decode error
+    (client disconnect, malformed JSON) simply ends this task; it never
+    propagates to kill the sender.
     """
     try:
         while True:
             msg = await sock.receive_json()
             if not isinstance(msg, dict):
                 continue  # arrays/scalars aren't commands — ignore
-            if msg.get("type") == "inspect":
+            mtype = msg.get("type")
+            if mtype == "inspect":
                 runner.set_inspect(token, msg.get("id"))
+            elif mtype == "layers":
+                want = msg.get("want")
+                names = (
+                    [n for n in want if isinstance(n, str)][:8]
+                    if isinstance(want, list)
+                    else []
+                )
+                runner.set_layers(token, names)
             # other types: forward-compat no-op
     except Exception:
         # WebSocketDisconnect, JSONDecodeError, RuntimeError on a closed socket —

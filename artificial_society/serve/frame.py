@@ -455,11 +455,52 @@ def _hex(rgb: Iterable[float]) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
-def build_frame(sim, inspect_ids=frozenset()) -> dict[str, Any]:
+# --- analysis overlays (server-computed environment layers) -------------------
+#
+# On-demand, throttled scalar fields the client can paint as semi-transparent
+# heat-maps to explain *why* agents avoid a region. Each is quantized to a
+# single 0..9 nibble per cell (row-major, same length/order as ``cells.food``)
+# so a whole overlay stays tiny on the wire. Only shipped when a client asked
+# for the layer AND on a coarse tick cadence — never per frame — so steady-state
+# frames stay byte-identical to before when nobody requested a layer.
+_LAYER_REFRESH_TICKS = 10  # ship requested overlays only every Nth tick
+
+# Layer name -> the ``world.F`` field it reads (all present since Physik v2).
+_LAYER_FIELD: dict[str, str] = {
+    "temperature": "temperature",
+    "danger": "danger",
+    "disease": "disease",
+}
+# 0..100 fields quantize by /10; temperature (°C, clipped to [-12, 52]) maps
+# -20..52 -> 0..9 via (t + 20) / 8. Unlisted names use the 0..100 rule.
+_LAYER_TEMPERATURE = "temperature"
+
+
+def _quantize_layer(name: str, field) -> list[int]:
+    """Quantize a ``world.F`` scalar field to a flat row-major list of 0..9 ints."""
+    if name == _LAYER_TEMPERATURE:
+        q = np.clip(np.rint((field + 20.0) / 8.0), 0, 9)
+    else:  # 0..100 fields (danger, disease)
+        q = np.clip(np.rint(field / 10.0), 0, 9)
+    return q.astype(int).ravel().tolist()
+
+
+def build_frame(sim, inspect_ids=frozenset(), layer_names=frozenset()) -> dict[str, Any]:
     """Read-only snapshot of the spatial state for one render tick.
 
     ``inspect_ids`` (a set of agent ids): for each *living* inspected agent a
     deep ``detail`` blob is attached; when empty the ``detail`` key is omitted.
+
+    ``layer_names`` (a set of analysis-overlay names ⊆ {"temperature","danger",
+    "disease"}): when non-empty AND ``sim.tick % 10 == 0``, a ``layers`` key is
+    attached — ``{name: [w*h ints 0..9]}`` (row-major, same order as ``cells``)
+    for each requested, known, present field. 0..100 fields (danger/disease)
+    quantize via ``clip(rint(field/10), 0, 9)``; temperature (°C) via
+    ``clip(rint((t+20)/8), 0, 9)``. Unknown names and absent fields are silently
+    dropped; the ``layers`` key is omitted entirely when nothing survives or
+    ``layer_names`` is empty — so a frame with no layer request is byte-identical
+    to a v2 frame. The overlays are throttled to every 10th tick; the client
+    caches the last array and keeps painting it between refreshes.
 
     Layout (all JSON-native):
         ``tick``      : int
@@ -625,5 +666,21 @@ def build_frame(sim, inspect_ids=frozenset()) -> dict[str, Any]:
         }
         if detail:
             frame["detail"] = detail
+
+    # --- analysis overlays: throttled, only when requested ------------------
+    # Gated on tick%10 AND a non-empty request so a no-layer frame stays
+    # byte-identical to a plain v2 frame (the client caches between refreshes).
+    if layer_names and sim.tick % _LAYER_REFRESH_TICKS == 0 and hasattr(world, "F"):
+        layers: dict[str, list[int]] = {}
+        for name in layer_names:
+            field_key = _LAYER_FIELD.get(name)  # unknown name -> None -> skip
+            if field_key is None:
+                continue
+            field = world.F.get(field_key)
+            if field is None:  # field absent on an older world -> drop the name
+                continue
+            layers[name] = _quantize_layer(name, field)
+        if layers:  # omit the key entirely when nothing survived
+            frame["layers"] = layers
 
     return frame

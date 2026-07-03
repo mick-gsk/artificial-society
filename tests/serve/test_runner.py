@@ -120,3 +120,63 @@ def test_start_preserves_inspect_registrations():
     r.start({**SMALL, "ticks": 3})
     assert _wait(lambda: r.snapshot()["status"] == "finished"), r.snapshot()
     assert _inspect_union(r) == {3, 4}
+
+
+def _layer_union(r):
+    """The set of overlay names the worker would pass to build_frame right now."""
+    with r._lock:
+        return frozenset().union(*r._layers.values()) if r._layers else frozenset()
+
+
+def test_layers_registry_union_and_clear():
+    r = SimulationRunner()
+    assert _layer_union(r) == frozenset()
+
+    r.set_layers(1, ["temperature"])
+    r.set_layers(2, ["danger", "disease"])
+    assert _layer_union(r) == {"temperature", "danger", "disease"}
+
+    # A new selection *replaces* a token's full set (not a merge).
+    r.set_layers(1, ["disease"])
+    assert _layer_union(r) == {"danger", "disease"}
+
+    # An empty list removes that token's entry entirely.
+    r.set_layers(2, [])
+    assert _layer_union(r) == {"disease"}
+
+    # clear_client (disconnect) drops the remaining registration.
+    r.clear_client(1)
+    assert _layer_union(r) == frozenset()
+
+    # clear_client is idempotent on unknown/known tokens.
+    r.clear_client(1)
+    r.clear_client(999)
+    assert _layer_union(r) == frozenset()
+
+
+def test_two_clients_selecting_overlapping_layers_union():
+    r = SimulationRunner()
+    r.set_layers(1, ["danger", "temperature"])
+    r.set_layers(2, ["danger", "disease"])
+    assert _layer_union(r) == {"danger", "temperature", "disease"}
+    # one client leaving still leaves the layers the other still wants
+    r.clear_client(1)
+    assert _layer_union(r) == {"danger", "disease"}
+
+
+def test_clear_client_drops_both_inspect_and_layers():
+    r = SimulationRunner()
+    r.set_inspect(5, 3)
+    r.set_layers(5, ["danger"])
+    r.clear_client(5)
+    assert _inspect_union(r) == frozenset()
+    assert _layer_union(r) == frozenset()
+
+
+def test_start_preserves_layer_registrations():
+    r = SimulationRunner()
+    r.set_layers(1, ["danger"])
+    r.set_layers(2, ["temperature"])
+    r.start({**SMALL, "ticks": 3})
+    assert _wait(lambda: r.snapshot()["status"] == "finished"), r.snapshot()
+    assert _layer_union(r) == {"danger", "temperature"}
