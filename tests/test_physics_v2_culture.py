@@ -64,3 +64,84 @@ def test_v2_kind_erbt_kein_resource_memory():
     parent.memory.resource_memory = [(2, 2), (3, 3), (4, 4)]
     child = sim.spawn_child_from_parent(parent, dict(parent.genes))
     assert child.memory.resource_memory == [], "resource_memory vererbt (A10 nicht gegated)"
+
+
+import ast
+import inspect
+import textwrap
+
+from artificial_society.systems.evolution import EvolutionSystem
+
+
+def test_spawn_child_wird_nie_mit_parent_aufgerufen():
+    """A3–A6 (ToM/Knowledge/EmotionalMemory/world_memory) stehen in
+    Agent.spawn_child unter `if parent is not None`; make_child ruft es ohne
+    parent. Schlüge jemand parent= durch, würden diese Pfade schlagartig live
+    und bräuchten ein parent.physics_v2-Gate. (Substring-Check scheidet aus:
+    die Signatur enthält `other_parent=None`, und "parent=" ist Substring von
+    "other_parent=" → AST-basiert prüfen.)"""
+    src = textwrap.dedent(inspect.getsource(EvolutionSystem.make_child))
+    calls = [
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "spawn_child"
+    ]
+    assert calls, "make_child ruft Agent.spawn_child nicht mehr auf?"
+    for call in calls:
+        assert "parent" not in {kw.arg for kw in call.keywords}, (
+            "make_child reicht parent= durch — A3–A6 wären live!"
+        )
+        assert len(call.args) <= 6  # parent ist der 7. Positionsparameter
+
+
+def test_latente_inherit_from_methoden_feuern_nicht_bei_geburt():
+    """StrategySystem.inherit_from / EpisodicStrategyMemory.inherit_from sind
+    uncalled — Agenten tragen die Attribute nicht. Wächter gegen versehentliches
+    Verdrahten."""
+    sim = _v2_sim()
+    a = sim.agents[0]
+    assert not hasattr(a, "strategy")
+    assert not hasattr(a, "strategy_memory")
+    assert not hasattr(a, "episodic_strategy")
+
+
+def test_v2_kind_erbt_weiter_gene_und_trust_prior():
+    sim = _v2_sim()
+    parent = sim.agents[0]
+    parent.tribe_id = 1  # frisches Sim hat tribe_id=None → trust-Zweig feuerte nie
+    # strength aus den übergebenen Genen entfernen → prüft den v2-Pfad
+    # (inherit_strength_gene) echt, statt tautologisch die Dict-Kopie
+    genes = dict(parent.genes)
+    genes.pop("strength", None)
+    child = sim.spawn_child_from_parent(parent, genes)
+    assert "strength" in child.genes, "strength-Gen wurde nicht via v2-Pfad ergänzt"
+    # Verwandtschafts-Prior bleibt (fester Wert, kein Lamarck)
+    assert child.trust.get(parent.id) == 0.4
+
+
+def test_lebzeit_imitation_bleibt_intakt():
+    """A2 (Brain.imitate_from) ist der Lebzeit-Kanal — vom A1-Gating unberührt."""
+    sim = _v2_sim()
+    a, b = sim.agents[0], sim.agents[1]
+    before = [p.detach().clone() for _, p in a.brain.named_parameters()]
+    a.brain.imitate_from(b.brain, strength=0.5)
+    after = [p.detach().clone() for _, p in a.brain.named_parameters()]
+    diffs = [float((x - y).abs().max()) for x, y in zip(after, before) if x.shape == y.shape]
+    assert max(diffs) > 0.0, "imitate_from wirkt nicht mehr — Lebzeit-Kanal beschädigt"
+
+
+import math
+
+
+def test_v2_geburten_smoke_nan_frei():
+    """Kurzer v2-Lauf mit garantierter Geburt bleibt NaN-frei (Sanity nach dem Umbau)."""
+    sim = _v2_sim()
+    # Geburt erzwingen (der reguläre Caller extendet sim.agents selbst; hier manuell)
+    sim.agents.append(sim.spawn_child_from_parent(sim.agents[0], dict(sim.agents[0].genes)))
+    for _ in range(40):
+        sim.step()
+    assert len(sim.agents) > 0
+    assert all(math.isfinite(float(a.last_reward)) for a in sim.agents)
+    assert all(not torch.isnan(a.hidden_state).any() for a in sim.agents)
