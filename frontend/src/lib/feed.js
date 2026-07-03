@@ -242,53 +242,67 @@ export function createFeedDiffer(getSelectedId = () => null) {
       // — the frame schema cannot tell success from abandonment (gl is simply
       // whatever sits on top of the goal stack), so we deliberately use one
       // honest wording rather than inventing a success/failure distinction.
+      const goalCounter = { n: 0 };
       for (const a of frame.agents) {
         const cur = a.gl || null;
         const prev = prevGoal.get(a.id) ?? null;
         if (cur === prev) continue;
         if (cur && cur !== prev) {
           const name = PROP_DE[cur] ?? `Ziel ${cur}`;
-          out.push({
-            tick,
-            icon: "◇",
-            cls: "goal",
-            text: `Agent ${a.id} nimmt sich vor: ${name}`,
-            ids: [a.id],
-          });
+          pushCapped(
+            {
+              tick,
+              icon: "◇",
+              cls: "goal",
+              text: `Agent ${a.id} nimmt sich vor: ${name}`,
+              ids: [a.id],
+            },
+            goalCounter,
+          );
         } else if (!cur && prev) {
           const name = PROP_DE[prev] ?? `Ziel ${prev}`;
-          out.push({
-            tick,
-            icon: "◈",
-            cls: "goal",
-            text: `Agent ${a.id} beendet Vorhaben: ${name}`,
-            ids: [a.id],
-          });
+          pushCapped(
+            {
+              tick,
+              icon: "◈",
+              cls: "goal",
+              text: `Agent ${a.id} beendet Vorhaben: ${name}`,
+              ids: [a.id],
+            },
+            goalCounter,
+          );
         }
         if (cur) prevGoal.set(a.id, cur);
         else prevGoal.delete(a.id);
       }
 
       // sickness transitions (fl bit0)
+      const sickCounter = { n: 0 };
       for (const a of frame.agents) {
         const sick = !!(a.fl & 1);
         const was = prevSick.get(a.id) ?? false;
         if (sick && !was) {
-          out.push({
-            tick,
-            icon: "☣",
-            cls: "sick",
-            text: `Agent ${a.id} erkrankt`,
-            ids: [a.id],
-          });
+          pushCapped(
+            {
+              tick,
+              icon: "☣",
+              cls: "sick",
+              text: `Agent ${a.id} erkrankt`,
+              ids: [a.id],
+            },
+            sickCounter,
+          );
         } else if (!sick && was) {
-          out.push({
-            tick,
-            icon: "✚",
-            cls: "sick",
-            text: `Agent ${a.id} genesen`,
-            ids: [a.id],
-          });
+          pushCapped(
+            {
+              tick,
+              icon: "✚",
+              cls: "sick",
+              text: `Agent ${a.id} genesen`,
+              ids: [a.id],
+            },
+            sickCounter,
+          );
         }
         prevSick.set(a.id, sick);
       }

@@ -122,9 +122,13 @@ async def _ws_reader(sock: WebSocket, token: int) -> None:
         selection of server-computed analysis overlays; an empty/absent list
         clears the request. Only string names are kept and the list is capped
         (defensive against a malformed client) before it reaches the runner.
-    Unknown types are silently ignored (forward-compat). Any receive/decode error
-    (client disconnect, malformed JSON) simply ends this task; it never
-    propagates to kill the sender.
+    Unknown types are silently ignored (forward-compat). A malformed *payload*
+    for an otherwise-understood type (e.g. a non-numeric ``id``) must not kill
+    the reader — it's a client bug, not a transport failure — so per-message
+    dispatch errors (``TypeError``/``ValueError``, e.g. from ``int(agent_id)``)
+    are caught and the loop just continues to the next message. Any
+    receive/decode error (client disconnect, malformed JSON on a closed socket)
+    still simply ends this task; it never propagates to kill the sender.
     """
     try:
         while True:
@@ -132,17 +136,24 @@ async def _ws_reader(sock: WebSocket, token: int) -> None:
             if not isinstance(msg, dict):
                 continue  # arrays/scalars aren't commands — ignore
             mtype = msg.get("type")
-            if mtype == "inspect":
-                runner.set_inspect(token, msg.get("id"))
-            elif mtype == "layers":
-                want = msg.get("want")
-                names = (
-                    [n for n in want if isinstance(n, str)][:8]
-                    if isinstance(want, list)
-                    else []
-                )
-                runner.set_layers(token, names)
-            # other types: forward-compat no-op
+            try:
+                if mtype == "inspect":
+                    runner.set_inspect(token, msg.get("id"))
+                elif mtype == "layers":
+                    want = msg.get("want")
+                    names = (
+                        [n for n in want if isinstance(n, str)][:8]
+                        if isinstance(want, list)
+                        else []
+                    )
+                    runner.set_layers(token, names)
+                # other types: forward-compat no-op
+            except (TypeError, ValueError):
+                # malformed payload for an understood type (e.g. a non-numeric
+                # inspect id) — a client bug, not a transport failure; skip
+                # this message and keep the reader (and thus inspect/layers)
+                # alive for the rest of the connection.
+                continue
     except Exception:
         # WebSocketDisconnect, JSONDecodeError, RuntimeError on a closed socket —
         # end the reader quietly; the finally in the handler does the cleanup.

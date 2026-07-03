@@ -94,6 +94,34 @@ def test_ws_inspect_backchannel_toggles_detail():
             client.post("/api/stop")
 
 
+def test_ws_malformed_inspect_id_does_not_kill_reader():
+    """A malformed inspect id (``int("abc")`` raises) must not end the reader
+    task silently — a subsequent valid inspect request must still work."""
+    with TestClient(app) as client:
+        assert client.post("/api/run", json={**SMALL}).status_code == 200
+        try:
+            with client.websocket_connect("/ws") as ws:
+                hello = ws.receive_json()
+                assert hello["type"] == "hello"
+
+                frame = _read_frames_until(ws, lambda f: bool(f["agents"]))
+                assert frame is not None, "no frame with agents arrived"
+                target_id = frame["agents"][0]["id"]
+
+                # malformed payload: non-numeric id -> int() raises ValueError
+                # inside the reader's dispatch; this must be swallowed, not fatal.
+                ws.send_json({"type": "inspect", "id": "abc"})
+
+                # the reader must still be alive: a valid inspect request right
+                # after must still produce a detail blob.
+                ws.send_json({"type": "inspect", "id": target_id})
+                got = _read_frames_until(ws, lambda f: "detail" in f)
+                assert got is not None, "reader died after malformed inspect id"
+                assert str(target_id) in got["detail"]
+        finally:
+            client.post("/api/stop")
+
+
 def test_ws_layers_backchannel_toggles_overlay():
     """Full C3 flow: request a server overlay -> ``layers.temperature`` appears
     within the throttled cadence; clear it -> the layers stop arriving."""

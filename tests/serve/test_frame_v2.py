@@ -159,6 +159,35 @@ def test_goal_fields_in_frame_when_pushed():
     assert ad["gy"] == 3
 
 
+def test_goal_and_pa_zero_values_preserved_not_omitted():
+    """gx/gy/tg/pa use ``is not None`` guards so legitimate zeros stay on the
+    wire — a refactor to a truthiness check (``if gx:``) would silently drop
+    them. Pin target (0, 0), a last_action_target of 0, and a parent_id of 0."""
+    sim = _sim()
+    a = sim.agents[0]
+    a.goal_stack = GoalStack()
+    a.goal_stack.push(
+        SubGoal(
+            action="strike",
+            target_x=0,
+            target_y=0,
+            max_ticks=20,
+            ticks_spent=4,
+            label="need_sharpness",
+        )
+    )
+    a.last_action_target = 0
+    a.parent_id = 0
+    f = build_frame(sim)
+    ad = next(x for x in f["agents"] if x["id"] == a.id)
+    assert ad["gx"] == 0
+    assert ad["gy"] == 0
+    assert ad["tg"] == 0
+    assert ad["pa"] == 0
+    for k in ("gx", "gy", "tg", "pa"):
+        assert k in ad, k
+
+
 def test_goal_fields_absent_without_goal():
     sim = _sim()
     a = sim.agents[0]

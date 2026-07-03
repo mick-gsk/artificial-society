@@ -198,6 +198,43 @@ test("without a selection, cooldown-suppressed fights stay suppressed (no bypass
   assert.equal(fight, undefined);
 });
 
+test("personalOnly bypass: goal-start entries beyond the per-tick cap are dropped, but the selected agent's goal entry still appears (flagged personalOnly)", () => {
+  let selected = 106;
+  const diff = createFeedDiffer(() => selected);
+  // baseline: no agent has a goal yet
+  const before = Array.from({ length: 8 }, (_, i) => ({ id: 100 + i, x: 0, y: 0 }));
+  diff(frame(0, before));
+  // 8 agents simultaneously start a goal in one tick (MAX_PER_TICK=6); id 106
+  // is the 7th, beyond the cap
+  const withGoals = before.map((a) => ({ ...a, gl: 3 }));
+  const out = diff(frame(1, withGoals));
+  const goals = out.filter((e) => e.cls === "goal");
+  // 6 capped + 1 bypass for the selected agent = 7
+  assert.equal(goals.length, 7);
+  const mine = goals.find((e) => e.ids.includes(106));
+  assert.ok(mine, "the selected agent's goal entry must be present");
+  assert.equal(mine.personalOnly, true);
+  const cappedOnes = goals.filter((e) => !e.ids.includes(106));
+  assert.ok(cappedOnes.every((e) => !e.personalOnly));
+});
+
+test("personalOnly bypass: sickness entries beyond the per-tick cap are dropped, but the selected agent's sickness entry still appears (flagged personalOnly)", () => {
+  let selected = 106;
+  const diff = createFeedDiffer(() => selected);
+  const before = Array.from({ length: 8 }, (_, i) => ({ id: 100 + i, x: 0, y: 0, fl: 0 }));
+  diff(frame(0, before));
+  // 8 agents fall sick simultaneously (MAX_PER_TICK=6); id 106 is the 7th
+  const sick = before.map((a) => ({ ...a, fl: 1 }));
+  const out = diff(frame(1, sick));
+  const sickEntries = out.filter((e) => e.cls === "sick");
+  assert.equal(sickEntries.length, 7);
+  const mine = sickEntries.find((e) => e.ids.includes(106));
+  assert.ok(mine, "the selected agent's sickness entry must be present");
+  assert.equal(mine.personalOnly, true);
+  const cappedOnes = sickEntries.filter((e) => !e.ids.includes(106));
+  assert.ok(cappedOnes.every((e) => !e.personalOnly));
+});
+
 test("world events (structures, tech, tribes, weather) always carry an empty ids array", () => {
   const diff = createFeedDiffer();
   diff(frame(0, [], { structures: [], stats: { technologies: 0, tribes: 0 } }));
