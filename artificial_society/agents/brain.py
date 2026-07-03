@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -324,6 +325,147 @@ class Brain(nn.Module):
         std = torch.exp(log_std)
         value = self.value_head(next_hidden).squeeze(-1)
         return mean, std, value, next_hidden, embeds, attn
+
+    # ------------------------------------------------------------------
+    # Physik v2 (Plan 3b): Aktions-Sampling mit kategorialer Slot-Auswahl (C2)
+    # ------------------------------------------------------------------
+    def _continuous_log_prob(self, mean, std, action_tensor):
+        """Gemeinsamer log-prob-Pfad für Sampling UND Retraining (bitgleiche
+        Reproduktion, D3): identischer atanh-Transform wie evaluate_actions.
+        v2: research_drive (Dim 6) ist aus der Summe ausgenommen (Spec C2)."""
+        dist = torch.distributions.Normal(mean, std)
+        clipped = torch.clamp(action_tensor, -0.999, 0.999)
+        raw = 0.5 * torch.log((1 + clipped) / (1 - clipped))
+        per_dim = dist.log_prob(raw) - torch.log(1 - clipped.pow(2) + 1e-6)
+        if self.physics_v2:
+            keep = torch.ones(per_dim.shape[-1], dtype=torch.bool, device=per_dim.device)
+            keep[RESEARCH_DRIVE_DIM] = False
+            per_dim = per_dim[..., keep]
+        return per_dim.sum(dim=-1), dist
+
+    def _slot_logits(self, query, embeds, admissible):
+        """Auswahl-Logits = query · W_sel(embed_i) / √8 über zulässige Slots (C2)."""
+        keys = self.w_sel(embeds)  # (B, 10, 8)
+        logits = torch.einsum("bq,bsq->bs", query, keys) / math.sqrt(QUERY_DIM)
+        return logits.masked_fill(~admissible, -1e9)
+
+    @staticmethod
+    def _categorical_terms(logits, idx):
+        """(log-prob des gezogenen Slots, Entropie der Kategorial-Verteilung).
+        Unzulässige Slots tragen p=0 exakt (softmax von −1e9 unterläuft zu 0)."""
+        logp = torch.log_softmax(logits, dim=-1)
+        probs = torch.softmax(logits, dim=-1)
+        entropy = -(probs * logp).sum(dim=-1)
+        chosen = logp.gather(-1, idx.unsqueeze(-1)).squeeze(-1)
+        return chosen, entropy
+
+    @staticmethod
+    def _verb_feasible(verb, grasp_t, held_t, target_t) -> bool:
+        """Machbarkeits-Vorprüfung je Verb: entweder werden BEIDE Kategorial-
+        Terme gezogen oder keiner (leere zulässige Menge ⇒ No-op ohne
+        log-prob-Anteil, Spec C2)."""
+        n_held = int(held_t.sum())
+        n_ground_atpos = int((target_t & ~held_t).sum())
+        if verb == "grasp":
+            return bool(grasp_t.any())
+        if verb == "release":
+            return n_held >= 1
+        if verb == "eat":
+            return bool(target_t.any())
+        if verb == "strike":
+            # Schläger MUSS aus der Hand kommen; Ziel = das andere Gehaltene
+            # oder Boden an eigener Position.
+            return n_held >= 1 and (n_ground_atpos >= 1 or n_held >= 2)
+        if verb == "cut":
+            if n_held >= 1:
+                return n_ground_atpos >= 1 or n_held >= 2
+            return n_ground_atpos >= 1  # bloße Hand
+        return False
+
+    def act_v2(self, features, hidden_state, slot_feats, slot_mask, masks):
+        """v2-Aktionswahl (C2): Sampling, nie Argmax; Planner deaktiviert (C5).
+        masks: dict aus perception_v2.admissible_masks ('grasp'/'held'/'target',
+        np-bool (10,)). Rückgabe-Transitionen tragen Maske + Slot-Index, damit
+        evaluate_actions_v2 exakt dieselbe Konditionierung reproduziert."""
+        with torch.no_grad():
+            obs = torch.tensor(features, dtype=torch.float32, device=device).unsqueeze(0)
+            hidden = hidden_state.unsqueeze(0)
+            feats = torch.as_tensor(slot_feats, dtype=torch.float32, device=device).unsqueeze(0)
+            smask = torch.as_tensor(
+                np.asarray(slot_mask), dtype=torch.bool, device=device
+            ).unsqueeze(0)
+            mean, std, value, next_hidden, embeds, attn = self.forward_v2(obs, hidden, feats, smask)
+
+            dist = torch.distributions.Normal(mean, std)
+            action = torch.tanh(dist.rsample())
+            log_prob, _ = self._continuous_log_prob(mean, std, action)
+            entropy = dist.entropy().sum(dim=-1)
+            a = action.squeeze(0)
+
+            grasp_t = torch.as_tensor(np.asarray(masks["grasp"]), dtype=torch.bool, device=device)
+            held_t = torch.as_tensor(np.asarray(masks["held"]), dtype=torch.bool, device=device)
+            target_t = torch.as_tensor(np.asarray(masks["target"]), dtype=torch.bool, device=device)
+
+            verbs = a[VERB_SLICE]
+            verb = None
+            if float(verbs.max()) > VERB_THRESHOLD:
+                kandidat = VERBS_V2[int(torch.argmax(verbs))]
+                if self._verb_feasible(kandidat, grasp_t, held_t, target_t):
+                    verb = kandidat
+            effort = float((a[EFFORT_DIM] + 1.0) * 0.5)
+
+            tool_idx = -1
+            target_idx = -1
+            tool_mask_used = torch.zeros_like(smask)
+            target_mask_used = torch.zeros_like(smask)
+            if verb in ("strike", "cut") and bool(held_t.any()):
+                tool_mask_used = held_t.unsqueeze(0)
+                logits = self._slot_logits(a[TOOL_QUERY_SLICE].unsqueeze(0), embeds, tool_mask_used)
+                tool_idx = int(torch.distributions.Categorical(logits=logits).sample())
+                lp, _ent = self._categorical_terms(logits, torch.tensor([tool_idx], device=device))
+                log_prob = log_prob + lp
+            if verb is not None:
+                base = {
+                    "grasp": grasp_t,
+                    "release": held_t,
+                    "strike": target_t,
+                    "cut": target_t,
+                    "eat": target_t,
+                }[verb].clone()
+                if tool_idx >= 0:
+                    base[tool_idx] = False  # Ziel ≠ Werkzeug
+                target_mask_used = base.unsqueeze(0)
+                logits = self._slot_logits(
+                    a[TARGET_QUERY_SLICE].unsqueeze(0), embeds, target_mask_used
+                )
+                target_idx = int(torch.distributions.Categorical(logits=logits).sample())
+                lp, _ent = self._categorical_terms(
+                    logits, torch.tensor([target_idx], device=device)
+                )
+                log_prob = log_prob + lp
+
+            action_list = a.detach().tolist()
+            return {
+                "obs_tensor": obs,
+                "hidden_in": hidden.detach(),
+                "value": value.detach(),
+                "next_hidden": next_hidden.squeeze(0).detach(),
+                "action_tensor": action.detach(),
+                "action_list": action_list,
+                "log_prob": log_prob.detach(),
+                "entropy": entropy.detach(),
+                "slot_feats": feats.detach(),
+                "slot_mask": smask.detach(),
+                "verb": verb,
+                "effort": effort,
+                "target_idx": target_idx,
+                "tool_idx": tool_idx,
+                "target_mask": target_mask_used.detach(),
+                "tool_mask": tool_mask_used.detach(),
+                "slot_embeds": embeds.squeeze(0).detach(),
+                "attn": attn.squeeze(0).detach(),
+                "research_drive": float(action_list[RESEARCH_DRIVE_DIM]),
+            }
 
     def predict_world(self, hidden_tensor, action_tensor):
         # Beide Tensoren auf 2D normalisieren, damit torch.cat immer funktioniert
