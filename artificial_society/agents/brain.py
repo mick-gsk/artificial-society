@@ -538,6 +538,84 @@ class Brain(nn.Module):
             ent_new = ent_new + ent_full  # Kategorial-Entropie → 0.01-Gruppe (C2)
         return log_prob, ent_old, ent_new, value, next_hidden
 
+    # ------------------------------------------------------------------
+    # Physik v2 (Plan 3b): World-Model + nextslot_err (Neugier-Quelle 1, C4.1)
+    # ------------------------------------------------------------------
+    def predict_world_v2(self, hidden_tensor, action_tensor):
+        """v2-World-Model: prädiziert next-obs (57) UND die rohen Slot-Features
+        (10×17 = 170) des nächsten Ticks — NICHT obj_ctx (das mit den eigenen
+        Gewichten wandert und nie konvergiert, Spec C4.1)."""
+        hidden_tensor = _ensure_2d(hidden_tensor)
+        action_tensor = _ensure_2d(action_tensor)
+        z = self.world_fc(torch.cat([hidden_tensor, action_tensor], dim=-1))
+        next_obs = torch.tanh(self.next_obs_head(z))
+        next_slots = torch.tanh(self.next_slots_head(z))  # Features ∈ [−1,1] (dx/4, dy/4)
+        reward = self.reward_head(z).squeeze(-1)
+        return next_obs, next_slots, reward
+
+    def _curio_target(self, next_obs_t, next_slot_feats_t, next_slot_mask_t):
+        """(target (203,), valid (203,)): 33 eingeschlossene Obs-Dims ⊕ 170
+        Slot-Dims; Slot-Dims sind nur gültig, wo der Slot belegt ist."""
+        incl = torch.tensor(OBS_TARGET_INCLUDED_IDX, dtype=torch.long, device=device)
+        target = torch.cat([next_obs_t[incl], next_slot_feats_t.reshape(-1)])
+        valid = torch.cat(
+            [
+                torch.ones(len(OBS_TARGET_INCLUDED_IDX), dtype=torch.bool, device=device),
+                next_slot_mask_t.unsqueeze(-1).expand(OBJ_SLOTS, SLOT_FEATS_V2).reshape(-1),
+            ]
+        )
+        return target, valid
+
+    def nextslot_error(self, brain_step, next_obs, next_slot_feats, next_slot_mask):
+        """Neugier-Quelle 1 (C4.1): Vorhersagefehler auf den rohen, maskierten
+        Slot-Features + den bereinigten Obs-Dims des nächsten Ticks.
+        Normalisierung PER DIM mit laufendem Mean+Std (EMA, Momentum 0.01) —
+        nicht global, nicht nur Std. Der bisherige rew_err-Term (v1,
+        pred_reward.abs() — gar kein Fehlerterm) ist ersatzlos gestrichen."""
+        with torch.no_grad():
+            pred_obs, pred_slots, _ = self.predict_world_v2(
+                brain_step["next_hidden"], brain_step["action_tensor"]
+            )
+            next_obs_t = torch.tensor(next_obs, dtype=torch.float32, device=device)
+            feats_t = torch.as_tensor(
+                np.asarray(next_slot_feats), dtype=torch.float32, device=device
+            )
+            mask_t = torch.as_tensor(np.asarray(next_slot_mask), dtype=torch.bool, device=device)
+            target, valid = self._curio_target(next_obs_t, feats_t, mask_t)
+            incl = torch.tensor(OBS_TARGET_INCLUDED_IDX, dtype=torch.long, device=device)
+            pred = torch.cat([pred_obs.squeeze(0)[incl], pred_slots.squeeze(0)])
+            err = pred - target
+            m = CURIO_STAT_MOMENTUM
+            new_mean = torch.where(
+                valid, (1.0 - m) * self.curio_err_mean + m * err, self.curio_err_mean
+            )
+            new_var = torch.where(
+                valid,
+                (1.0 - m) * self.curio_err_var + m * (err - new_mean).pow(2),
+                self.curio_err_var,
+            )
+            self.curio_err_mean.copy_(new_mean)
+            self.curio_err_var.copy_(new_var)
+            z = (err - new_mean) / (new_var.sqrt() + 1e-6)
+            return float(z[valid].pow(2).mean())
+
+    def _world_loss_v2(
+        self, next_hidden, actions, next_obs, next_slot_feats, next_slot_mask, rewards
+    ):
+        """Trainings-Loss des v2-World-Models: MSE auf den 33 eingeschlossenen
+        Obs-Dims + maskierte MSE auf den Slot-Dims + Reward-Head-MSE."""
+        pred_obs, pred_slots, pred_rew = self.predict_world_v2(next_hidden, actions)
+        incl = torch.tensor(OBS_TARGET_INCLUDED_IDX, dtype=torch.long, device=device)
+        obs_loss = F.mse_loss(pred_obs[:, incl], next_obs[:, incl])
+        b = next_slot_feats.shape[0]
+        flach = next_slot_feats.reshape(b, -1)
+        maske = (
+            next_slot_mask.unsqueeze(-1).expand(b, OBJ_SLOTS, SLOT_FEATS_V2).reshape(b, -1).float()
+        )
+        slot_loss = ((pred_slots - flach).pow(2) * maske).sum() / maske.sum().clamp(min=1.0)
+        rew_loss = F.mse_loss(pred_rew.view(-1), rewards)
+        return obs_loss + slot_loss + rew_loss
+
     def predict_world(self, hidden_tensor, action_tensor):
         # Beide Tensoren auf 2D normalisieren, damit torch.cat immer funktioniert
         hidden_tensor = _ensure_2d(hidden_tensor)
