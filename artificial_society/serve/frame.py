@@ -465,7 +465,17 @@ def build_frame(sim, inspect_ids=frozenset()) -> dict[str, Any]:
         ``tick``      : int
         ``grid``      : {w, h}
         ``daylight``  : float 0..1 (world.day_state light level)
-        ``cells``     : {food[w*h], water[w*h], biome[w*h]} — row-major, quantized ints
+        ``cells``     : {food[w*h], water[w*h], biome[w*h], moist[w*h],
+                        ash[w*h]?} — row-major, quantized ints. ``moist`` is
+                        ``world.F["moisture"]`` (0..100), sent every frame (it
+                        shifts with weather). ``ash`` is ``world.F["ash"]``
+                        (0..100), sent only every 5th tick AND only while any
+                        cell still holds visible ash (``max() > 0.5``); the key
+                        is omitted otherwise so steady-state frames stay
+                        byte-identical — the client caches the last array and
+                        keeps painting it until a fresh one arrives. Both keys
+                        are omitted entirely on worlds that predate these
+                        fields (defensive ``getattr``/``in`` checks).
         ``structures``: [{x, y, k}] sparse; k ∈ {camp, farm, well}
         ``items``     : flat [k, x, y, …] sparse ground materials; k = ITEM_* class
         ``agents``    : [{id, x, y, e, hp, st, act, tl, cg, tribe, col}] plus, per
@@ -492,6 +502,22 @@ def build_frame(sim, inspect_ids=frozenset()) -> dict[str, Any]:
     # vectorized ops instead of 2*w*h per-cell view reads at ~20 Hz.
     food = np.rint(world.F["food"]).astype(int).ravel().tolist()
     water = np.rint(world.F["water"]).astype(int).ravel().tolist()
+
+    # Moisture/ash (Physik v2 ground fields): defensive against older worlds
+    # that predate these keys — a missing field just drops from the frame
+    # rather than raising, mirroring the getattr-defensive style used above.
+    moisture_arr = world.F.get("moisture") if hasattr(world, "F") else None
+    moist = (
+        np.rint(moisture_arr).astype(int).ravel().tolist()
+        if moisture_arr is not None
+        else None
+    )
+
+    ash_arr = world.F.get("ash") if hasattr(world, "F") else None
+    ash = None
+    if ash_arr is not None and sim.tick % 5 == 0 and float(ash_arr.max()) > 0.5:
+        ash = np.rint(ash_arr).astype(int).ravel().tolist()
+
     biome_idx = _BIOME_IDX_CACHE.get(world)
     if biome_idx is None:
         biome_idx = [
@@ -586,6 +612,10 @@ def build_frame(sim, inspect_ids=frozenset()) -> dict[str, Any]:
         "events": events,
         "stats": dict(getattr(sim.stats, "last", {})),
     }
+    if moist is not None:
+        frame["cells"]["moist"] = moist
+    if ash is not None:
+        frame["cells"]["ash"] = ash
 
     if inspect_ids:
         detail = {
