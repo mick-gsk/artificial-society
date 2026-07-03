@@ -28,6 +28,14 @@ CARCASS_DECAY = 0.14
 # ------------------------------------------------------------------
 FOOD_SCARCITY_FACTOR = 0.50  # Pflanzenwachstum auf 50% reduziert
 MEAT_SCARCITY_FACTOR = 0.55  # Fleischnachwuchs auf 55% reduziert
+# Windschaden an Pflanzen ist PROPORTIONAL zum vorhandenen Bestand (Windwurf/
+# Austrocknung skaliert mit Biomasse), nicht ein fester Absolutbetrag. Der alte
+# flache Term (-0.012*wind, wind 0..8) zog ~0.06/Zelle/Tick von JEDER Zelle ab —
+# das 6-9-fache des ~0.01/Tick-Nachwuchses — und trieb so die gesamte Vegetation
+# gegen null, selbst ohne Verbrauch (per No-Consumption-Lauf verifiziert). Die
+# proportionale Form verschwindet bei plant_food -> 0, sodass Wachstum die Basis
+# immer bis zu einem Gleichgewicht wieder aufbaut, statt sie zu sterilisieren.
+WIND_PLANT_LOSS = 0.0003
 INITIAL_FOOD_FACTOR = 0.30  # Startwert stark gesenkt -> sofortiger Hungerdruck
 
 # Logistische Decke: unberuehrte Zellen pendeln sich auf diesen
@@ -368,7 +376,10 @@ def regrow_cell(world, x, y, biome, season_state, weather_state, tick, event_str
         y,
         "plant_food",
         clamp(
-            cell["plant_food"] + plant_gain - 0.012 * wind - 0.02 * cell["ash"], 0.0, plant_hard_cap
+            cell["plant_food"] + plant_gain - WIND_PLANT_LOSS * wind * cell["plant_food"]
+            - 0.02 * cell["ash"],
+            0.0,
+            plant_hard_cap,
         ),
     )
     world.set_cell(
@@ -568,7 +579,9 @@ def regrow_grid(world, season_state, weather_state, tick, event_fields):
     )
     plant_hard_cap = np.maximum(20.0, plant_ceiling * capacity * 1.25 + farm_bonus)
     F["plant_food"] = np.clip(
-        plant_food0 + plant_gain - 0.012 * wind - 0.02 * ash0, 0.0, plant_hard_cap
+        plant_food0 + plant_gain - WIND_PLANT_LOSS * wind * plant_food0 - 0.02 * ash0,
+        0.0,
+        plant_hard_cap,
     )
     F["meat_food"] = np.clip(F["meat_food"] + meat_gain, 0.0, meat_cap)
     F["water"] = np.clip(water0 + water_gain + 0.05 * well, 0.0, 100.0)
