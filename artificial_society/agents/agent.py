@@ -1530,7 +1530,14 @@ class Agent:
                 next_features_raw,
             )
 
-        loss = self.brain.maybe_train()
+        # M-1 (Final-Review): im v2-Pfad NICHT trainieren, wenn der Agent in
+        # diesem Tick gestorben ist. Sonst kann maybe_train einen exakt
+        # gefüllten 128er-Buffer VOR remove_dead/finalize_terminal flushen —
+        # der Todes-Malus (-3.0) haette dann keinen Buffer mehr zum Anhängen
+        # und verfiele still. finalize_terminal (via remove_dead) übernimmt
+        # Flush + Malus + Training für gestorbene v2-Agenten selbst. Der
+        # v1-Pfad bleibt unveraendert (kein finalize_terminal-Aequivalent).
+        loss = None if self.physics_v2 and not self.alive else self.brain.maybe_train()
         if loss is not None:
             self.last_loss = loss
 

@@ -979,7 +979,7 @@ class Brain(nn.Module):
                     oi[idx],
                 )
                 approx_kl = (old_log_probs[idx] - new_log_probs).mean()
-                if float(approx_kl) > KL_EARLY_STOP_V2:
+                if float(approx_kl.detach()) > KL_EARLY_STOP_V2:
                     return last_loss  # KL-Early-Stop: GESAMTES Training abbrechen
                 ratios = torch.exp(new_log_probs - old_log_probs[idx])
                 unclipped = ratios * advantages[idx]

@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 import artificial_society.agents.agent as agent_mod
-from artificial_society.agents.brain import Brain
+from artificial_society.agents.brain import DEATH_REWARD_V2, ROLLOUT_HORIZON, Brain
 from artificial_society.simulation import Simulation
 
 _PARAMS = dict(headless=True, load_checkpoint=False, grid_w=20, grid_h=15, initial_population=8)
@@ -153,6 +153,98 @@ def test_terminal_transition_ueber_sim_step(monkeypatch):
     assert opfer not in sim.agents
     assert aufrufe.count(opfer_brain) == 1, "finalize_terminal genau EINMAL pro Tod"
     assert len(opfer_brain.rollout) == 0, "Restbuffer geflusht"
+
+
+def test_terminal_malus_nicht_verworfen_bei_vollem_buffer(monkeypatch):
+    """M-1 (Final-Review): stirbt ein v2-Agent (z.B. Toxin-Tod in
+    _execute_embodied, self.alive=False, KEIN Früh-Return) in exakt dem Tick,
+    der seinen Buffer auf ROLLOUT_HORIZON (128) Transitionen bringt, darf der
+    v2-Pfad in agent.update NICHT trotzdem maybe_train() aufrufen — das würde
+    den vollen Buffer flushen+leeren, BEVOR remove_dead → finalize_terminal
+    läuft, und der Todes-Malus -3.0 fände keinen Buffer mehr vor (verfiele
+    still). Stattdessen muss finalize_terminal (via remove_dead) den noch
+    vollen Buffer sehen, den Malus additiv auf die letzte Transition münzen
+    und done=True setzen.
+
+    Aufbau: Buffer wird auf ROLLOUT_HORIZON - 1 vorgefüllt (reale Transition
+    dupliziert — vermeidet Nachbau des internen Dict-Layouts), dann
+    _execute_embodied gepatcht, um wie ein Toxin-Tod self.alive=False zu
+    setzen, OHNE Früh-Return — exakt der reale Code-Pfad. Der nächste
+    opfer.update(...)-Aufruf fügt dadurch die 128. Transition hinzu UND lässt
+    den Agenten im selben Tick sterben — das ist das echte Race.
+
+    Bekannte, akzeptierte Rest-Lücke (NICHT gefixt): stirbt ein Agent per
+    Früh-Return NACHDEM der Vortick den Buffer bereits regulär geflusht hat
+    (Buffer also schon leer VOR diesem Tick), gibt es keine Transition mehr,
+    an die finalize_terminal den Malus hängen kann — der Malus entfällt in
+    diesem seltenen Fall bewusst weiterhin (siehe finalize_terminal-Guard
+    `if not self.rollout.storage: return None`)."""
+    sim = _sim(physics_v2=True)
+    opfer = sim.agents[0]
+    opfer_brain = opfer.brain
+    opfer.is_sleeping = False
+    assert opfer_brain.physics_v2
+
+    def _tick():
+        opfer.update(
+            sim.world,
+            sim.agents,
+            tick=0,
+            tribes=sim.tribes,
+            economy=sim.economy,
+            technology=sim.technology,
+        )
+
+    _tick()
+    assert len(opfer_brain.rollout) == 1, "ein Tick füllt genau eine Transition"
+    vorlage = opfer_brain.rollout.storage[0]
+    while len(opfer_brain.rollout) < ROLLOUT_HORIZON - 1:
+        opfer_brain.rollout.add(dict(vorlage))
+    assert len(opfer_brain.rollout) == ROLLOUT_HORIZON - 1, "Buffer eine Transition vor dem Trigger"
+
+    # Toxin-Tod nachbauen: _execute_embodied setzt self.alive=False mitten im
+    # Tick, OHNE Früh-Return — update() läuft danach bis maybe_train() durch.
+    original_execute = agent_mod.Agent._execute_embodied
+
+    def toedlich(self, world, brain_step, view):
+        result = original_execute(self, world, brain_step, view)
+        self.alive = False
+        return result
+
+    monkeypatch.setattr(agent_mod.Agent, "_execute_embodied", toedlich)
+
+    original_finalize = Brain.finalize_terminal
+    aufrufe = []
+
+    def spion(self, *a, **kw):
+        aufrufe.append(len(self.rollout))
+        return original_finalize(self, *a, **kw)
+
+    monkeypatch.setattr(Brain, "finalize_terminal", spion)
+
+    _tick()  # Todes-Tick: fügt die 128. Transition hinzu UND toetet den Agenten.
+
+    assert not opfer.alive, "Agent muss in diesem Tick gestorben sein"
+    assert len(opfer_brain.rollout) == ROLLOUT_HORIZON, (
+        "maybe_train() darf im Sterbe-Tick NICHT gelaufen sein — der Buffer "
+        "muss noch voll sein, wenn remove_dead/finalize_terminal ihn sieht"
+    )
+    letzte_transition = opfer_brain.rollout.storage[-1]  # Referenz vor dem Clear sichern
+    reward_vor_malus = letzte_transition["reward"]
+
+    sim.remove_dead()
+
+    assert opfer not in sim.agents
+    assert aufrufe == [ROLLOUT_HORIZON], (
+        "finalize_terminal muss den Buffer NOCH VOLL vorfinden — maybe_train "
+        "darf ihn im Sterbe-Tick nicht vorher geflusht haben"
+    )
+    assert len(opfer_brain.rollout) == 0, "finalize_terminal flusht/leert den Buffer selbst"
+    erwarteter_malus_reward = max(-6.0, min(6.0, reward_vor_malus + DEATH_REWARD_V2))
+    assert letzte_transition["reward"] == pytest.approx(erwarteter_malus_reward), (
+        "Todes-Malus -3.0 muss additiv auf die letzte Transition gemünzt sein"
+    )
+    assert letzte_transition["done"] is True, "letzte Transition muss done=True tragen"
 
 
 def test_v1_reward_pfad_unveraendert():
