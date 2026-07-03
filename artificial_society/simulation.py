@@ -293,6 +293,13 @@ class Simulation:
                 continue
             self._broadcast_death_knowledge(agent)
             if self.physics_v2:
+                # v2 (C2/C3): echte Terminal-Transition — done=True erreicht den
+                # Buffer, r_death (−3.0) wird GENAU EINMAL gemünzt, der
+                # Restbuffer wird geflusht und trainiert. remove_dead ist der
+                # designierte, ursachen-agnostische Todes-Aggregationspunkt (B3).
+                brain = getattr(agent, "brain", None)
+                if brain is not None and getattr(brain, "physics_v2", False):
+                    brain.finalize_terminal()
                 # v2 (Spec B3): der Tod münzt genau EIN Kadaver-Objekt —
                 # kein add_carcass-Credit auf Zell-Pools, kein Loot.
                 self._spawn_carcass(agent)

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 
-from artificial_society.agents.brain import INPUT_SIZE, Brain
+from artificial_society.agents.brain import INPUT_SIZE, V1_HEAD_DIMS, Brain
 from artificial_society.agents.communication import CommunicationSystem
 from artificial_society.agents.emotional_memory import EmotionalMemory
 from artificial_society.agents.endocrine import EndocrineSystem
@@ -984,6 +984,42 @@ class Agent:
         self._causal_next_target = naechstes
         return result
 
+    def _assemble_curiosity_v2(self, brain_step, next_features_raw, next_view, world):
+        """C4: curiosity = 0.25·nextslot_err + 0.50·causal_epistemic +
+        0.25·novelty, geclampt [0, 2]. Loggt die Zerlegung (D4: drei Quellen
+        separat) und legt das Causal-Pending für den nächsten Tick an."""
+        nextslot_err = self.brain.nextslot_error(
+            brain_step, next_features_raw, next_view.feats, next_view.mask
+        )
+        causal_epistemic = self._causal_epistemic_pending
+        novelty = self._novelty_buckets.observe_view(next_view)
+        curiosity = max(
+            0.0, min(2.0, 0.25 * nextslot_err + 0.50 * causal_epistemic + 0.25 * novelty)
+        )
+        self.curiosity_last = {
+            "nextslot": nextslot_err,
+            "causal": causal_epistemic,
+            "novelty": novelty,
+        }
+        sums = world.objects.metrics.setdefault(
+            "curiosity_sums", {"nextslot": 0.0, "causal": 0.0, "novelty": 0.0}
+        )
+        sums["nextslot"] += nextslot_err
+        sums["causal"] += causal_epistemic
+        sums["novelty"] += novelty
+        target = getattr(self, "_causal_next_target", None)
+        if target is not None and brain_step["target_idx"] >= 0:
+            # C4: Input = detach(gru_h) ⊕ verkörperter Aktions-Vektor (22)
+            # ⊕ detach(Slot-Embed des gewählten Ziels); Target = dasselbe
+            # Objekt im nächsten Tick (Auflösung: _resolve_causal_pending).
+            self._causal_pending = {
+                "h": brain_step["next_hidden"],
+                "act": brain_step["action_tensor"].squeeze(0)[V1_HEAD_DIMS:],
+                "embed": brain_step["slot_embeds"][brain_step["target_idx"]],
+                "target": target,
+            }
+        return curiosity
+
     def _record_macro_if_successful(self, mode: str, reward: float) -> float:
         """
         Emergenz v3: Verfolgt Aktionssequenzen und speichert erfolgreiche
@@ -1216,6 +1252,11 @@ class Agent:
 
         ensure_fields(self)
 
+        if self.physics_v2:
+            # C3: ΔE/ΔH über den GANZEN Tick (Metabolik, Arbeit, Essen, Toxin,
+            # Schlaf-Regeneration, Koop-Transfers — alles Physiologie).
+            e_start, h_start = self.energy, self.health
+
         self.endocrine.update(self, world)
         mods = self.endocrine.modifiers()
         stage = get_stage_stats(self.age)
@@ -1425,19 +1466,23 @@ class Agent:
             economy.maybe_trade(self, agents)
 
         next_features_raw = self.local_features(world, agents)
-        intrinsic = self.brain.intrinsic_reward(
-            brain_step["hidden_in"],
-            brain_step["action_tensor"],
-            next_features_raw,
-        )
-        reward += 0.3 * intrinsic
+        if not self.physics_v2:
+            # v1-Intrinsic (inkl. rew_err-Mechanik) und NGU-Episodic laufen NUR
+            # im v1 — der v2 ersetzt beides durch die C4-Neugier (rew_err ist
+            # ersatzlos gestrichen; Planner/NGU sind im v2 aus).
+            intrinsic = self.brain.intrinsic_reward(
+                brain_step["hidden_in"],
+                brain_step["action_tensor"],
+                next_features_raw,
+            )
+            reward += 0.3 * intrinsic
 
-        next_obs_t = torch.tensor(
-            next_features_raw,
-            dtype=torch.float32,
-            device=brain_step["hidden_in"].device,
-        )
-        self.brain.episodic_memory.novelty(next_obs_t)
+            next_obs_t = torch.tensor(
+                next_features_raw,
+                dtype=torch.float32,
+                device=brain_step["hidden_in"].device,
+            )
+            self.brain.episodic_memory.novelty(next_obs_t)
 
         context_vec = np.asarray(next_features_raw, dtype=np.float32)
         reward = _maybe_mark_language(self, current_cell, tick, context_vec, reward)
@@ -1446,11 +1491,25 @@ class Agent:
         _compact_material_inventory(self, getattr(self, "_inventory_cap", 24))
 
         cognition_mult = mods.get("cognition", 1.0)
-        effective_reward = reward * cognition_mult
         if self.physics_v2:
-            # v2-Transition (C2): Slot-Kontext + Masken + Indizes; next_view =
-            # Wahrnehmung NACH der Aktion (Task 15 nutzt sie auch für die Neugier).
+            # C3: nur Überleben + Neugier. Der bis hier akkumulierte v1-Reward
+            # (Forage-Event, Koop, Attack, Territorium, Sprache, Social
+            # Learning, Trade) wird bewusst VERWORFEN — die Mechanik lief, sie
+            # zahlt nur nicht (B6). Keine cognition-Skalierung: C3 exakt.
+            # r_death (−3.0) kommt NICHT hier, sondern genau einmal in
+            # Brain.finalize_terminal am Todes-Aggregationspunkt remove_dead.
             next_view = build_slots(self, world.objects)
+            curiosity = self._assemble_curiosity_v2(brain_step, next_features_raw, next_view, world)
+            reward = (
+                0.6 * (self.energy - e_start) / 45.0
+                + 0.6 * (self.health - h_start) / 50.0
+                - 0.3 * max(0.0, (60.0 - self.energy) / 60.0)
+                + 0.3 * curiosity
+            )
+            effective_reward = reward
+        else:
+            effective_reward = reward * cognition_mult
+        if self.physics_v2:
             self.brain.store_transition_v2(
                 brain_step,
                 effective_reward,
