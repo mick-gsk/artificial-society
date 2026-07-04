@@ -201,7 +201,10 @@ def ensure_fields(agent) -> None:
     if not hasattr(agent, "_inventory_cap"):
         agent._inventory_cap = 24
     if not hasattr(agent, "_cached_nearby_agents"):
-        agent._cached_nearby_agents = []
+        # None = "no snapshot yet"; update() resets this every tick. (The old []
+        # default was a permanently-valid empty cache that silently disabled
+        # social learning, trade and ToM for the agent's whole life.)
+        agent._cached_nearby_agents = None
     if not hasattr(agent, "_cached_nearby_radius"):
         agent._cached_nearby_radius = 2
     if not hasattr(agent, "_disease_immunity"):
@@ -450,6 +453,13 @@ class Agent:
         return self.pos[1]
 
     def _nearby_cached(self, agents, radius=2):
+        """Per-tick neighbor snapshot, lazily computed by the first consumer.
+
+        update() invalidates the snapshot at the start of every tick (both the
+        v1 and the physics_v2 branch, since the reset sits before the branch);
+        all consumers (social_learning, economy.maybe_trade, the ToM loop) run
+        after primitive_move, so they share one post-move snapshot per tick.
+        """
         cached = getattr(self, "_cached_nearby_agents", None)
         cached_radius = getattr(self, "_cached_nearby_radius", None)
         if cached is not None and cached_radius == radius:
@@ -1287,6 +1297,11 @@ class Agent:
             return None
 
         ensure_fields(self)
+        # One neighbor snapshot per tick: drop last tick's snapshot; the first
+        # consumer after primitive_move recomputes it (see _nearby_cached). This
+        # reset sits BEFORE the physics_v2 branch, so it invalidates the snapshot
+        # in both the v1 and the v2 path.
+        self._cached_nearby_agents = None
 
         if self.physics_v2:
             # C3: ΔE/ΔH über den GANZEN Tick (Metabolik, Arbeit, Essen, Toxin,
@@ -1344,7 +1359,6 @@ class Agent:
             self.alive = False
             return None
 
-        nearby_agents = self._nearby_cached(agents, 2)
         features = self.local_features(world, agents)
         if self.hidden_state is None:
             self.hidden_state = self.brain.initial_hidden()
@@ -1580,7 +1594,7 @@ class Agent:
         self.last_reward = effective_reward
         self.reproduction_cooldown = max(0, self.reproduction_cooldown - 1)
 
-        for other in nearby_agents:
+        for other in self._nearby_cached(agents, 2):
             self.tom.observe_agent(other, tick)
 
         h = self.endocrine.h
