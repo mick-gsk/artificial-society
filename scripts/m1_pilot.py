@@ -39,6 +39,32 @@ in JEDEM Arm: `simulation.CHECKPOINT_INTERVAL` wird nach dem Import auf 0
 gesetzt (Modul-Global, call-time in `Simulation.step` gelesen) — kein Prozess
 schreibt `checkpoint.pkl` ins CWD.
 
+K2 (Respawn-Mühle, docs/superpowers/specs/2026-07-04-m1-batterie-ergebnis-und-
+empfehlungen.md): `simulation.MIN_POPULATION` (Default 8, call-time gelesen
+in `Simulation.step`, simulation.py:639) und `simulation.RESPAWN_COUNT`
+(Default 6, call-time gelesen in `emergency_respawn`, simulation.py:305)
+werden nach dem Import per `--min-pop`/`--respawn-count` überschrieben —
+gleiches Muster wie `CHECKPOINT_INTERVAL`. Beide Werte landen im meta-Record.
+
+Demografie-Instrumentierung (Runner-seitig, kein Paket-Eingriff):
+  - `respawns`: `sim.emergency_respawn` wird NACH dem Sim-Bau durch eine
+    zählende Wrapper-Closure ersetzt (Bound-Method-Wrap auf der Instanz,
+    nicht auf der Klasse — betrifft nur diesen einen `sim`). Kumulativer
+    Zähler (Anzahl AUFRUFE, nicht Anzahl respawnter Agenten) in jedem
+    snap/final-Record als `respawns`.
+  - `ids_seen_total`: Menge aller `Agent.id`, die in irgendeinem Snapshot
+    (inkl. final) als lebend beobachtet wurden, kumulativ über den ganzen
+    Lauf. Das ist eine unvollständige, aber KORREKTE Untergrenze für
+    "jemals gelebte Agenten" — Geburten UND Tode, die vollständig zwischen
+    zwei Snapshots (Default alle 250 Ticks) liegen, werden nicht gezählt,
+    weil dazu ein Per-Tick-Hook nötig wäre (Paket-Eingriff, hier bewusst
+    vermieden). Ehrliche Unterschätzung, keine Überschätzung.
+  - `mean_age`: Mittelwert von `tick - a.birth_tick` über die aktuell
+    lebenden Agenten je Snapshot (nur Momentaufnahme, kein kumulativer Wert).
+  - `turnover_final` (nur im final-Record): `ids_seen_total / max(pop, 1)`
+    — grobe Kennzahl, wie oft sich die Population über den Lauf "ausgetauscht"
+    hat (untere Schranke, siehe `ids_seen_total`-Einschränkung oben).
+
 Ausgabe je Run: <out>/<exp>_seed<seed>.jsonl (eine Snapshot-Zeile je
 --snapshot-interval Ticks, erste Zeile ein "meta"-Record mit "exp" +
 "exp_id" + den gepatchten Werten). Auswertung: scripts/m1_report.py.
@@ -220,10 +246,22 @@ EXPERIMENT_ORDER = [
 ]
 
 
-def _snapshot(sim, tick: int) -> dict:
+def _snapshot(sim, tick: int, ids_seen: set, respawn_count: int) -> dict:
+    """Baut den Snapshot-/Final-Record.
+
+    `ids_seen` wird IN-PLACE um die aktuell lebenden Agent-IDs erweitert
+    (Aufrufer hält das Set über den ganzen Lauf) -- siehe Docstring oben zur
+    Untererfassung von Geburten+Toden, die vollständig zwischen zwei
+    Snapshots liegen. `respawn_count` ist der kumulative Zähler aus dem
+    `emergency_respawn`-Wrapper (Anzahl Aufrufe, siehe `run_one`).
+    """
     agents = sim.agents
     pop = len(agents)
     mean_energy = sum(a.energy for a in agents) / pop if pop else 0.0
+    ids_seen.update(a.id for a in agents)
+    mean_age = (
+        sum(tick - getattr(a, "birth_tick", tick) for a in agents) / pop if pop else 0.0
+    )
     m = sim.world.objects.metrics_snapshot()
     cuts_tool = int(m.get("cuts_with_tool", 0))
     cuts_hand = int(m.get("cuts_bare_hand", 0))
@@ -241,6 +279,10 @@ def _snapshot(sim, tick: int) -> dict:
         "discoveries": len(sim.world.objects.discovery.entries),
         "verbs_fired": {k: int(v) for k, v in verbs.items()},
         "births": sum(getattr(a, "children", 0) for a in agents),
+        # K2 Respawn-Mühlen-Instrumentierung (siehe Modul-Docstring).
+        "respawns": respawn_count,
+        "ids_seen_total": len(ids_seen),
+        "mean_age": round(mean_age, 2),
     }
 
 
@@ -253,6 +295,8 @@ def run_one(
     pop: int,
     snapshot_interval: int,
     out_dir: str,
+    min_pop: int = 8,
+    respawn_count_cfg: int = 6,
 ) -> str:
     conf = EXPERIMENTS[exp]
     # Patches VOR dem Simulation-Bau anwenden (Spec §1). Modul-Konstanten wie
@@ -270,6 +314,13 @@ def run_one(
     # in `Simulation.step` gelesen (`if CHECKPOINT_INTERVAL and ...`).
     simulation_mod.CHECKPOINT_INTERVAL = 0
 
+    # K2: Respawn-Boden konfigurierbar machen. Beide sind Modul-Globals,
+    # call-time gelesen (simulation.py:639 `len(self.agents) < MIN_POPULATION`,
+    # simulation.py:305 `range(RESPAWN_COUNT)` in `emergency_respawn`) --
+    # gleiches Patch-Muster wie CHECKPOINT_INTERVAL oben.
+    simulation_mod.MIN_POPULATION = min_pop
+    simulation_mod.RESPAWN_COUNT = respawn_count_cfg
+
     sim = Simulation(
         headless=True,
         load_checkpoint=False,
@@ -279,6 +330,21 @@ def run_one(
         initial_population=pop,
         seed=seed,
     )
+
+    # K2-Instrumentierung: `emergency_respawn` auf der INSTANZ (nicht der
+    # Klasse) durch eine zählende Wrapper-Closure ersetzen, damit jeder Aufruf
+    # (= ein Respawn-Batch von RESPAWN_COUNT Agenten) mitgezählt wird, ohne
+    # Paket-Code anzufassen.
+    _respawn_state = {"count": 0}
+    _orig_respawn = sim.emergency_respawn
+
+    def _counting_respawn():
+        _respawn_state["count"] += 1
+        return _orig_respawn()
+
+    sim.emergency_respawn = _counting_respawn
+
+    ids_seen: set = set()
     path = os.path.join(out_dir, f"{exp}_seed{seed}.jsonl")
     t0 = time.time()
     with open(path, "w") as f:
@@ -291,24 +357,28 @@ def run_one(
             "grid": [grid_w, grid_h],
             "pop": pop,
             "snapshot_interval": snapshot_interval,
+            "min_pop": min_pop,
+            "respawn_count": respawn_count_cfg,
             "patched": dict(conf["patched"], CHECKPOINT_INTERVAL=0),
         }
         f.write(json.dumps(meta) + "\n")
         for tick in range(ticks):
             sim.step()
             if (tick + 1) % snapshot_interval == 0:
-                rec = _snapshot(sim, tick + 1)
+                rec = _snapshot(sim, tick + 1, ids_seen, _respawn_state["count"])
                 rec["record"] = "snap"
                 f.write(json.dumps(rec) + "\n")
                 f.flush()
-        final = _snapshot(sim, ticks)
+        final = _snapshot(sim, ticks, ids_seen, _respawn_state["count"])
         final["record"] = "final"
         final["walltime_s"] = round(time.time() - t0, 1)
+        final["turnover_final"] = round(final["ids_seen_total"] / max(final["pop"], 1), 2)
         f.write(json.dumps(final) + "\n")
     print(
         f"[{exp} seed{seed}] done pop={final['pop']} "
         f"tool_cut_ratio={final['tool_cut_ratio']} "
-        f"discoveries={final['discoveries']} in {final['walltime_s']}s -> {path}"
+        f"discoveries={final['discoveries']} respawns={final['respawns']} "
+        f"mean_age={final['mean_age']} in {final['walltime_s']}s -> {path}"
     )
     return path
 
@@ -323,6 +393,18 @@ def main() -> None:
     ap.add_argument("--pop", type=int, default=30)
     ap.add_argument("--snapshot-interval", type=int, default=250)
     ap.add_argument("--out", default="pilot_results")
+    ap.add_argument(
+        "--min-pop",
+        type=int,
+        default=8,
+        help="Patcht simulation.MIN_POPULATION (Respawn-Schwelle, Default 8).",
+    )
+    ap.add_argument(
+        "--respawn-count",
+        type=int,
+        default=6,
+        help="Patcht simulation.RESPAWN_COUNT (Agenten je Respawn-Batch, Default 6).",
+    )
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     run_one(
@@ -334,6 +416,8 @@ def main() -> None:
         args.pop,
         args.snapshot_interval,
         args.out,
+        args.min_pop,
+        args.respawn_count,
     )
 
 

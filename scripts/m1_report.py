@@ -39,14 +39,30 @@ CONFOUND_METRICS = [
 ]
 # Sekundär (Spec §2 Kopfzeile): Verb-Feuerrate für Knapping/Schneiden.
 SECONDARY_VERBS = ["strike", "cut"]
+# K2 (Respawn-Mühle): Demografie-Felder, nur vorhanden in JSONL seit K2-Patch
+# (scripts/m1_pilot.py). Fehlen in älteren battery_results/-Dateien -- werden
+# von `_values`/`_agg` bereits sauber übersprungen (kein Crash, s.u.).
+DEMOGRAPHY_METRICS = [
+    ("respawns", "respawns"),
+    ("mean_age", "mean_age"),
+]
 
 
 def _load_finals(directory: str) -> dict:
-    """exp-Name -> Liste der Final-Records (aus allen *.jsonl im Verzeichnis)."""
+    """exp-Name -> Liste der Final-Records (aus allen *.jsonl im Verzeichnis).
+
+    K2: `respawn_count` (Wert von `--respawn-count`, Default 6) wird aus dem
+    meta-Record in jeden Final-Record dieses Laufs kopiert (als
+    `_respawn_count_cfg`), damit der Respawn-Mühlen-Check unten den in DIESEM
+    Lauf tatsächlich verwendeten Wert kennt, ohne die JSONL-Dateien erneut zu
+    öffnen. Alte meta-Records ohne `respawn_count` liefern hier `None` --
+    der Check überspringt solche Runs dann sauber.
+    """
     arms: dict = {}
     for path in sorted(glob.glob(os.path.join(directory, "*.jsonl"))):
         final = None
         exp = None
+        respawn_count_cfg = None
         with open(path) as f:
             for line in f:
                 line = line.strip()
@@ -57,10 +73,12 @@ def _load_finals(directory: str) -> dict:
                     # "exp" ist das aktuelle Schema; "arm" bleibt als Fallback
                     # für JSONL aus dem alten learn/nolearn-Pilot lesbar.
                     exp = rec.get("exp", rec.get("arm"))
+                    respawn_count_cfg = rec.get("respawn_count")
                 elif rec.get("record") == "final":
                     final = rec
         if exp is None or final is None:
             continue
+        final = dict(final, _respawn_count_cfg=respawn_count_cfg)
         arms.setdefault(exp, []).append(final)
     return arms
 
@@ -119,7 +137,10 @@ def _cmp(agg_a: tuple, agg_b: tuple):
 def _print_table(arms: dict) -> dict:
     """Druckt die Median[IQR]-Tabelle je Arm; gibt {exp: {metric: agg}} zurück."""
     all_metrics = (
-        CORE_METRICS + CONFOUND_METRICS + [(f"verb:{v}", f"verbs.{v}") for v in SECONDARY_VERBS]
+        CORE_METRICS
+        + CONFOUND_METRICS
+        + DEMOGRAPHY_METRICS
+        + [(f"verb:{v}", f"verbs.{v}") for v in SECONDARY_VERBS]
     )
     aggs: dict = {}
     print("\n=== M1-Diagnose-Batterie: Arme (Median [Q1,Q3] über Seeds) ===\n")
@@ -193,6 +214,59 @@ def _print_confound_warnings(aggs: dict) -> None:
         for w in warnings:
             print(w)
         print()
+
+
+def _print_respawn_mill_check(arms: dict) -> None:
+    """K2 (Respawn-Mühle): je Arm Median(respawns_final)/Median(mean_age_final)
+    plus ein Warnhinweis, wenn die durch Respawns NEU eingebrachte Agentenzahl
+    (respawns_final * respawn_count) vergleichbar oder größer ist als die
+    Hälfte von ids_seen_total -- ein Indiz, dass ein signifikanter Anteil der
+    je gesehenen Population Zufallshirn-Respawns statt selektierter
+    Nachkommen sind (siehe docs/superpowers/specs/
+    2026-07-04-m1-batterie-ergebnis-und-empfehlungen.md, K2).
+
+    Läuft ohne die K2-Felder (respawns/mean_age/ids_seen_total/respawn_count
+    -- z.B. alte battery_results/-JSONL vor diesem Patch) werden pro Arm
+    stillschweigend übersprungen; hat KEIN Arm die Felder, wird das explizit
+    vermerkt statt zu crashen.
+    """
+    print("=== Respawn-Mühlen-Check (K2) ===\n")
+    any_data = False
+    header = f"{'Arm':<20}{'respawns_final (med)':>22}{'mean_age_final (med)':>22}  Hinweis"
+    print(header)
+    print("-" * len(header))
+    for exp in EXPERIMENT_ORDER:
+        finals = arms.get(exp, [])
+        usable = [
+            f
+            for f in finals
+            if "respawns" in f
+            and "mean_age" in f
+            and f.get("ids_seen_total") is not None
+            and f.get("_respawn_count_cfg") is not None
+        ]
+        if not usable:
+            continue
+        any_data = True
+        med_respawns = st.median(f["respawns"] for f in usable)
+        med_mean_age = st.median(f["mean_age"] for f in usable)
+        warn_runs = 0
+        for f in usable:
+            produced = f["respawns"] * f["_respawn_count_cfg"]
+            threshold = f["ids_seen_total"] / 2.0
+            if produced >= threshold:
+                warn_runs += 1
+        note = ""
+        if warn_runs:
+            note = (
+                f"WARNUNG: {warn_runs}/{len(usable)} Runs mit respawns×respawn_count "
+                f"≥ ids_seen_total/2 -- Respawn-Mühle plausibel dominant."
+            )
+        print(f"{exp:<20}{med_respawns:>22.1f}{med_mean_age:>22.1f}  {note}")
+    if not any_data:
+        print("(Keine Läufe mit K2-Demografie-Feldern gefunden -- alte JSONL ohne "
+              "respawns/mean_age/ids_seen_total/respawn_count; Check übersprungen.)")
+    print()
 
 
 def _decision_tree(aggs: dict) -> None:
@@ -332,6 +406,7 @@ def main() -> None:
     aggs = _print_table(arms)
     _print_comparisons(aggs)
     _print_confound_warnings(aggs)
+    _print_respawn_mill_check(arms)
     _decision_tree(aggs)
 
 
