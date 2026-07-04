@@ -68,6 +68,11 @@ from artificial_society.systems.social_learning import social_learning_step
 MAX_ENERGY = 240.0
 INITIAL_ENERGY = 120.0
 CHILD_START_ENERGY = 100.0
+# A newborn's start energy is TRANSFERRED from the mother at birth (capped so she
+# keeps this floor), not minted: the old net mint per birth (100 start vs the
+# smaller parental conception cost) subsidised population overshoot past the
+# world's food carrying capacity, ending in mass starvation.
+BIRTH_ENERGY_FLOOR = 10.0
 REPRODUCTION_ENERGY = 60.0
 REPRODUCTION_COST = 20.0
 REPRODUCTION_COOLDOWN = 100
