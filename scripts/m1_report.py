@@ -1,9 +1,17 @@
 #!/usr/bin/env python
-"""Wertet den Meilenstein-1-Pilot aus: A/B (learn vs nolearn) über Seeds.
+"""Wertet die M1-Diagnose-Batterie aus (9 Arme, Spec §3).
 
-Liest <dir>/*.jsonl (von m1_pilot.py), aggregiert die Final-Records je Arm und gibt
-einen Vergleich der Emergenz-Metriken aus. Kernfrage: schlägt learn nolearn?
+Liest <dir>/*.jsonl (von m1_pilot.py), aggregiert die Final-Records je
+Experiment-Arm über dessen Seeds (Median + IQR), vergleicht jede Variante
+gegen A1 (learn) und A2 (nolearn), und wendet den Entscheidungsbaum aus
+Spec §3 (inkl. Schritt 0, Billiger-Lever-Check zuerst) programmatisch an, um
+eine Bau-Empfehlung vorzuschlagen.
+
+Gültigkeits-Schwelle (Spec §3, M-1): "deutlich"/"≫"/"≪" gilt nur bei
+nicht-überlappendem IQR zwischen Vergleichsarm und Referenz. Reines stdlib,
+Python-3.9-kompatibel (kein `match`, kein Laufzeit-`X | Y`).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -11,43 +19,305 @@ import glob
 import json
 import os
 import statistics as st
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from m1_pilot import EXPERIMENT_ORDER, EXPERIMENTS  # noqa: E402
+
+# Kern-Metriken (Spec §3): Median/IQR hierüber pro Arm.
+CORE_METRICS = [
+    ("tool_cut_ratio", "tool_cut_ratio"),
+    ("cuts_with_tool", "cuts_with_tool"),
+    ("discoveries", "discoveries"),
+    ("fragments_total", "fragments_total"),
+]
+# Konfound-Kontrolle (Spec §3): ein Arm, der nur die Population kollabiert,
+# senkt Discovery trivial -- das gilt auch für A3 (V-1).
+CONFOUND_METRICS = [
+    ("pop", "pop"),
+    ("mean_energy", "mean_energy"),
+]
+# Sekundär (Spec §2 Kopfzeile): Verb-Feuerrate für Knapping/Schneiden.
+SECONDARY_VERBS = ["strike", "cut"]
 
 
 def _load_finals(directory: str) -> dict:
-    arms: dict = {"learn": [], "nolearn": []}
+    """exp-Name -> Liste der Final-Records (aus allen *.jsonl im Verzeichnis)."""
+    arms: dict = {}
     for path in sorted(glob.glob(os.path.join(directory, "*.jsonl"))):
         final = None
-        arm = None
+        exp = None
         with open(path) as f:
             for line in f:
+                line = line.strip()
+                if not line:
+                    continue
                 rec = json.loads(line)
                 if rec.get("record") == "meta":
-                    arm = rec["arm"]
+                    # "exp" ist das aktuelle Schema; "arm" bleibt als Fallback
+                    # für JSONL aus dem alten learn/nolearn-Pilot lesbar.
+                    exp = rec.get("exp", rec.get("arm"))
                 elif rec.get("record") == "final":
                     final = rec
-        if arm in arms and final is not None:
-            arms[arm].append(final)
+        if exp is None or final is None:
+            continue
+        arms.setdefault(exp, []).append(final)
     return arms
 
 
-def _agg(finals: list, key: str) -> tuple:
-    vals = [f[key] for f in finals if key in f]
+def _values(finals: list, key: str):
+    out = []
+    for f in finals:
+        if key in SECONDARY_VERBS:
+            out.append(int((f.get("verbs_fired") or {}).get(key, 0)))
+        elif key in f:
+            out.append(f[key])
+    return out
+
+
+def _agg(vals) -> tuple:
+    """(median, q1, q3, n). q1/q3 fallen bei n<2 auf den Median zurück
+    (IQR=0 -> jeder Vergleich gilt dann konservativ als 'überlappend')."""
     if not vals:
-        return (0.0, 0.0, 0)
-    mean = st.mean(vals)
-    sd = st.pstdev(vals) if len(vals) > 1 else 0.0
-    return (mean, sd, len(vals))
+        return (0.0, 0.0, 0.0, 0)
+    med = st.median(vals)
+    if len(vals) < 2:
+        return (med, med, med, len(vals))
+    if len(vals) < 4:
+        # statistics.quantiles verlangt >=2 Punkte; bei kleinem n (Spec: 3
+        # Seeds pro Varianten-Arm) grober Min/Max-Ersatz für Q1/Q3, damit
+        # ein einzelner Ausreißer nicht sofort "nicht-überlappend" behauptet.
+        q1, q3 = min(vals), max(vals)
+    else:
+        qs = st.quantiles(vals, n=4, method="inclusive")
+        q1, q3 = qs[0], qs[2]
+    return (med, q1, q3, len(vals))
 
 
-METRICS = [
-    ("tool_cut_ratio", "Anteil Schnitte MIT Werkzeug"),
-    ("cuts_with_tool", "Schnitte mit Werkzeug (Σ)"),
-    ("fragments_total", "Schlag-Fragmente (Σ)"),
-    ("discoveries", "entdeckte Materialien"),
-    ("pop", "Endpopulation"),
-    ("mean_energy", "mittlere Energie"),
-    ("births", "Geburten (Σ)"),
-]
+def _fmt(agg: tuple) -> str:
+    med, q1, q3, n = agg
+    if n == 0:
+        return "  --  "
+    return f"{med:.3g} [{q1:.3g},{q3:.3g}] (n={n})"
+
+
+def _cmp(agg_a: tuple, agg_b: tuple):
+    """Vergleich a vs b unter der M-1-Schwelle (nicht-überlappender IQR).
+    Rückgabe: '>>' (a klar über b), '<<' (a klar unter b), '≈' (überlappend
+    oder ununterscheidbar), None (fehlende Daten)."""
+    med_a, q1_a, q3_a, n_a = agg_a
+    med_b, q1_b, q3_b, n_b = agg_b
+    if n_a == 0 or n_b == 0:
+        return None
+    if q1_a > q3_b:
+        return ">>"
+    if q3_a < q1_b:
+        return "<<"
+    return "≈"
+
+
+def _print_table(arms: dict) -> dict:
+    """Druckt die Median[IQR]-Tabelle je Arm; gibt {exp: {metric: agg}} zurück."""
+    all_metrics = (
+        CORE_METRICS + CONFOUND_METRICS + [(f"verb:{v}", f"verbs.{v}") for v in SECONDARY_VERBS]
+    )
+    aggs: dict = {}
+    print("\n=== M1-Diagnose-Batterie: Arme (Median [Q1,Q3] über Seeds) ===\n")
+    header = f"{'Arm (#, n)':<28}" + "".join(f"{label:>22}" for _, label in all_metrics)
+    print(header)
+    print("-" * len(header))
+    for exp in EXPERIMENT_ORDER:
+        finals = arms.get(exp, [])
+        conf = EXPERIMENTS[exp]
+        row_label = f"{exp} ({conf['id']}, n={len(finals)})"
+        aggs[exp] = {}
+        cells = []
+        for key, _ in all_metrics:
+            metric_key = key[5:] if key.startswith("verb:") else key
+            vals = _values(finals, metric_key)
+            agg = _agg(vals)
+            aggs[exp][key] = agg
+            cells.append(_fmt(agg))
+        print(f"{row_label:<28}" + "".join(f"{c:>22}" for c in cells))
+    print()
+    missing = [exp for exp in EXPERIMENT_ORDER if not arms.get(exp)]
+    if missing:
+        print(f"(Keine Daten für: {', '.join(missing)})\n")
+    return aggs
+
+
+def _print_comparisons(aggs: dict) -> None:
+    print("=== Vergleich jeder Variante gegen A1 (learn) und A2 (nolearn) ===\n")
+    print("Gültigkeits-Schwelle M-1: '>>'/'<<' nur bei nicht-überlappendem IQR; sonst '≈'.\n")
+    ref_metrics = ["tool_cut_ratio", "discoveries"]
+    col_w = 24
+    header = f"{'Arm':<20}" + "".join(
+        f"{m + ' vs A1':>{col_w}}{m + ' vs A2':>{col_w}}" for m in ref_metrics
+    )
+    print(header)
+    print("-" * len(header))
+    for exp in EXPERIMENT_ORDER:
+        if exp in ("learn",):
+            continue
+        row = f"{exp:<20}"
+        for m in ref_metrics:
+            a1 = _cmp(
+                aggs.get(exp, {}).get(m, (0, 0, 0, 0)), aggs.get("learn", {}).get(m, (0, 0, 0, 0))
+            )
+            a2 = _cmp(
+                aggs.get(exp, {}).get(m, (0, 0, 0, 0)), aggs.get("nolearn", {}).get(m, (0, 0, 0, 0))
+            )
+            row += f"{(a1 or 'n/a'):>{col_w}}{(a2 or 'n/a'):>{col_w}}"
+        print(row)
+    print()
+
+
+def _print_confound_warnings(aggs: dict) -> None:
+    """Konfound-Kontrolle (Spec §3): eine Population, die klar unter A1
+    kollabiert, macht eine gleichzeitige Discovery-Absenkung ungültig als
+    'Hypothese bestätigt' -- gilt explizit auch für A3."""
+    warnings = []
+    for exp in EXPERIMENT_ORDER:
+        if exp == "learn" or not aggs.get(exp, {}).get("pop", (0, 0, 0, 0))[3]:
+            continue
+        pop_cmp = _cmp(aggs[exp]["pop"], aggs["learn"]["pop"])
+        if pop_cmp == "<<":
+            warnings.append(
+                f"  - {exp}: Population liegt klar unter A1 (pop {_fmt(aggs[exp]['pop'])} "
+                f"vs A1 {_fmt(aggs['learn']['pop'])}) -- eine niedrigere discoveries/"
+                f"tool_cut_ratio in diesem Arm ist ggf. NUR Populations-Kollaps, nicht "
+                f"Hypothesen-Bestätigung."
+            )
+    if warnings:
+        print("=== Konfound-Warnungen (Population) ===\n")
+        for w in warnings:
+            print(w)
+        print()
+
+
+def _decision_tree(aggs: dict) -> None:
+    """Programmatische Entscheidungsbaum-Hinweise (Spec §3, Schritt 0 zuerst,
+    dann 1-6; C-3-Korrektur: Schritt 0 hat Vorrang vor Schritt 1's Empfehlung,
+    ersetzt sie aber nicht -- beide werden gemeldet."""
+    print("=== Entscheidungsbaum-Auswertung (Spec §3) ===\n")
+
+    def gt(exp, metric="tool_cut_ratio", metric2="discoveries"):
+        """'≫ A1' unter M-1: nicht-überlappend höher auf tool_cut_ratio ODER
+        discoveries (Spec §2 nennt beide Metriken für C2/E1/F1)."""
+        c1 = _cmp(
+            aggs.get(exp, {}).get(metric, (0, 0, 0, 0)),
+            aggs.get("learn", {}).get(metric, (0, 0, 0, 0)),
+        )
+        c2 = _cmp(
+            aggs.get(exp, {}).get(metric2, (0, 0, 0, 0)),
+            aggs.get("learn", {}).get(metric2, (0, 0, 0, 0)),
+        )
+        return c1 == ">>" or c2 == ">>"
+
+    def lt(exp, metric="tool_cut_ratio", metric2="discoveries"):
+        c1 = _cmp(
+            aggs.get(exp, {}).get(metric, (0, 0, 0, 0)),
+            aggs.get("learn", {}).get(metric, (0, 0, 0, 0)),
+        )
+        c2 = _cmp(
+            aggs.get(exp, {}).get(metric2, (0, 0, 0, 0)),
+            aggs.get("learn", {}).get(metric2, (0, 0, 0, 0)),
+        )
+        return c1 == "<<" or c2 == "<<"
+
+    def have(exp):
+        return bool(aggs.get(exp, {}).get("tool_cut_ratio", (0, 0, 0, 0))[3])
+
+    hints = []
+
+    # Schritt 0: Billiger-Lever-Check zuerst (C2/E1/F1 ≫ A1).
+    step0_hits = [
+        exp for exp in ("curio-high", "entropy-high", "verb-bias-high") if have(exp) and gt(exp)
+    ]
+    step0_positive = bool(step0_hits)
+    if step0_positive:
+        hints.append(
+            f"Schritt 0 TRIFFT ZU: {', '.join(step0_hits)} ≫ A1 (nicht-überlappender IQR auf "
+            f"tool_cut_ratio/discoveries). Billiger Dosierungs-/Explorations-Win nachgewiesen.\n"
+            f"  -> Baue ZUERST: Explorations-Bonus (Curiosity-Gewicht/Entropie/Prior) -- billiger "
+            f"als Kredit-Reparatur. Ein gleichzeitiges A1≈A2 (Schritt 1) ist dann ein "
+            f"ZUSÄTZLICHES, nicht zwingend vorrangiges Kredit-Problem."
+        )
+    else:
+        hints.append(
+            "Schritt 0 negativ: kein C2/E1/F1 ≫ A1 mit nicht-überlappendem IQR nachgewiesen."
+        )
+
+    # Schritt 1-3: A1 vs A2, dann B1.
+    if have("learn") and have("nolearn"):
+        # a1 ≈ a2 heisst: A1 schlaegt A2 NICHT klar (kein '>>' A1 vs A2).
+        a1_vs_a2 = _cmp(aggs["learn"]["tool_cut_ratio"], aggs["nolearn"]["tool_cut_ratio"])
+        a1_approx_a2 = a1_vs_a2 != ">>"
+        if a1_approx_a2 and not step0_positive:
+            hints.append(
+                "Schritt 1 TRIFFT ZU: A1 ≈ A2 auf tool_cut_ratio (kein nicht-überlappendes A1>A2) "
+                "UND Schritt 0 negativ.\n"
+                "  -> H4 dominant. Baue: Kredit-Zuweisung/Kopplung (der mechanistische "
+                "Werkzeug-Payoff existiert in der Physik, wird aber nie der Aktion gutgeschrieben). "
+                "Nutze A3 als Kontrolle, dass A2s Restkultur den A1↔A2-Vergleich nicht verzerrt."
+            )
+        elif a1_approx_a2 and step0_positive:
+            hints.append(
+                "Hinweis: A1 ≈ A2 auf tool_cut_ratio träfe für sich isoliert Schritt 1 (H4), "
+                "wird aber von Schritt 0 (billiger Lever nachgewiesen) überstimmt -- als "
+                "zusätzliches, nicht vorrangiges Kredit-Problem vormerken."
+            )
+        elif a1_vs_a2 == ">>" and have("gamma-short"):
+            b1_vs_a1 = _cmp(aggs["gamma-short"]["tool_cut_ratio"], aggs["learn"]["tool_cut_ratio"])
+            if b1_vs_a1 == "≈":
+                hints.append(
+                    "Schritt 2 TRIFFT ZU: A1 > A2, aber B1 (gamma-short) ≈ A1.\n"
+                    "  -> Kredit-Reichweite ist NICHT das Nadelöhr; das Signal erreicht die frühe "
+                    "Aktion (Knapping) ohnehin nicht. Baue: Credit-Backfill/Reward-Attribution "
+                    "entlang der Kausalkette."
+                )
+            elif b1_vs_a1 == "<<":
+                hints.append(
+                    "Schritt 3 TRIFFT ZU: A1 > A2 und B1 (gamma-short) ≪ A1.\n"
+                    "  -> H1 bestätigt. Baue: Eligibility-Traces / längeren effektiven Kreditpfad."
+                )
+        elif a1_vs_a2 == ">>":
+            hints.append(
+                "A1 > A2, aber B1 (gamma-short) fehlt -- Schritt 2/3 nicht auswertbar ohne diese Daten."
+            )
+    else:
+        hints.append("A1/A2-Daten unvollständig -- Schritt 1-3 nicht auswertbar.")
+
+    # Schritt 4: Curiosity.
+    if have("curio-off") or have("curio-high"):
+        c1_low = have("curio-off") and lt("curio-off")
+        c2_high = have("curio-high") and gt("curio-high")
+        if c1_low or c2_high:
+            hints.append(
+                f"Schritt 4 TRIFFT ZU: {'C1 ≪ A1' if c1_low else ''}"
+                f"{' bzw. ' if c1_low and c2_high else ''}{'C2 ≫ A1' if c2_high else ''}.\n"
+                "  -> H2 bestätigt. Baue: Neugier-Dosierung/-Schätzer (billiger Tune-Win)."
+            )
+
+    # Schritt 5: Sozialer Kanal.
+    if have("nosocial") and lt("nosocial"):
+        hints.append(
+            "Schritt 5 TRIFFT ZU: D1 (nosocial) ≪ A1.\n"
+            "  -> H3 bestätigt. Baue: Kultur-Kanal (Kausal-Transfer + Imitation verstärken)."
+        )
+
+    # Schritt 6: Exploration (Entropie/Prior) redundant zu Schritt 0, aber
+    # Spec listet es separat -- hier als Bestätigung ausgegeben.
+    step6_hits = [exp for exp in ("entropy-high", "verb-bias-high") if have(exp) and gt(exp)]
+    if step6_hits:
+        hints.append(
+            f"Schritt 6 TRIFFT ZU: {', '.join(step6_hits)} ≫ A1.\n"
+            "  -> Exploration ist unterdosiert. Baue: Explorations-Bonus (Entropie/Prior) "
+            "als billigsten ersten Schritt, vor der teuren Kredit-Reparatur."
+        )
+
+    for h in hints:
+        print(f"- {h}\n")
 
 
 def main() -> None:
@@ -55,29 +325,14 @@ def main() -> None:
     ap.add_argument("--dir", default="pilot_results")
     args = ap.parse_args()
     arms = _load_finals(args.dir)
-    nL, nN = len(arms["learn"]), len(arms["nolearn"])
-    print(f"\n=== Meilenstein-1-Pilot: A/B-Auswertung ===")
-    print(f"Seeds: learn={nL}, nolearn={nN}  (Ordner: {args.dir})\n")
-    print(f"{'Metrik':<34}{'learn':>16}{'nolearn':>16}{'Δ (L-N)':>14}")
-    print("-" * 80)
-    for key, label in METRICS:
-        lm, ls, _ = _agg(arms["learn"], key)
-        nm, ns, _ = _agg(arms["nolearn"], key)
-        delta = lm - nm
-        print(f"{label:<34}{lm:>10.3f}±{ls:<4.2f}{nm:>10.3f}±{ns:<4.2f}{delta:>14.3f}")
-    print("-" * 80)
-    # Verdikt auf dem Kern-Signal.
-    lm, _, _ = _agg(arms["learn"], "tool_cut_ratio")
-    nm, _, _ = _agg(arms["nolearn"], "tool_cut_ratio")
-    if nL and nN:
-        if lm > nm and lm > 0:
-            print(f"\n→ learn > nolearn beim Werkzeug-Schnitt-Anteil "
-                  f"({lm:.3f} vs {nm:.3f}). Lernen zahlt sich mechanistisch aus.")
-        elif lm <= nm:
-            print(f"\n→ KEIN Lernvorteil beim Werkzeug-Schnitt-Anteil "
-                  f"({lm:.3f} vs {nm:.3f}). Engpass = Lern-Maschinerie/Kopplung "
-                  f"(vgl. archivierter Kernbefund).")
-    print()
+    print(f"\n=== M1-Diagnose-Batterie: Auswertung ({args.dir}) ===")
+    seed_counts = ", ".join(f"{exp}={len(arms.get(exp, []))}" for exp in EXPERIMENT_ORDER)
+    print(f"Seeds je Arm: {seed_counts}")
+
+    aggs = _print_table(arms)
+    _print_comparisons(aggs)
+    _print_confound_warnings(aggs)
+    _decision_tree(aggs)
 
 
 if __name__ == "__main__":
