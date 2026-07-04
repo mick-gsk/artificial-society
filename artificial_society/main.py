@@ -39,6 +39,11 @@ def _parse_args(argv=None):
     p.add_argument("--pop", type=int, default=36, help="initial population")
     p.add_argument("--width", type=int, default=1200)
     p.add_argument("--height", type=int, default=800)
+    p.add_argument(
+        "--resume",
+        action="store_true",
+        help="resume from checkpoint.pkl in the current directory (default: start fresh)",
+    )
     return p.parse_args(argv)
 
 
@@ -58,8 +63,8 @@ def main(argv=None):
         initial_population=args.pop,
         headless=args.headless,
         seed=args.seed,
-        # Headless/seeded runs start fresh for reproducibility; GUI resumes a checkpoint.
-        load_checkpoint=not args.headless,
+        # Load a checkpoint only on explicit --resume; never auto-load a stray file.
+        load_checkpoint=args.resume,
     )
     sim.run(max_ticks=args.ticks)
 

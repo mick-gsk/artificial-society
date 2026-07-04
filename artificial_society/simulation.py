@@ -133,7 +133,7 @@ class Simulation:
         initial_population=36,
         headless=False,
         seed=None,
-        load_checkpoint=True,
+        load_checkpoint=False,
         physics_v2=False,
     ):
         # Seed first, before anything stochastic (biome grid, population) is built.
