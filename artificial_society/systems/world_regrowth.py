@@ -13,6 +13,7 @@ regrowth still runs with neutral defaults (``regrow_cell`` uses ``dict.get``).
 
 from __future__ import annotations
 
+from artificial_society.environment.events import apply_event_agent_effects
 from artificial_society.systems.registry import register
 
 
@@ -26,6 +27,10 @@ def _tick(sim, tick: int) -> None:
         getattr(sim, "_weather_state", {}) or {},
         tick,
     )
+    # Direct physical consequences for agents standing inside disturbance
+    # events (fire burns, storms exhaust; a camp shelters from storms) —
+    # applied against the same tick's freshly-updated events.
+    apply_event_agent_effects(sim.world, sim.agents)
 
 
 @register(name="world_regrowth", order=25, tick=_tick)

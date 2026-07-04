@@ -67,7 +67,15 @@ def test_vectorized_world_update_bit_identical():
     world.get_cell(5, 5)["structures"]["farm"] = 1.0
     world.get_cell(9, 9)["structures"]["well"] = 1.0
     world.get_cell(12, 3)["structures"]["camp"] = 1.0
-    world.update_events(0, SEASON, WEATHER)  # tick % 55 == 0 -> spawns an event
+    # Inject events directly: genesis is physics-driven now (and warm-up
+    # gated), and this test asserts the scalar/vector APPLICATION paths are
+    # bit-identical — event generation is not under test here.
+    world.active_events.append(
+        {"kind": "storm", "x": 8, "y": 6, "radius": 6, "intensity": 0.9, "ttl": 50}
+    )
+    world.active_events.append(
+        {"kind": "fire", "x": 20, "y": 15, "radius": 4, "intensity": 0.8, "ttl": 60}
+    )
     assert world.active_events, "test setup should have at least one active event"
 
     scalar_world = copy.deepcopy(world)

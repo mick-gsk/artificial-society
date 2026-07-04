@@ -5,6 +5,7 @@ import numpy as np
 
 from artificial_society.cell_store import CellGrid, CellView, build_arrays
 from artificial_society.environment.biomes import BIOME_BASE, biome_color, generate_biome_grid
+from artificial_society.environment.events import update_events as update_world_events
 from artificial_society.environment.herbs import regrow_herbs
 from artificial_society.environment.phys_objects import ObjectLayer
 from artificial_society.environment.resources import (
@@ -179,52 +180,15 @@ class World:
                     out.append((xx, yy, CellView(self, xx, yy), self.biomes[yy][xx]))
         return out
 
-    def spawn_disturbance(self, tick, season_state, weather_state):
-        season_name = season_state.get("name", "").lower()
-        weights = [
-            ("drought", 1.4 if season_name == "summer" else 1.0),
-            ("storm", 1.3 + weather_state.get("storm_risk", 0.0)),
-            ("fire", 1.2 if season_name == "summer" else 0.7),
-            ("blight", 1.0),
-        ]
-        kinds = [k for k, _ in weights]
-        probs = [w for _, w in weights]
-        total = sum(probs)
-        r = random.random() * total
-        acc = 0.0
-        kind = kinds[0]
-        for k, p in zip(kinds, probs):
-            acc += p
-            if r <= acc:
-                kind = k
-                break
-        x, y = self.random_land_position()
-        self.active_events.append(
-            {
-                "kind": kind,
-                "x": x,
-                "y": y,
-                "radius": random.randint(4, 9),
-                "intensity": random.uniform(0.55, 1.1),
-                "ttl": random.randint(40, 100),
-            }
-        )
-
     def update_events(self, tick, season_state, weather_state):
-        if tick % 55 == 0 or (random.random() < 0.015 and len(self.active_events) < 5):
-            self.spawn_disturbance(tick, season_state, weather_state)
-        kept = []
-        for event in self.active_events:
-            event["ttl"] -= 1
-            if event["kind"] == "storm":
-                event["radius"] = min(max(3, event["radius"] + random.choice([-1, 0, 1])), 10)
-            elif random.random() < 0.12:
-                event["x"] = int(clamp(event["x"] + random.choice([-1, 0, 1]), 0, self.width - 1))
-                event["y"] = int(clamp(event["y"] + random.choice([-1, 0, 1]), 0, self.height - 1))
-            event["intensity"] *= 0.992
-            if event["ttl"] > 0 and event["intensity"] > 0.15:
-                kept.append(event)
-        self.active_events = kept
+        """Physics-driven disturbance genesis + lifecycle (environment/events.py).
+
+        Delegates to the ``events`` module: storms/droughts/fires/blight emerge
+        from the world state (storm_risk, dryness+heat, fuel+ignition, moist
+        dense vegetation) instead of the old ``tick % 55`` timer + flat dice at
+        a uniform-random position, and the warm-up gate is enforced again.
+        """
+        update_world_events(self, tick, season_state, weather_state)
 
     def event_field(self, x, y):
         out = {"drought": 0.0, "storm": 0.0, "fire": 0.0, "blight": 0.0, "disturbance": 0.0}
