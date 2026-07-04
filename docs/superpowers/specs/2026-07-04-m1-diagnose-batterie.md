@@ -23,7 +23,7 @@ deaktiviert (C5)"** und zieht die Aktion direkt aus `forward_v2` + `Normal.rsamp
 im v2 nie aufgerufen.
 → **Konsequenz: H1 kann NICHT über `PLAN_HORIZON` getestet werden (toter no-op).** Der äquivalente
 v2-Horizont-Knob ist **`GAMMA_V2 = 0.99`** (`brain.py`, Kommentar „Kredit-Horizont ~100 Ticks
-(Knapping→Kadaver→Schneiden→Essen)"), gelesen im GAE-Loop von `_train_v2` (`brain.py:918`,
+(Knapping→Kadaver→Schneiden→Essen)"), gelesen im GAE-Loop von `_train_v2` (`brain.py:952–953`,
 `delta = rewards[t] + GAMMA_V2 * next_values[t] * ...`). H1 wird über GAMMA_V2 operationalisiert.
 
 ### F2 — Wo wirkt NOVELTY_WEIGHT / intrinsic_reward im v2-Pfad? Fließt Intrinsik in `_train_v2`?
@@ -31,15 +31,21 @@ v2-Horizont-Knob ist **`GAMMA_V2 = 0.99`** (`brain.py`, Kommentar „Kredit-Hori
 `imagine_rollout` (`brain.py:684`) benutzt, und der Planer läuft im v2 nicht. Ebenso ist
 `Brain.intrinsic_reward` (`brain.py:810`, prediction-error-curiosity × NGU-Novelty) tot: der Aufruf
 steht im `if not self.physics_v2:`-Zweig (`agent.py:1505` → `:1509`).
-**Der lebende v2-Neugier-Kanal ist `Agent._assemble_curiosity_v2`** (`agent.py:~1017`):
+**Der lebende v2-Neugier-Kanal ist `Agent._assemble_curiosity_v2`** (`agent.py:1023`):
 `curiosity = clamp(0.25·nextslot_err + 0.50·causal_epistemic + 0.25·novelty, 0, 2)`. Diese Größe
-fließt in den v2-Reward (`agent.py:~1538`: `reward = 0.6·ΔE/45 + 0.6·ΔH/50 − 0.3·deficit +
-0.3·curiosity`), wird als `effective_reward` via `store_transition_v2` (`agent.py:~1548`) gepuffert
+fließt in den v2-Reward (`agent.py:1539`: `reward = 0.6·ΔE/45 + 0.6·ΔH/50 − 0.3·deficit +
+0.3·curiosity`), wird als `effective_reward` via `store_transition_v2` (`agent.py:1549`) gepuffert
 und **dann in `_train_v2` als Belohnung trainiert** (GAE über `rewards[t]`). Also: **ja, Intrinsik
 fließt in `_train_v2` — aber über die Reward-Spur, nicht als separater Term.** Der Knob, der
 Exploration im v2 tatsächlich dosiert, ist **nicht `NOVELTY_WEIGHT`**, sondern der Curiosity-Gewicht-
 Faktor (inline `0.3·curiosity` bzw. die 0.25/0.50/0.25-Gewichte in `_assemble_curiosity_v2`) — ein
 Inline-Literal, kein Modul-Konstante → nur per Methoden-Wrap patchbar (siehe C1/C2).
+**Wichtig (C-1): `_assemble_curiosity_v2` ist NICHT nebenwirkungsfrei** — es schreibt die
+Brain-EMA-Puffer `curio_err_mean/var` (`brain.py:590–598`), aktualisiert `_novelty_buckets`, und
+setzt `self._causal_pending` (`agent.py:1051–1056`), das im Folgetick `_causal_epistemic_pending`
+speist — dieselbe Kausal-Maschinerie, die als Obs-Dims 34–36 in `forward_v2` fließt. Ein Wrap, der
+das Original ersetzt statt umhüllt, würde diese Nebenwirkungen streichen und C1 mit dem Kausal-
+Obs-Kanal (H3) konfundieren. Exaktes Patch-Muster: siehe §1.
 
 ### F3 — Wirkt `social_learning_step` auf das v2-VERHALTEN, oder nur `imitate_from` auf die Gewichte?
 **Beide Kanäle berühren v2, und `social_learning_step` läuft im v2 mit.** Der Aufruf steht
@@ -50,7 +56,7 @@ other_brain)` — Gewichtsangleichung. **Kanal auf v2-Verhalten:** (a) `imitate_
 v2 GETEILTEN Gewichte (encoder/gru/policy) direkt. (b) Der Kausal-Transfer wirkt indirekt: v2 liest
 `causal_memory.feature_vector()` als Obs-Dims 34–36 (`agent.py:518`, Teil der 57-Obs, die in
 `forward_v2` gehen). → **„nosocial" isoliert BEIDE Kanäle** (Gewichte + Kausal-Features). Hinweis:
-Der Social-Reward (+0.05…0.08) zahlt im v2 nicht — er wird beim Reward-Reassign (`agent.py:~1538`,
+Der Social-Reward (+0.05…0.08) zahlt im v2 nicht — er wird beim Reward-Reassign (`agent.py:1539`,
 C3) verworfen; nur die Verhaltens-/Gewichtseffekte bleiben.
 
 ### F4 — Weitere leicht patchbare Konstanten mit großem Emergenz-Hebel im v2-Pfad (max. 2)
@@ -92,8 +98,31 @@ Regeln:
   (construction-time). Für die call-time-Konstanten reicht „vor dem ersten `sim.step()`".
 - Methoden-Wraps (`social_learning_step`, `_assemble_curiosity_v2`) ersetzen das Attribut auf
   Klasse/Modul, ebenfalls vor Sim-Bau. Kein Paket-Code wird editiert (HOT-Files unberührt).
-- Seedgleichheit: RNG-Guards in `social_learning` werden VOR den Seiteneffekten ausgewertet
-  (m1_pilot-Docstring) — ein no-op verschiebt den Zufallsstrom nicht; Welt-Startzustand identisch.
+- **Curiosity-Wrap (C1/C2) MUSS die Original-Nebenwirkungen erhalten (C-1, verpflichtend).**
+  `_assemble_curiosity_v2` schreibt Brain-EMA-Puffer, Novelty-Zähler und `self._causal_pending`
+  (siehe F2-Fußnote oben) — ein Ersatz-Wrap (`return 0.0`) würde diese Effekte streichen und den
+  Curiosity-Arm mit dem Kausal-Obs-Kanal (H3) konfundieren. Der Wrap darf daher **nur den
+  zurückgegebenen Skalar** transformieren, das Original muss immer laufen:
+  ```python
+  orig = Agent._assemble_curiosity_v2
+  Agent._assemble_curiosity_v2 = lambda self, *a, **kw: 0.0 * orig(self, *a, **kw)   # C1 curio-off
+  # analog für C2 curio-high:
+  Agent._assemble_curiosity_v2 = lambda self, *a, **kw: 3.0 * orig(self, *a, **kw)   # C2 curio-high
+  ```
+  Beide Zeilen rufen `orig` unbedingt auf (Nebenwirkungen laufen in jedem Tick genau wie im
+  Referenzarm); nur der Rückgabewert wird auf 0× bzw. 3× skaliert. Dasselbe Muster gilt analog
+  für jede künftige Komponenten-Ablation von `_assemble_curiosity_v2` (siehe Review-Zweitidee).
+- **RNG-Strom (Korrektur, C-2):** `social_learning_step` zieht bare `random.random()` an drei
+  Stellen im Funktionskörper (`systems/social_learning.py:71/79/93`). Der D1/`nosocial`-No-op
+  (`lambda a, ag, t: 0.0`) ersetzt die gesamte Funktion und überspringt damit diese Draws — der
+  prozessweite `random`-Strom divergiert von A1 ab dem ersten Tick, in dem `nosocial` gegriffen
+  hätte (**nicht** „unverändert", wie eine frühere Fassung dieser Spec behauptete). Das ist für die
+  Batterie **unschädlich, nicht unsichtbar**: Gültigkeit kommt nicht aus Trajektorien-Identität
+  zwischen A1 und D1, sondern daraus, dass (a) der **Weltbau** (Konstruktion vor dem ersten Tick)
+  seed-identisch bleibt, weil `social_learning_step` erst in Ticks läuft, und (b) jeder Arm über
+  **Median/IQR seiner eigenen 3(oder 5) unabhängigen Seeds** ausgewertet und dann armweise
+  verglichen wird — nicht paarweise pro Seed. Man WILL, dass der Eingriff die Trajektorie ändert;
+  nur die Behauptung „Strom bleibt unverändert" war falsch und ist hiermit gestrichen.
 - Neue CLI: `--arm` um die Varianten erweitern; jeder Arm ist eine Patch-Fn in einer
   `VARIANTS`-Registry. `_snapshot()` bleibt unverändert (die Metriken decken alle Hypothesen ab).
 
@@ -103,22 +132,27 @@ Regeln:
 
 Basis-Arme 5 Seeds, Varianten 3 Seeds (CONSTRAINT b). Referenz: jede Variante ist gegen **A1 (learn)**
 UND **A2 (nolearn)** interpretierbar (CONSTRAINT c) — A1 = volle Maschinerie, A2 = eingefrorene
-Random-Policy (Untergrenze). Alle Varianten laufen auf dem **learn**-Substrat (PPO an), sofern nicht
-anders vermerkt, damit der isolierte Knob der einzige Unterschied zu A1 ist.
+Random-Policy (Untergrenze, aber mit Restkultur, siehe §4). Alle Varianten laufen auf dem
+**learn**-Substrat (PPO an), sofern nicht anders vermerkt, damit der isolierte Knob der einzige
+Unterschied zu A1 ist. **Ausnahme A3** (V-1): läuft auf dem **nolearn**-Substrat (komponiert die
+A2-Patches) plus `nosocial`-No-op — sie ist keine Isolations-Variante gegen A1, sondern die echte
+Random-Null-Referenz gegen A2/H4.
 
 | # | Name | Gepatchte Konstante/Funktion (Modul-Pfad) | Seeds | Testet |
 |---|---|---|---|---|
 | A1 | `learn` | — (unverändert) | 5 | H4-Referenz (volle Maschinerie) |
-| A2 | `nolearn` | `Brain.maybe_train`→no-op, `Brain.imitate_from`→no-op (`agents/brain.py`) | 5 | H4 (Lernen als Ganzes) + Untergrenze |
+| A2 | `nolearn` | `Brain.maybe_train`→no-op, `Brain.imitate_from`→no-op (`agents/brain.py`) | 5 | H4 (Lernen als Ganzes) + Untergrenze (aber KEINE reine Zufallspolicy, siehe §4) |
+| A3 | `nolearn-nosocial` | Komposition A2-Patches + `social_learning.social_learning_step = lambda a, ag, t: 0.0` (beide No-ops zugleich) | 3 | Echte Random-Null (H4/H3-Referenz OHNE Restkultur, V-1) |
 | B1 | `gamma-short` | `brain.GAMMA_V2 = 0.80` (`agents/brain.py`, `_train_v2` GAE) | 3 | H1 (Kredit-Horizont, Planer-Ersatz) |
-| C1 | `curio-off` | Wrap `Agent._assemble_curiosity_v2` → gibt `0.0` zurück (`agents/agent.py`) | 3 | H2 (Intrinsik trägt nichts?) |
-| C2 | `curio-high` | Wrap `Agent._assemble_curiosity_v2` → `3.0 × Originalwert` | 3 | H2 (Intrinsik unterdosiert?) |
+| C1 | `curio-off` | Wrap `Agent._assemble_curiosity_v2` — **ruft Original für Side-Effects, Rückgabe `0.0 × Original`** (exaktes Muster §1; `agents/agent.py`) | 3 | H2 (Intrinsik trägt nichts?) |
+| C2 | `curio-high` | Wrap `Agent._assemble_curiosity_v2` — ruft Original, Rückgabe `3.0 × Original` (Muster §1, side-effect-erhaltend; `agents/agent.py`) | 3 | H2 (Intrinsik unterdosiert?) |
 | D1 | `nosocial` | `social_learning.social_learning_step = lambda a, ag, t: 0.0` (`systems/social_learning.py`) | 3 | H3 (Kultur-Kanal isolieren) |
 | E1 | `entropy-high` | `brain.ENTROPY_COEF_NEW = 0.05` (`agents/brain.py`, `_train_v2` Loss) | 3 | Zusatz-Lever: Verb-Exploration |
 | F1 | `verb-bias-high` | `brain.VERB_INIT_BIAS = 0.6` **vor Sim-Bau** (`Brain.__init__`) | 3 | Zusatz-Lever: Manipulations-Prior |
 
-**Gesamt: 5 + 5 + 3·6 = 28 Läufe** (unter dem 30-Budget; 16 Kerne → ~2 Wellen à 14 Prozesse,
-5000 Ticks/Lauf).
+**Gesamt: 5 + 5 + 3·7 = 31 Läufe** — bewusster Overrun um 1 Lauf-Satz (+3) über das ursprüngliche
+30-Budget hinaus, um Arm A3 (echte Random-Null, V-1) aufzunehmen, statt einen bestehenden Arm auf
+Kosten seiner Trennschärfe zu kürzen; 16 Kerne → ~3 Wellen à ≤14 Prozesse, 5000 Ticks/Lauf.
 
 ### Erwartetes Ergebnismuster je Hypothese (Kern-Metrik: `cuts_with_tool` und `tool_cut_ratio`;
 Sekundär: `discoveries`, `fragments_total`, `verbs_fired["strike"/"cut"]`; Konfound-Kontrolle: `pop`,
@@ -135,7 +169,9 @@ Sekundär: `discoveries`, `fragments_total`, `verbs_fired["strike"/"cut"]`; Konf
 - **H3 wahr (soziale Weitergabe ist Träger):** D1 (nosocial) fällt deutlich unter A1 bei sonst
   gleicher `pop`. *Empfehlung: Kultur-Kanal (Kausal-Transfer/Imitation) verstärken/priorisieren.*
   **H3 falsch (Kultur trägt nichts):** D1 ≈ A1. *Empfehlung: Kultur-Kanal deprioritisieren.*
-- **H4 wahr (Lernen bringt nichts):** A1 ≈ A2 auf allen Emergenz-Metriken. *Empfehlung: Bevor
+- **H4 wahr (Lernen bringt nichts):** A1 ≈ A2 auf allen Emergenz-Metriken. A3 (echte Random-Null)
+  dient hier als Kontrolle: liegt A2 bereits nah an A3, bestätigt das, dass A2s Restkultur
+  (Kausal-Features, Obs-Dims 34–36) den Vergleich nicht verzerrt hat. *Empfehlung: Bevor
   Feintuning — die Lern-Kopplung selbst reparieren (Reward erreicht die Knapping-Aktion nie).*
 - **Zusatz-Lever:** Hebt E1 oder F1 `tool_cut_ratio`/`discoveries` über A1, ist Exploration (nicht
   Kredit) der billige nächste Schritt.
@@ -146,14 +182,27 @@ Sekundär: `discoveries`, `fragments_total`, `verbs_fired["strike"/"cut"]`; Konf
 
 Pro Arm über Seeds: Median + IQR von `tool_cut_ratio`, `cuts_with_tool` (absolut), `discoveries`,
 `fragments_total`; sowie `pop`/`mean_energy` als Konfound-Kontrolle (ein Arm, der nur die Population
-kollabiert, senkt Discovery trivial — solche Arme sind ungültig, nicht „Hypothese bestätigt").
-Reporting via erweitertem `scripts/m1_report.py` (aggregiert die JSONL-`final`-Records).
+kollabiert, senkt Discovery trivial — solche Arme sind ungültig, nicht „Hypothese bestätigt"; das
+gilt auch für A3). Reporting via erweitertem `scripts/m1_report.py` (aggregiert die JSONL-`final`-
+Records). **Gültigkeits-Schwelle (M-1):** Jede „deutlich"/„≫"/„≪"-Aussage unten gilt nur bei
+nicht-überlappendem IQR zwischen Vergleichsarm und Referenz — n=3 pro Varianten-Arm ist ein grober
+Streuungsschätzer, ausreichend für ein Haupteffekt-Screening, aber zu schwach für knappe Unterschiede.
 
-**Entscheidungsbaum (in Reihenfolge auswerten):**
-1. **A1 ≈ A2** (learn schlägt frozen-random NICHT auf `tool_cut_rat`/`discoveries`)?
+**Entscheidungsbaum (Schritt 0 zuerst, dann in Reihenfolge; C-3-Korrektur):**
+0. **Billiger-Lever-Check zuerst:** Prüfe **C2 ≫ A1 oder E1 ≫ A1 oder F1 ≫ A1** (nicht-überlappender
+   IQR) — unabhängig vom Ausgang von Schritt 1. Trifft das zu, ist ein billiger Dosierungs-/
+   Explorations-Win nachgewiesen; das gilt AUCH dann, wenn gleichzeitig A1 ≈ A2 (Schritt 1) zutrifft
+   — 1×-Curiosity/Entropie/Prior kann unterschwellig sein (hebt A1 nicht über frozen A2), während
+   3×/höher dosiert die Schwelle reißt. **Baue in diesem Fall zuerst: Explorations-Bonus
+   (Curiosity-Gewicht/Entropie/Prior)** — billiger als Kredit-Reparatur — und behandle einen
+   gleichzeitigen A1≈A2-Befund als Hinweis auf EIN ZUSÄTZLICHES, aber nicht zwingend vorrangiges
+   Kredit-Problem (weiter mit Schritt 1–3, um das zu prüfen).
+1. **A1 ≈ A2** (learn schlägt frozen-random NICHT auf `tool_cut_rat`/`discoveries`) UND Schritt 0
+   negativ?
    → H4 dominant. Kein Knob wird die Diagnose ändern. **Baue: Kredit-Zuweisung/Kopplung** (der
    mechanistische Werkzeug-Payoff existiert in der Physik, wird aber nie der Aktion gutgeschrieben).
-   Bestätige indirekt über Muster in Schritt 2.
+   Bestätige indirekt über Muster in Schritt 2. Nutze A3 als Kontrolle, dass A2s Restkultur den
+   A1↔A2-Vergleich nicht verzerrt (§4).
 2. **A1 > A2, aber B1 ≈ A1** (Horizont-Verkürzung schadet kaum, Tool-Cuts bleiben ~0):
    → Kredit-Reichweite ist NICHT das Nadelöhr; das Signal erreicht die frühe Aktion (Knapping)
    ohnehin nicht. **Baue: Credit-Backfill/Reward-Attribution entlang der Kausalkette** (nicht bloß
@@ -166,8 +215,11 @@ Reporting via erweitertem `scripts/m1_report.py` (aggregiert die JSONL-`final`-R
 6. **E1/F1 ≫ A1:** Exploration ist unterdosiert — **Baue: Explorations-Bonus** (Entropie/Prior)
    als billigsten ersten Schritt, vor der teuren Kredit-Reparatur.
 
-Priorität bei mehreren Treffern: H4/Kredit (Schritt 1–3) schlägt H2/H3/Exploration, weil ohne
-funktionierende Kredit-Zuweisung kein Feintuning greift.
+**Priorität bei mehreren Treffern (korrigiert, C-3):** Ein nachgewiesener billiger Lever
+(Schritt 0: C2/E1/F1 ≫ A1) hat Vorrang vor der teuren Kredit-Empfehlung aus Schritt 1 — auch wenn
+A1≈A2 gleichzeitig zutrifft. Nur wenn Schritt 0 negativ ausfällt, gilt weiterhin: H4/Kredit
+(Schritt 1–3) schlägt H2/H3/Exploration, weil ohne funktionierende Kredit-Zuweisung kein
+Feintuning greift.
 
 ---
 
@@ -189,9 +241,19 @@ funktionierende Kredit-Zuweisung kein Feintuning greift.
 - **`nolearn` (A2) ist keine REINE Zufallspolicy:** `_freeze_learning` schaltet nur PPO
   (`maybe_train`) und `imitate_from` ab. Der Kausal-Sequenz-Transfer über Obs-Dims 34–36
   (`causal_memory.feature_vector`) fließt in A2 WEITER. A2 ist also „random-Gewichte + noch fließende
-  Kultur-Features". Für eine strikte Random-Null müsste A2 zusätzlich `nosocial` tragen — bewusst
-  nicht getan, um den bestehenden Harness bit-kompatibel zu halten; bei H3-Interpretation
-  mitdenken (D1 isoliert den Kanal sauberer als der A1↔A2-Vergleich).
+  Kultur-Features". **Behoben durch Arm A3 (V-1):** `nolearn-nosocial` komponiert die A2-Patches
+  zusätzlich mit dem `nosocial`-No-op und liefert damit die echte Untergrenze ohne Restkultur. A2
+  bleibt trotzdem im Design (isoliert „nur PPO/imitate_from aus" bei laufender Kultur), A3 ist der
+  strikte Referenzpunkt für H4-Aussagen; D1 (`nosocial` allein, auf dem `learn`-Substrat) isoliert
+  weiterhin den Kultur-Kanal für H3 sauberer als jeder A2/A3-Vergleich.
+- **Entscheidungsbaum-Kurzschluss (C-3):** Der Baum in §3 wertet ursprünglich in strikter
+  Reihenfolge aus; ein reiner `A1 ≈ A2`-Befund (Schritt 1) hätte einen gleichzeitig gültigen,
+  billigen Explorations-Win (`C2/E1/F1 ≫ A1`, Schritt 4/6) verdeckt und fälschlich die teure
+  Kredit-Reparatur empfohlen. Beide Befunde sind gemeinsam plausibel (z. B. wenn 1×-Curiosity
+  unterschwellig ist, 3×-Curiosity aber die Schwelle reißt). §3 prüft deshalb jetzt den
+  Billiger-Lever-Fall in Schritt 0 VOR dem `A1≈A2`-Kurzschluss; dieser Vorbehalt bleibt bestehen,
+  weil kein Datensatz beide Interpretationen automatisch trennt — die Reihenfolge in §3 reduziert
+  das Risiko, ersetzt aber nicht die manuelle Prüfung beider Signale nebeneinander.
 - **VERB_INIT_BIAS (F1) mischt zwei Effekte:** stärkerer Prior erhöht Verb-Feuerrate UND verschiebt
   den Startpunkt der Policy; ein F1-Effekt beweist „mehr Manipulation hilft", nicht welcher der
   beiden Teilmechanismen. Als Explorations-Grobtest ausreichend, nicht als Feinursache.
