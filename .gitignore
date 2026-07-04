@@ -22,6 +22,8 @@ checkpoint.pkl
 logs/
 *.log
 output/
+runs/
+/*.png
 
 # OS
 .DS_Store
