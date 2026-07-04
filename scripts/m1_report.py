@@ -45,6 +45,10 @@ SECONDARY_VERBS = ["strike", "cut"]
 DEMOGRAPHY_METRICS = [
     ("respawns", "respawns"),
     ("mean_age", "mean_age"),
+    # Review I-1: exakter Todes-Zähler (remove_dead-Wrapper, m1_pilot.py).
+    # Fehlt in JSONL von vor diesem Patch -- _values/_agg überspringen das
+    # sauber (kein Crash), analog zu respawns/mean_age oben.
+    ("deaths", "deaths"),
 ]
 
 
@@ -229,10 +233,19 @@ def _print_respawn_mill_check(arms: dict) -> None:
     -- z.B. alte battery_results/-JSONL vor diesem Patch) werden pro Arm
     stillschweigend übersprungen; hat KEIN Arm die Felder, wird das explizit
     vermerkt statt zu crashen.
+
+    Review I-1: `deaths` (exakter Zähler aus dem `remove_dead`-Wrapper,
+    scripts/m1_pilot.py) wird als zusätzliche Spalte ausgegeben, sofern
+    vorhanden -- alte JSONL ohne dieses Feld liefern "n/a" statt zu crashen
+    (das Feld ist NICHT Teil des `usable`-Filters, da es die K2-Kernprüfung
+    respawns×respawn_count/ids_seen_total nicht betrifft).
     """
     print("=== Respawn-Mühlen-Check (K2) ===\n")
     any_data = False
-    header = f"{'Arm':<20}{'respawns_final (med)':>22}{'mean_age_final (med)':>22}  Hinweis"
+    header = (
+        f"{'Arm':<20}{'respawns_final (med)':>22}{'mean_age_final (med)':>22}"
+        f"{'deaths_final (med)':>20}  Hinweis"
+    )
     print(header)
     print("-" * len(header))
     for exp in EXPERIMENT_ORDER:
@@ -250,6 +263,8 @@ def _print_respawn_mill_check(arms: dict) -> None:
         any_data = True
         med_respawns = st.median(f["respawns"] for f in usable)
         med_mean_age = st.median(f["mean_age"] for f in usable)
+        deaths_vals = [f["deaths"] for f in usable if "deaths" in f]
+        deaths_col = f"{st.median(deaths_vals):>20.1f}" if deaths_vals else f"{'n/a':>20}"
         warn_runs = 0
         for f in usable:
             produced = f["respawns"] * f["_respawn_count_cfg"]
@@ -262,7 +277,7 @@ def _print_respawn_mill_check(arms: dict) -> None:
                 f"WARNUNG: {warn_runs}/{len(usable)} Runs mit respawns×respawn_count "
                 f"≥ ids_seen_total/2 -- Respawn-Mühle plausibel dominant."
             )
-        print(f"{exp:<20}{med_respawns:>22.1f}{med_mean_age:>22.1f}  {note}")
+        print(f"{exp:<20}{med_respawns:>22.1f}{med_mean_age:>22.1f}{deaths_col}  {note}")
     if not any_data:
         print("(Keine Läufe mit K2-Demografie-Feldern gefunden -- alte JSONL ohne "
               "respawns/mean_age/ids_seen_total/respawn_count; Check übersprungen.)")

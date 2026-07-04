@@ -52,18 +52,35 @@ Demografie-Instrumentierung (Runner-seitig, kein Paket-Eingriff):
     nicht auf der Klasse — betrifft nur diesen einen `sim`). Kumulativer
     Zähler (Anzahl AUFRUFE, nicht Anzahl respawnter Agenten) in jedem
     snap/final-Record als `respawns`.
+  - `deaths` (Review I-1): `sim.remove_dead` wird NACH dem Sim-Bau durch eine
+    zählende Wrapper-Closure ersetzt (gleiches Bound-Method-Wrap-Muster wie
+    `emergency_respawn`). `remove_dead()` wird laut `simulation.py` GENAU
+    EINMAL pro Tick in `Simulation.step()` aufgerufen (Zeile ~627) und ist der
+    ursachen-agnostische Todes-Aggregationspunkt (Spec B3) — jeder Agent, der
+    stirbt, durchläuft ihn. Der Wrapper zählt `len(sim.agents)` vor und nach
+    dem (genau einmal ausgeführten) Original-Aufruf und kumuliert die Differenz
+    über den ganzen Lauf. Das ist ein EXAKTER Zähler, keine Untergrenze.
   - `ids_seen_total`: Menge aller `Agent.id`, die in irgendeinem Snapshot
     (inkl. final) als lebend beobachtet wurden, kumulativ über den ganzen
     Lauf. Das ist eine unvollständige, aber KORREKTE Untergrenze für
     "jemals gelebte Agenten" — Geburten UND Tode, die vollständig zwischen
     zwei Snapshots (Default alle 250 Ticks) liegen, werden nicht gezählt,
     weil dazu ein Per-Tick-Hook nötig wäre (Paket-Eingriff, hier bewusst
-    vermieden). Ehrliche Unterschätzung, keine Überschätzung.
+    vermieden). Ehrliche Unterschätzung, keine Überschätzung. Seit Review I-1
+    ist `deaths` der exakte Zähler; `ids_seen_total` bleibt als billige
+    Komplementärmetrik (Geburten+Tode kombiniert) im Record erhalten. Die
+    Identität `ids_seen_total == pop_final + deaths` gilt NUR, wenn zusätzlich
+    jede Geburt zwischen zwei Snapshots in einem späteren Snapshot noch lebend
+    beobachtet wurde; stirbt ein Agent vollständig zwischen zwei Snapshots
+    (geboren UND gestorben, ohne je in einem Snapshot lebend gezählt zu
+    werden), zählt `deaths` ihn, `ids_seen_total` aber nicht — dann gilt nur
+    noch `deaths >= ids_seen_total - pop_final`.
   - `mean_age`: Mittelwert von `tick - a.birth_tick` über die aktuell
     lebenden Agenten je Snapshot (nur Momentaufnahme, kein kumulativer Wert).
   - `turnover_final` (nur im final-Record): `ids_seen_total / max(pop, 1)`
     — grobe Kennzahl, wie oft sich die Population über den Lauf "ausgetauscht"
-    hat (untere Schranke, siehe `ids_seen_total`-Einschränkung oben).
+    hat (untere Schranke, siehe `ids_seen_total`-Einschränkung oben; für den
+    exakten Todes-Zähler siehe `deaths`).
 
 Ausgabe je Run: <out>/<exp>_seed<seed>.jsonl (eine Snapshot-Zeile je
 --snapshot-interval Ticks, erste Zeile ein "meta"-Record mit "exp" +
@@ -246,14 +263,18 @@ EXPERIMENT_ORDER = [
 ]
 
 
-def _snapshot(sim, tick: int, ids_seen: set, respawn_count: int) -> dict:
+def _snapshot(
+    sim, tick: int, ids_seen: set, respawn_count: int, deaths: int
+) -> dict:
     """Baut den Snapshot-/Final-Record.
 
     `ids_seen` wird IN-PLACE um die aktuell lebenden Agent-IDs erweitert
     (Aufrufer hält das Set über den ganzen Lauf) -- siehe Docstring oben zur
     Untererfassung von Geburten+Toden, die vollständig zwischen zwei
     Snapshots liegen. `respawn_count` ist der kumulative Zähler aus dem
-    `emergency_respawn`-Wrapper (Anzahl Aufrufe, siehe `run_one`).
+    `emergency_respawn`-Wrapper (Anzahl Aufrufe, siehe `run_one`). `deaths`
+    ist der exakte kumulative Zähler aus dem `remove_dead`-Wrapper (Review
+    I-1, siehe `run_one` und Modul-Docstring).
     """
     agents = sim.agents
     pop = len(agents)
@@ -282,6 +303,8 @@ def _snapshot(sim, tick: int, ids_seen: set, respawn_count: int) -> dict:
         # K2 Respawn-Mühlen-Instrumentierung (siehe Modul-Docstring).
         "respawns": respawn_count,
         "ids_seen_total": len(ids_seen),
+        # Review I-1: exakter Todes-Zähler aus dem `remove_dead`-Wrapper.
+        "deaths": deaths,
         "mean_age": round(mean_age, 2),
     }
 
@@ -344,6 +367,23 @@ def run_one(
 
     sim.emergency_respawn = _counting_respawn
 
+    # Review I-1: `remove_dead` auf der INSTANZ (nicht der Klasse) durch eine
+    # zählende Wrapper-Closure ersetzen. `remove_dead()` wird laut
+    # `Simulation.step()` GENAU EINMAL pro Tick aufgerufen und ist der
+    # ursachen-agnostische Todes-Aggregationspunkt (Spec B3) -- die Differenz
+    # aus `len(sim.agents)` vor/nach dem (genau einmal ausgeführten)
+    # Original-Aufruf ist die exakte Anzahl in diesem Tick entfernter Toter.
+    _death_state = {"count": 0}
+    _orig_remove_dead = sim.remove_dead
+
+    def _counting_remove_dead():
+        before = len(sim.agents)
+        result = _orig_remove_dead()
+        _death_state["count"] += before - len(sim.agents)
+        return result
+
+    sim.remove_dead = _counting_remove_dead
+
     ids_seen: set = set()
     path = os.path.join(out_dir, f"{exp}_seed{seed}.jsonl")
     t0 = time.time()
@@ -365,11 +405,19 @@ def run_one(
         for tick in range(ticks):
             sim.step()
             if (tick + 1) % snapshot_interval == 0:
-                rec = _snapshot(sim, tick + 1, ids_seen, _respawn_state["count"])
+                rec = _snapshot(
+                    sim,
+                    tick + 1,
+                    ids_seen,
+                    _respawn_state["count"],
+                    _death_state["count"],
+                )
                 rec["record"] = "snap"
                 f.write(json.dumps(rec) + "\n")
                 f.flush()
-        final = _snapshot(sim, ticks, ids_seen, _respawn_state["count"])
+        final = _snapshot(
+            sim, ticks, ids_seen, _respawn_state["count"], _death_state["count"]
+        )
         final["record"] = "final"
         final["walltime_s"] = round(time.time() - t0, 1)
         final["turnover_final"] = round(final["ids_seen_total"] / max(final["pop"], 1), 2)
@@ -378,6 +426,7 @@ def run_one(
         f"[{exp} seed{seed}] done pop={final['pop']} "
         f"tool_cut_ratio={final['tool_cut_ratio']} "
         f"discoveries={final['discoveries']} respawns={final['respawns']} "
+        f"deaths={final['deaths']} "
         f"mean_age={final['mean_age']} in {final['walltime_s']}s -> {path}"
     )
     return path
