@@ -49,6 +49,10 @@ DEMOGRAPHY_METRICS = [
     # Fehlt in JSONL von vor diesem Patch -- _values/_agg überspringen das
     # sauber (kein Crash), analog zu respawns/mean_age oben.
     ("deaths", "deaths"),
+    # Etappe 1: exakter kumulativer Geburtenzähler (spawn_child_from_parent-
+    # Wrapper, m1_pilot.py). Fehlt in älteren JSONL (vor Etappe 1) -- wird
+    # von _values/_agg sauber übersprungen, analog zu deaths/respawns oben.
+    ("births_cum", "births_cum"),
 ]
 
 

@@ -85,6 +85,28 @@ Demografie-Instrumentierung (Runner-seitig, kein Paket-Eingriff):
 Ausgabe je Run: <out>/<exp>_seed<seed>.jsonl (eine Snapshot-Zeile je
 --snapshot-interval Ticks, erste Zeile ein "meta"-Record mit "exp" +
 "exp_id" + den gepatchten Werten). Auswertung: scripts/m1_report.py.
+
+Etappe 1 (docs/superpowers/specs/2026-07-04-k3-auswertung-und-naechste-etappe.md,
+§Empfehlung [1]): K3 zeigte, dass sich die Population NICHT selbst trägt
+(synchroner Gründer-Overshoot 30→44 → Massentod → Respawn-Boden). Drei
+Stellschrauben aus der dortigen Empfehlung sind hier als CLI-Knobs sweepbar,
+damit ein Kalibrier-Sweep eine selbsttragende Konfiguration findet (Gate:
+respawns→0 nach Einschwingen, births≈deaths, Pop stabil ~20-40):
+
+  --age-structured-founders — gestaffelte Startalter statt der synchronen
+    Alter-0-Gründerkohorte (Details: `_age_structure_founders`).
+  --regrow-scale <float>    — skaliert die Nahrungs-Zufluss-Konstanten in
+    `environment/resources.py` multiplikativ (Details: `_scale_regrowth`).
+  --min-food-per-capita <float> — patcht `agents.agent.
+    REPRODUCTION_MIN_FOOD_PER_CAPITA` (Details: `_set_min_food_per_capita`).
+
+Alle drei landen im meta-Record (`age_structured_founders`, `regrow_scale`,
+`min_food_per_capita`), analog zu `min_pop`/`respawn_count`. Zusätzlich neu:
+`births_cum` (siehe `_snapshot`-Docstring) — ein exakter kumulativer
+Geburtenzähler, der das bestehende `births`-Feld (Σ `children` NUR der
+aktuell LEBENDEN Agenten) ergänzt, weil dieses durch Tode untererfasst wird:
+ein Agent, der ein Kind bekommt und dann stirbt, verschwindet aus der Summe,
+obwohl die Geburt stattfand.
 """
 
 from __future__ import annotations
@@ -92,6 +114,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import time
 
 # --------------------------------------------------------------------------
@@ -172,6 +195,116 @@ def _compose(*fns):
 
 def _noop() -> None:
     pass
+
+
+# --------------------------------------------------------------------------
+# Etappe 1 (selbsttragende Demografie) — Harness-weite Knobs, unabhängig von
+# der EXPERIMENTS-Registry oben (die patcht Lern-/Sozial-/Brain-Verhalten pro
+# Arm; diese drei patchen Demografie/Ökologie und gelten für JEDEN Arm
+# gleich). Siehe Modul-Docstring "Etappe 1" für den Kontext (K3-Empfehlung).
+# --------------------------------------------------------------------------
+
+
+def _age_structure_founders(sim) -> None:
+    """K3-Empfehlung [1].1 (höchster Hebel gegen den Overshoot-Crash): gibt
+    den Gründer-Agenten gestaffelte Startalter statt der synchronen Alter-0-
+    Kohorte, die `Simulation.spawn_initial_population` baut.
+
+    Ohne dieses Flag werden ALLE Gründer gleichzeitig reproduktionsfähig
+    (`MIN_REPRODUCTION_AGE=60`, `agents/agent.py`) und altern synchron
+    Richtung `ELDER_AGE=3500` — das erzeugt den in der K3-Analyse belegten
+    synchronen Geburts-Boom (Peak-Pop ~44 bei Tick ~500), gefolgt vom
+    synchronen Malthusianischen Crash. Gestaffelte Alter desynchronisieren,
+    WANN jeder Gründer reproduktionsfähig wird bzw. an Alter stirbt.
+
+    Verteilung: gleichverteilt über [0, 2000) Ticks. Begründung der
+    Obergrenze (`agents/life_stage.py`: `CHILD_MAX=120`, `ADULT_MAX=3500`;
+    `agents/agent.py`: `MIN_REPRODUCTION_AGE=60`, `ELDER_AGE=3500`): 2000
+    bleibt komfortabel unter `ELDER_AGE`/`ADULT_MAX` (3500) — kein Gründer
+    wird bei t=0 bereits post-reproduktiv geboren — und deckt sowohl das
+    CHILD- als auch einen großen Teil des ADULT-Spektrums ab. 2000 ist zudem
+    ~5x die in K3 gemessene Steady-State-Lebensdauer (~360–400 Ticks) —
+    großzügig genug, um Reproduktions-/Sterbefenster der Kohorte über
+    mehrere "Generationslängen" zu verteilen, statt nur den ersten
+    Boom-Bust-Zyklus einmalig zu verschieben.
+
+    Setzt SOWOHL `agent.age` (das tatsächliche, separat inkrementierte Feld,
+    das `life_stage`/`can_reproduce` gated — `agent.py:924` `self.age += 1`,
+    `agent.py:500-504` `can_reproduce`) ALS AUCH `agent.birth_tick = -age`
+    (Aufrufzeitpunkt: `sim.tick == 0`, direkt nach dem `Simulation`-Bau, also
+    ergibt `birth_tick = 0 - age = -age`), damit `tick - birth_tick`-
+    Konsumenten (`m1_pilot._snapshot`s `mean_age`, `simulation.py:530`
+    `avg_age`) von Anfang an konsistente Werte sehen. `birth_tick` ALLEIN zu
+    setzen hätte KEINE Wirkung auf Fertilität/Lebensphase — beide gaten über
+    das separate `self.age`-Feld, nicht über eine `tick - birth_tick`-
+    Berechnung zur Laufzeit.
+
+    Determinismus: zieht `len(sim.agents)` Werte aus dem GLOBALEN `random`-
+    Modul, das `Simulation.__init__` bereits über `rng.seed_all(seed)`
+    geseedet hat, BEVOR diese Funktion aufgerufen wird — gleicher Seed
+    erzeugt daher dieselbe Alters-Verteilung. Dieser Zusatz-Draw verschiebt
+    den nachfolgenden `random`-Strom gegenüber einem Lauf OHNE dieses Flag
+    (ein zusätzlicher `random.randint`-Aufruf pro Agent, bevor der erste
+    `sim.step()` irgendeinen `random`-Aufruf tätigt) — das ist ERWARTET:
+    age-structured und nicht-age-structured sind unterschiedliche
+    Bedingungen, kein Determinismus-Bug (gleicher Seed + gleiches Flag ⇒
+    weiterhin bitidentisch).
+    """
+    for a in sim.agents:
+        age = random.randint(0, 1999)
+        a.age = age
+        a.birth_tick = sim.tick - age
+
+
+def _scale_regrowth(scale: float) -> None:
+    """K3-Empfehlung [1].2 (Tragfähigkeit anheben): skaliert die Nahrungs-
+    ZUFLUSS-Konstanten in `environment/resources.py` multiplikativ.
+
+    Gewählte Konstanten: `FOOD_SCARCITY_FACTOR` (Default 0.50) und
+    `MEAT_SCARCITY_FACTOR` (Default 0.55) — laut Datei-Kommentar
+    (`resources.py:29-30`) "Pflanzenwachstum auf 50% reduziert" /
+    "Fleischnachwuchs auf 55% reduziert", die zentralen linearen Faktoren auf
+    `plant_gain`/`meat_gain` (`resources.py:519-521` bzw. `537-539`) BEVOR
+    die Headroom-/Ceiling-Clamps greifen. Andere Konstanten in der Datei
+    (`SCARCITY_CEILING_FACTOR`, `WIND_PLANT_LOSS`, …) sind Decken bzw.
+    Verlust-Terme, kein Zufluss, und bleiben unangetastet.
+
+    Call-time-Beleg (Projekt-Gotcha: def-time-Defaults sind nicht
+    patchbar): `regrow_grid` (`resources.py:475`, der Live-Pfad — `world.py`
+    importiert und ruft NUR `regrow_grid`, nie das ältere `regrow_cell`)
+    liest beide Namen als freie Modul-Globals in ihrem Funktionskörper
+    (kein Default-Argument, keine construction-time-Kopie). `world.py`
+    importiert per `from ... import regrow_grid` nur die FUNKTION, nicht die
+    Konstanten — `regrow_grid` schlägt die Namen also weiterhin im
+    Globals-Dict von `resources.py` nach. Patchen von
+    `resources_mod.FOOD_SCARCITY_FACTOR`/`MEAT_SCARCITY_FACTOR` NACH dem
+    Import wirkt daher auf jeden folgenden `regrow_grid`-Aufruf
+    (`world.py:334`, genau einmal pro `Simulation.step()`-Tick).
+    """
+    import artificial_society.environment.resources as resources_mod
+
+    resources_mod.FOOD_SCARCITY_FACTOR = resources_mod.FOOD_SCARCITY_FACTOR * scale
+    resources_mod.MEAT_SCARCITY_FACTOR = resources_mod.MEAT_SCARCITY_FACTOR * scale
+
+
+def _set_min_food_per_capita(value: float) -> None:
+    """K3-Empfehlung [1].3 (Dichte-Gate justieren): patcht
+    `agents/agent.py`s `REPRODUCTION_MIN_FOOD_PER_CAPITA` (Default 6.0) —
+    der dichteabhängige Fruchtbarkeits-Gate, der laut K3-Analyse auf dem
+    40×30-Feld ggf. zu streng ist und die Erholung nach dem Crash blockiert.
+
+    Call-time-Beleg: `_try_reproduce` (`agent.py:817-822`) liest den Namen
+    als freien Modul-Global im Funktionskörper (`if
+    self._local_food_per_capita(world, agents) <
+    REPRODUCTION_MIN_FOOD_PER_CAPITA`) — kein Default-Argument, keine
+    construction-time-Kopie. Patchen von
+    `agent_mod.REPRODUCTION_MIN_FOOD_PER_CAPITA` NACH dem Import wirkt daher
+    auf jeden folgenden `_try_reproduce`-Aufruf (einmal pro lebendem,
+    weiblichem Agenten mit `can_reproduce()`, pro Tick — `agent.py:1483`).
+    """
+    import artificial_society.agents.agent as agent_mod
+
+    agent_mod.REPRODUCTION_MIN_FOOD_PER_CAPITA = value
 
 
 # --------------------------------------------------------------------------
@@ -264,7 +397,7 @@ EXPERIMENT_ORDER = [
 
 
 def _snapshot(
-    sim, tick: int, ids_seen: set, respawn_count: int, deaths: int
+    sim, tick: int, ids_seen: set, respawn_count: int, deaths: int, births_cum: int
 ) -> dict:
     """Baut den Snapshot-/Final-Record.
 
@@ -274,7 +407,11 @@ def _snapshot(
     Snapshots liegen. `respawn_count` ist der kumulative Zähler aus dem
     `emergency_respawn`-Wrapper (Anzahl Aufrufe, siehe `run_one`). `deaths`
     ist der exakte kumulative Zähler aus dem `remove_dead`-Wrapper (Review
-    I-1, siehe `run_one` und Modul-Docstring).
+    I-1, siehe `run_one` und Modul-Docstring). `births_cum` ist der exakte
+    kumulative Zähler aus dem `spawn_child_from_parent`-Wrapper (Etappe 1,
+    siehe `run_one` und Modul-Docstring) -- im Gegensatz zu `births` unten
+    (Σ `children` NUR der aktuell lebenden Agenten) zählt er JEDE Geburt
+    genau einmal, unabhängig davon, ob Elternteil oder Kind später sterben.
     """
     agents = sim.agents
     pop = len(agents)
@@ -300,6 +437,8 @@ def _snapshot(
         "discoveries": len(sim.world.objects.discovery.entries),
         "verbs_fired": {k: int(v) for k, v in verbs.items()},
         "births": sum(getattr(a, "children", 0) for a in agents),
+        # Etappe 1: exakter kumulativer Geburtenzähler (siehe _snapshot-Docstring).
+        "births_cum": births_cum,
         # K2 Respawn-Mühlen-Instrumentierung (siehe Modul-Docstring).
         "respawns": respawn_count,
         "ids_seen_total": len(ids_seen),
@@ -320,6 +459,9 @@ def run_one(
     out_dir: str,
     min_pop: int = 8,
     respawn_count_cfg: int = 6,
+    age_structured_founders: bool = False,
+    regrow_scale: float = 1.0,
+    min_food_per_capita: float = 6.0,
 ) -> str:
     conf = EXPERIMENTS[exp]
     # Patches VOR dem Simulation-Bau anwenden (Spec §1). Modul-Konstanten wie
@@ -344,6 +486,14 @@ def run_one(
     simulation_mod.MIN_POPULATION = min_pop
     simulation_mod.RESPAWN_COUNT = respawn_count_cfg
 
+    # Etappe 1, Stellschraube 2/3 (siehe `_scale_regrowth`/
+    # `_set_min_food_per_capita`-Docstrings für den call-time-Beleg). Bei den
+    # Defaults (1.0 / 6.0) sind das reine No-ops -- 1.0x der Original-
+    # Konstanten bzw. der bereits im Paket gesetzte Default -- also unverändertes
+    # Verhalten gegenüber Läufen ohne diese Flags.
+    _scale_regrowth(regrow_scale)
+    _set_min_food_per_capita(min_food_per_capita)
+
     sim = Simulation(
         headless=True,
         load_checkpoint=False,
@@ -353,6 +503,12 @@ def run_one(
         initial_population=pop,
         seed=seed,
     )
+
+    # Etappe 1, Stellschraube 1 (siehe `_age_structure_founders`-Docstring):
+    # MUSS nach dem `Simulation`-Bau laufen -- operiert auf den bereits
+    # konstruierten Gründer-Agenten-Instanzen, kein Modul-/Klassen-Patch.
+    if age_structured_founders:
+        _age_structure_founders(sim)
 
     # K2-Instrumentierung: `emergency_respawn` auf der INSTANZ (nicht der
     # Klasse) durch eine zählende Wrapper-Closure ersetzen, damit jeder Aufruf
@@ -384,6 +540,24 @@ def run_one(
 
     sim.remove_dead = _counting_remove_dead
 
+    # Etappe 1: `spawn_child_from_parent` auf der INSTANZ (nicht der Klasse)
+    # durch eine zählende Wrapper-Closure ersetzen (gleiches Bound-Method-
+    # Wrap-Muster wie oben). Laut `Simulation.step()` (simulation.py:617) ist
+    # dies der EINZIGE Aufrufort für Geburten aus abgeschlossener Trächtigkeit
+    # (ein Aufruf je `child_genes is not None`-Rückgabe von `agent.update`) --
+    # disjunkt von `emergency_respawn` (Zufallshirn-Respawns, kein Aufruf von
+    # `spawn_child_from_parent`). Der Zähler ist daher ein exakter, nicht
+    # durch spätere Tode untererfasster Geburtenzähler (siehe `_snapshot`-
+    # Docstring zu `births_cum` vs. `births`).
+    _births_state = {"count": 0}
+    _orig_spawn_child = sim.spawn_child_from_parent
+
+    def _counting_spawn_child(parent, genes):
+        _births_state["count"] += 1
+        return _orig_spawn_child(parent, genes)
+
+    sim.spawn_child_from_parent = _counting_spawn_child
+
     ids_seen: set = set()
     path = os.path.join(out_dir, f"{exp}_seed{seed}.jsonl")
     t0 = time.time()
@@ -399,6 +573,12 @@ def run_one(
             "snapshot_interval": snapshot_interval,
             "min_pop": min_pop,
             "respawn_count": respawn_count_cfg,
+            # Etappe 1 (K3-Empfehlung [1]): die drei Demografie-Knobs, siehe
+            # Modul-Docstring "Etappe 1" + `_age_structure_founders`/
+            # `_scale_regrowth`/`_set_min_food_per_capita`-Docstrings.
+            "age_structured_founders": age_structured_founders,
+            "regrow_scale": regrow_scale,
+            "min_food_per_capita": min_food_per_capita,
             "patched": dict(conf["patched"], CHECKPOINT_INTERVAL=0),
         }
         f.write(json.dumps(meta) + "\n")
@@ -411,12 +591,18 @@ def run_one(
                     ids_seen,
                     _respawn_state["count"],
                     _death_state["count"],
+                    _births_state["count"],
                 )
                 rec["record"] = "snap"
                 f.write(json.dumps(rec) + "\n")
                 f.flush()
         final = _snapshot(
-            sim, ticks, ids_seen, _respawn_state["count"], _death_state["count"]
+            sim,
+            ticks,
+            ids_seen,
+            _respawn_state["count"],
+            _death_state["count"],
+            _births_state["count"],
         )
         final["record"] = "final"
         final["walltime_s"] = round(time.time() - t0, 1)
@@ -426,7 +612,7 @@ def run_one(
         f"[{exp} seed{seed}] done pop={final['pop']} "
         f"tool_cut_ratio={final['tool_cut_ratio']} "
         f"discoveries={final['discoveries']} respawns={final['respawns']} "
-        f"deaths={final['deaths']} "
+        f"deaths={final['deaths']} births_cum={final['births_cum']} "
         f"mean_age={final['mean_age']} in {final['walltime_s']}s -> {path}"
     )
     return path
@@ -454,6 +640,37 @@ def main() -> None:
         default=6,
         help="Patcht simulation.RESPAWN_COUNT (Agenten je Respawn-Batch, Default 6).",
     )
+    ap.add_argument(
+        "--age-structured-founders",
+        action="store_true",
+        default=False,
+        help=(
+            "Etappe 1 (K3-Empfehlung [1].1): staffelt die Startalter der "
+            "Gründer-Agenten gleichverteilt über [0, 2000) Ticks statt der "
+            "synchronen Alter-0-Kohorte, um den Gründer-Overshoot-Crash zu "
+            "entsynchronisieren (Details: siehe _age_structure_founders)."
+        ),
+    )
+    ap.add_argument(
+        "--regrow-scale",
+        type=float,
+        default=1.0,
+        help=(
+            "Etappe 1 (K3-Empfehlung [1].2): multiplikative Skalierung von "
+            "environment.resources.FOOD_SCARCITY_FACTOR/MEAT_SCARCITY_FACTOR "
+            "(Default 1.0 = unverändert; Details: siehe _scale_regrowth)."
+        ),
+    )
+    ap.add_argument(
+        "--min-food-per-capita",
+        type=float,
+        default=6.0,
+        help=(
+            "Etappe 1 (K3-Empfehlung [1].3): patcht agents.agent."
+            "REPRODUCTION_MIN_FOOD_PER_CAPITA (Default 6.0 = Paket-Default, "
+            "unverändert; Details: siehe _set_min_food_per_capita)."
+        ),
+    )
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     run_one(
@@ -467,6 +684,9 @@ def main() -> None:
         args.out,
         args.min_pop,
         args.respawn_count,
+        args.age_structured_founders,
+        args.regrow_scale,
+        args.min_food_per_capita,
     )
 
 
