@@ -100,8 +100,19 @@ respawns→0 nach Einschwingen, births≈deaths, Pop stabil ~20-40):
   --min-food-per-capita <float> — patcht `agents.agent.
     REPRODUCTION_MIN_FOOD_PER_CAPITA` (Details: `_set_min_food_per_capita`).
 
-Alle drei landen im meta-Record (`age_structured_founders`, `regrow_scale`,
-`min_food_per_capita`), analog zu `min_pop`/`respawn_count`. Zusätzlich neu:
+Demografie-Diagnose (docs/superpowers/specs/2026-07-05-demografie-diagnose.md):
+`--regrow-scale` skaliert nur die Zufluss-RATE und lässt die Tragfähigkeit
+(die Nahrungs-DECKE) unverändert. Vierter Knob dafür:
+
+  --plant-ceiling-scale <float> — skaliert `sim.world._bio["plant_ceiling"]`
+    (die per-Zell-Pflanzen-Nahrungsdecke des vektorisierten Live-Regrow-Pfads)
+    multiplikativ NACH dem Simulation-Bau (Details: `_scale_plant_ceiling`).
+    Nur Pflanzen, bewusst nicht das Fleisch-Decken-Äquivalent (flacher
+    Modul-Skalar `MEAT_CEILING_FACTOR`, kein per-Biome-Array).
+
+Alle vier landen im meta-Record (`age_structured_founders`, `regrow_scale`,
+`min_food_per_capita`, `plant_ceiling_scale`), analog zu `min_pop`/
+`respawn_count`. Zusätzlich neu:
 `births_cum` (siehe `_snapshot`-Docstring) — ein exakter kumulativer
 Geburtenzähler, der das bestehende `births`-Feld (Σ `children` NUR der
 aktuell LEBENDEN Agenten) ergänzt, weil dieses durch Tode untererfasst wird:
@@ -310,6 +321,54 @@ def _scale_regrowth(scale: float) -> None:
     resources_mod.MEAT_SCARCITY_FACTOR = _REGROW_DEFAULTS["MEAT_SCARCITY_FACTOR"] * scale
 
 
+def _scale_plant_ceiling(sim, scale: float) -> None:
+    """Demografie-Diagnose (docs/superpowers/specs/2026-07-05-demografie-
+    diagnose.md): skaliert die Pflanzen-Nahrungs-DECKE multiplikativ, im
+    Unterschied zu `_scale_regrowth`, das nur die Zufluss-RATE skaliert und
+    damit die Tragfähigkeit unverändert lässt (die Diagnose belegt: der Live-
+    Pfad konvergiert auf `plant_target = plant_ceiling * capacity`,
+    unabhängig davon, wie schnell er dort ankommt).
+
+    Attribut-Beleg (Live-Pfad, nicht die construction-time-Kopie): `World.
+    _init_biome_statics` (`world.py:59-75`) baut `self._bio["plant_ceiling"]`
+    EINMALIG pro `World`-Instanz als `np.array([[biome_scarcity_ceiling(b) ...`
+    -- ein Float64-Array, ein Eintrag je Zelle. `regrow_grid`
+    (`environment/resources.py:475`, der EINZIGE von `Simulation.step()`
+    aufgerufene Regrow-Pfad) bindet `bio = world._bio` (Zeile 478) und liest
+    daraus `plant_ceiling = bio["plant_ceiling"]` (Zeile 546) -- DASSELBE
+    Array-Objekt, keine Kopie, kein Duplikat. Es speist sowohl
+    `plant_target` (Zeile 547, steuert `plant_headroom` und damit den
+    Zufluss) als auch `plant_hard_cap` (Zeile 580, die harte obere Clip-
+    Grenze von `F["plant_food"]`). Eine In-Place-Multiplikation dieses Arrays
+    NACH dem `Simulation`-Bau wirkt daher auf jeden folgenden
+    `regrow_grid`-Aufruf in genau diesem `sim`.
+
+    Nur die PFLANZEN-Decke wird skaliert. Das Fleisch-Äquivalent ist KEIN
+    Array auf `world._bio` -- `regrow_grid` verwendet für Fleisch stattdessen
+    den flachen Modul-Skalar `MEAT_CEILING_FACTOR` (`resources.py`,
+    `meat_target = MEAT_CEILING_FACTOR * capacity`, Zeile 548), es gibt kein
+    `meat_ceiling`-Array am World-Objekt. Entscheidung (Task-Vorgabe): Fleisch
+    bewusst NICHT mitskalieren, nur Pflanzen -- diese Funktion fasst
+    `MEAT_CEILING_FACTOR` daher gar nicht an.
+
+    Idempotenz: anders als `_scale_regrowth`s Modul-globale Konstanten (die
+    IM SELBEN Prozess über mehrere Sim-Bauten hinweg persistieren und daher
+    einen eingefrorenen Default-Cache brauchen, siehe `_REGROW_DEFAULTS`),
+    ist `world._bio["plant_ceiling"]` ein INSTANZ-Attribut, das
+    `_init_biome_statics` bei JEDEM `Simulation()`-Bau frisch aus den
+    Biome-Namen neu aufbaut (`world.py:34`, im `World.__init__` aufgerufen).
+    Diese Funktion wird in `run_one` genau einmal pro frisch gebautem `sim`
+    aufgerufen, auf einem Array, das seit seiner Konstruktion noch nie
+    skaliert wurde -- ein zweiter Aufruf im selben Prozess bräuchte dafür
+    einen zweiten, ebenfalls frischen `sim`. Kein modulweiter Default-Cache
+    nötig; die In-Place-Multiplikation ist pro Sim-Instanz von sich aus
+    idempotent (ein Aufruf, ein frisches Array).
+    """
+    if scale == 1.0:
+        return  # exakter No-op beim Default, kein Float-Rundungsrauschen
+    sim.world._bio["plant_ceiling"] *= scale
+
+
 def _set_min_food_per_capita(value: float) -> None:
     """K3-Empfehlung [1].3 (Dichte-Gate justieren): patcht
     `agents/agent.py`s `REPRODUCTION_MIN_FOOD_PER_CAPITA` (Default 6.0) —
@@ -485,6 +544,7 @@ def run_one(
     age_structured_founders: bool = False,
     regrow_scale: float = 1.0,
     min_food_per_capita: float = 6.0,
+    plant_ceiling_scale: float = 1.0,
 ) -> str:
     conf = EXPERIMENTS[exp]
     # Patches VOR dem Simulation-Bau anwenden (Spec §1). Modul-Konstanten wie
@@ -532,6 +592,12 @@ def run_one(
     # konstruierten Gründer-Agenten-Instanzen, kein Modul-/Klassen-Patch.
     if age_structured_founders:
         _age_structure_founders(sim)
+
+    # Demografie-Diagnose (siehe `_scale_plant_ceiling`-Docstring): MUSS nach
+    # dem `Simulation`-Bau laufen (operiert auf `sim.world._bio`, das erst
+    # dort existiert) und VOR dem ersten `sim.step()` (sonst hätte der erste
+    # Regrow-Tick bereits mit der unskalierten Decke gerechnet).
+    _scale_plant_ceiling(sim, plant_ceiling_scale)
 
     # K2-Instrumentierung: `emergency_respawn` auf der INSTANZ (nicht der
     # Klasse) durch eine zählende Wrapper-Closure ersetzen, damit jeder Aufruf
@@ -602,6 +668,10 @@ def run_one(
             "age_structured_founders": age_structured_founders,
             "regrow_scale": regrow_scale,
             "min_food_per_capita": min_food_per_capita,
+            # Demografie-Diagnose (siehe `_scale_plant_ceiling`-Docstring):
+            # skaliert die Pflanzen-Nahrungs-DECKE (world._bio["plant_ceiling"]),
+            # nicht die Zufluss-RATE wie `regrow_scale`.
+            "plant_ceiling_scale": plant_ceiling_scale,
             "patched": dict(conf["patched"], CHECKPOINT_INTERVAL=0),
         }
         f.write(json.dumps(meta) + "\n")
@@ -694,6 +764,19 @@ def main() -> None:
             "unverändert; Details: siehe _set_min_food_per_capita)."
         ),
     )
+    ap.add_argument(
+        "--plant-ceiling-scale",
+        type=float,
+        default=1.0,
+        help=(
+            "Demografie-Diagnose (docs/superpowers/specs/2026-07-05-"
+            "demografie-diagnose.md): skaliert die Pflanzen-Nahrungs-DECKE "
+            "(sim.world._bio['plant_ceiling'], NICHT die Zufluss-Rate wie "
+            "--regrow-scale) multiplikativ nach dem Simulation-Bau (Default "
+            "1.0 = unverändert; Details: siehe _scale_plant_ceiling). Skaliert "
+            "bewusst NUR Pflanzen, nicht das flache Fleisch-Decken-Konstante."
+        ),
+    )
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     run_one(
@@ -710,6 +793,7 @@ def main() -> None:
         args.age_structured_founders,
         args.regrow_scale,
         args.min_food_per_capita,
+        args.plant_ceiling_scale,
     )
 
 
