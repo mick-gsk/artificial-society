@@ -256,6 +256,19 @@ def _age_structure_founders(sim) -> None:
         a.birth_tick = sim.tick - age
 
 
+# Review-Finding I-1 (Etappe 1a, review-report-etappe1.md): `_scale_regrowth`
+# multiplizierte bisher die AKTUELLEN (ggf. bereits gepatchten) Modul-Werte,
+# nicht die eingefrorenen Original-Defaults. Ein zweiter Aufruf im selben
+# Prozess (z.B. Batterie-Runner, der mehrere Arme im selben Interpreter
+# ausführt) potenzierte den Faktor (2x + 2x = 4x statt idempotent 2x). Fix:
+# die Original-Defaults werden BEIM ERSTEN Aufruf einmalig aus resources.py
+# gelesen und modulweit in diesem Dict eingefroren; jeder Aufruf (auch der
+# erste) setzt danach IMMER `default * scale`, nie `aktuell * scale` — damit
+# ist `_scale_regrowth(s)` beliebig oft im selben Prozess wiederholbar und
+# liefert bei gleichem `s` immer denselben Wert.
+_REGROW_DEFAULTS: dict[str, float] = {}
+
+
 def _scale_regrowth(scale: float) -> None:
     """K3-Empfehlung [1].2 (Tragfähigkeit anheben): skaliert die Nahrungs-
     ZUFLUSS-Konstanten in `environment/resources.py` multiplikativ.
@@ -280,11 +293,21 @@ def _scale_regrowth(scale: float) -> None:
     `resources_mod.FOOD_SCARCITY_FACTOR`/`MEAT_SCARCITY_FACTOR` NACH dem
     Import wirkt daher auf jeden folgenden `regrow_grid`-Aufruf
     (`world.py:334`, genau einmal pro `Simulation.step()`-Tick).
+
+    Idempotenz (Review-Finding I-1): multipliziert IMMER die beim ersten
+    Aufruf in diesem Prozess eingefrorenen Original-Defaults
+    (`_REGROW_DEFAULTS`), nie die aktuellen (ggf. bereits gepatchten)
+    Modul-Attribute — ein zweiter Aufruf mit demselben `scale` im selben
+    Interpreter reproduziert exakt denselben Wert statt ihn zu potenzieren.
     """
     import artificial_society.environment.resources as resources_mod
 
-    resources_mod.FOOD_SCARCITY_FACTOR = resources_mod.FOOD_SCARCITY_FACTOR * scale
-    resources_mod.MEAT_SCARCITY_FACTOR = resources_mod.MEAT_SCARCITY_FACTOR * scale
+    if not _REGROW_DEFAULTS:
+        _REGROW_DEFAULTS["FOOD_SCARCITY_FACTOR"] = resources_mod.FOOD_SCARCITY_FACTOR
+        _REGROW_DEFAULTS["MEAT_SCARCITY_FACTOR"] = resources_mod.MEAT_SCARCITY_FACTOR
+
+    resources_mod.FOOD_SCARCITY_FACTOR = _REGROW_DEFAULTS["FOOD_SCARCITY_FACTOR"] * scale
+    resources_mod.MEAT_SCARCITY_FACTOR = _REGROW_DEFAULTS["MEAT_SCARCITY_FACTOR"] * scale
 
 
 def _set_min_food_per_capita(value: float) -> None:
