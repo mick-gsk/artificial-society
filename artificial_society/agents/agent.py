@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 import numpy as np
 import torch
@@ -87,6 +88,29 @@ REPRODUCTION_COOLDOWN = 100
 # drops, so the population settles near carrying capacity instead of crashing.
 REPRODUCTION_SENSE_RADIUS = 2
 REPRODUCTION_MIN_FOOD_PER_CAPITA = 6.0
+# Angeborene Grund-Taxis (Chemotaxis-Analogon, Architektur A2): symmetrischer
+# Nahrungs- & Partner-GRUNDTRIEB, der im physics_v2-Pfad die Welt-Wirkung des
+# Move-Kopfs (Dims 0/1) ersetzt. Rein deterministisch, KEIN random.* — der
+# zentrale seed-getriebene RNG-Strom wird nicht verschoben. Als eingebauter
+# Trieb gedacht (wie Metabolismus/Konzeption-bei-Ko-Lokation); Werkzeuge/
+# Sprache/Bauen bleiben gelernt. Kalibrierung (Schwelle/Radius) ist offen und
+# wird im Piloten sweepbar in den meta-Record geloggt.
+#
+# Schwellen-Ordnung (Review-Auflage A1): REPRODUCTION_ENERGY (60) <
+# TAXIS_HUNGER_THRESHOLD (80). Der effektive Mate-Seek-Floor ist damit = 80:
+# unter 80 sucht ein Agent Nahrung (`hungry`), ab 80 und repro-fähig einen
+# Partner. 80 ist BEWUSST niedrig gewählt — der Review warnte, dass 120 die
+# Partnersuche erst ab E>=120 zulässt und die Allee-Falle nur langsam bricht.
+# 80 (~0.33*MAX_ENERGY=240) hält einen echten Hunger-Boden und lässt zugleich
+# das breite Energieband [80,240] aktiv Partner suchen, sodass paarungsbereite
+# Agenten (energy>=60) realistisch zur Partnersuche kommen.
+TAXIS_HUNGER_THRESHOLD = 80.0
+# Partner-Wahrnehmungsradius (Chebyshev), > ±5-Konzeptionsbox in _try_reproduce
+# (die NICHT geändert wird), damit Agenten die letzte Lücke ins Konzeptions-
+# fenster aktiv schließen. Bewusst flacher Konstant-Radius (andere Modalität als
+# der per-Agent-`sense_radius` der Nahrungs-Taxis) — im Review als vertretbare
+# Asymmetrie benannt.
+MATE_SEEK_RADIUS = 8
 # Tuned values previously applied at import by emergence_runtime; now the source of truth.
 MIN_REPRODUCTION_AGE = 60  # int(life_stage.CHILD_MAX * 0.5)
 GESTATION_TIME = 40
@@ -389,6 +413,14 @@ class Agent:
     physics_v2: bool = False
     body: object = None
     hands: object = None
+    # Angeborene Grund-Taxis (A2) — KLASSEN-Konfiguration (ClassVar, kein
+    # dataclass-Feld). Default AUS ⇒ Verhalten byte-gleich zum bisherigen
+    # v2-/v1-Pfad (primitive_move). Der Harness (scripts/m1_pilot.py --taxis)
+    # setzt diese Klassen-Attribute vor dem Sim-Bau. Die Schwellen sind zur
+    # Laufzeit über `self.<attr>` lesbar (Sweep-Knobs).
+    taxis_enabled: ClassVar[bool] = False
+    taxis_hunger_threshold: ClassVar[float] = TAXIS_HUNGER_THRESHOLD
+    mate_seek_radius: ClassVar[int] = MATE_SEEK_RADIUS
 
     @classmethod
     def spawn_random(cls, x, y):
@@ -600,6 +632,91 @@ class Agent:
         cell = world.get_cell(nx, ny)
         if cell.get("passable", True):
             self.pos = (nx, ny)
+
+    def innate_locomotion(self, world, agents):
+        """Angeborene Grund-Taxis (A2): EIN gerichteter Grundschritt/Tick.
+
+        Ersetzt im physics_v2-Pfad die Welt-Wirkung des Move-Kopfs. Rein,
+        RNG-frei und deterministisch — liest WEDER die gesampelte Move-Aktion
+        (Dims 0/1) NOCH zieht sie einen Zufallswert (Null-Bias-Prämisse §2/A2).
+        Priorität survival-first: hungrig -> Nahrungs-Taxis; sonst paarungsbereit
+        -> Partner-Taxis; sonst Ruhe. Gleiche Klemm-/`passable`-Physik wie
+        `primitive_move`, ein Schritt (dx,dy ∈ {-1,0,+1}), kein Teleport.
+        """
+        if self.is_sleeping:
+            return
+        target = None
+        if self.energy < self.taxis_hunger_threshold:
+            target = self._nearest_food_cell(world)
+        elif self.can_reproduce():
+            target = self._nearest_compatible_mate(agents)
+        if target is None:
+            return  # gesättigt / kein Gradient im Radius -> Ruhe (kein Schritt)
+        x, y = self.pos
+        dx = (target[0] > x) - (target[0] < x)  # sign, ∈ {-1,0,+1}
+        dy = (target[1] > y) - (target[1] < y)
+        nx = max(0, min(world.width - 1, x + dx))
+        ny = max(0, min(world.height - 1, y + dy))
+        if world.get_cell(nx, ny).get("passable", True):
+            self.pos = (nx, ny)
+
+    def _nearest_food_cell(self, world):
+        """Zelle mit max `food` (>0) im per-Agent-Wahrnehmungsradius.
+
+        Tie-Breaks deterministisch: höchstes `food`; bei Gleichstand geringste
+        Chebyshev-Distanz; dann lexikografisch `(x, y)`. Ist die beste Zelle die
+        Standzelle -> None (bleiben & foragen). Kein Zufall.
+        """
+        x, y = self.pos
+        r = max(1, int(self.genes["sense_radius"]))
+        best_key = None
+        best_pos = None
+        for tx in range(x - r, x + r + 1):
+            for ty in range(y - r, y + r + 1):
+                if not world.in_bounds(tx, ty):
+                    continue
+                food = world.get_cell(tx, ty)["food"]
+                if food <= 0:
+                    continue
+                dist = max(abs(tx - x), abs(ty - y))
+                key = (-food, dist, tx, ty)  # min -> max food, min dist, lexi (x,y)
+                if best_key is None or key < best_key:
+                    best_key = key
+                    best_pos = (tx, ty)
+        if best_pos is None or best_pos == (x, y):
+            return None
+        return best_pos
+
+    def _nearest_compatible_mate(self, agents):
+        """Nächster kompatibler fruchtbarer Gegen-Sex-Partner in MATE_SEEK_RADIUS.
+
+        Kompatibilität spiegelt `_try_reproduce`: lebendig, anderes Geschlecht,
+        `can_reproduce()`, Trust >= -0.2. Tie-Breaks: geringste Chebyshev-Distanz;
+        dann kleinste `agent.id`. Iteration über die ordnungsstabile `agents`-Liste,
+        kein Zufall.
+        """
+        x, y = self.pos
+        r = self.mate_seek_radius
+        best_key = None
+        best_pos = None
+        for a in agents:
+            if a is self or not a.alive or a.sex == self.sex:
+                continue
+            if not a.can_reproduce():
+                continue
+            if self.trust.get(a.id, 0.0) < -0.2:
+                continue
+            ax, ay = a.pos
+            dist = max(abs(ax - x), abs(ay - y))
+            if dist > r:
+                continue
+            key = (dist, a.id)
+            if best_key is None or key < best_key:
+                best_key = key
+                best_pos = (ax, ay)
+        if best_pos is None or best_pos == (x, y):
+            return None
+        return best_pos
 
     def _forage(self, world, mods):
         x, y = self.pos
@@ -1440,7 +1557,16 @@ class Agent:
                 # Zulässigkeits-Masken bleiben konsistent zur Ausführung).
                 self._execute_embodied(world, brain_step, view)
 
-        self.primitive_move(world, action)
+        if self.physics_v2 and self.taxis_enabled:
+            # Angeborene Grund-Taxis (A2): der gerichtete Grundtrieb ersetzt im
+            # v2-Pilot die Welt-Wirkung des Move-Kopfs. Die gesampelte Move-Aktion
+            # (Dims 0/1) bleibt physisch im action_tensor & im PPO-Buffer (on-
+            # policy), wird aber verhaltens-inert — store_transition_v2 (brain.py)
+            # bleibt unberührt. RNG-frei/deterministisch. v1-Pfad + taxis-AUS
+            # nutzen weiter primitive_move (Verhalten byte-gleich, Golden grün).
+            self.innate_locomotion(world, agents)
+        else:
+            self.primitive_move(world, action)
         current_cell = world.get_cell(*self.pos)
         structure_mods = apply_structure_effects(self, current_cell)
 
