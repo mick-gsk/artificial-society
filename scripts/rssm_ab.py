@@ -70,7 +70,11 @@ def _arm_sim(arm, seed, cpu):
         initial_population=36,
     )
     if arm == "A":
-        return Simulation(**kw)
+        # Pin explicitly (review fix, Important 5): a bare Simulation(**kw) falls
+        # back to AS_BRAIN_ARCH from the environment, so an ambient env var left
+        # set from a prior rssm shell session would silently promote arm A to
+        # the rssm substrate — pin v1 unconditionally.
+        return Simulation(brain_arch="v1", **kw)
     dev = "cpu" if cpu else "cuda"
     if not cpu:
         assert os.environ.get("CUDA_VISIBLE_DEVICES") != "-1", (
@@ -86,10 +90,18 @@ def _arm_sim(arm, seed, cpu):
 
 
 def cmd_run(a):
+    # Harness runs never autosave (review fix, Important 4): CHECKPOINT_INTERVAL
+    # is a module-level global read fresh at tick time (simulation.py::step), so
+    # patching it before construction disables autosaves for the whole run —
+    # concurrent A/B/C runs would otherwise race on the shared CHECKPOINT_PATH.
+    import artificial_society.simulation as sim_mod
+
+    sim_mod.CHECKPOINT_INTERVAL = 0
     sim = _arm_sim(a.arm, a.seed, a.cpu)
     out = pathlib.Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     known = {}  # id -> (birth_tick, origin)
+    agent_ticks = 0  # cumulative sum(len(sim.agents)) — arm A's transitions-axis proxy
 
     def scan(ev, tick):
         ids = set()
@@ -114,6 +126,7 @@ def cmd_run(a):
         scan(ev, 0)
         for t in range(1, a.ticks + 1):
             sim.step()
+            agent_ticks += len(sim.agents)  # all arms, every tick (review fix, Important 3)
             scan(ev, t)
             if t % 500 == 0:
                 wm_u = sim.rssm_learner.wm.wm_updates if sim.rssm_learner else 0
@@ -123,9 +136,15 @@ def cmd_run(a):
                             "e": "log",
                             "t": t,
                             "alive": len(sim.agents),
-                            "transitions": len(sim.rssm_learner.replay)
+                            # transitions-matched primary axis (spec §10.2, review
+                            # Important-3): cumulative stored transitions for B/C
+                            # (monotone learner counter, unlike len(replay) which
+                            # shrinks on FIFO eviction); cumulative agent-ticks for
+                            # A (no learner, no per-transition counter to read).
+                            "transitions_stored": sim.rssm_learner.transitions_stored
                             if sim.rssm_learner
-                            else t * len(sim.agents),
+                            else None,
+                            "agent_ticks": agent_ticks,
                             "wm_updates": wm_u,
                         }
                     )
@@ -136,6 +155,19 @@ def cmd_run(a):
     ).stdout.strip()
     import torch
 
+    # Provenance must detect RSSMConfig drift (review fix, Triage 8): hash the
+    # actual resolved RSSMConfig for rssm arms (B/C) alongside the CLI args — a
+    # bare args-hash can't tell two runs with different hyperparameters apart.
+    # Arm A has no RSSMConfig at all; a stable marker keeps the hash's shape
+    # (and its "did the config change" semantics) consistent across arms.
+    cfg_dict = (
+        dataclasses.asdict(sim.rssm_learner.cfg)
+        if sim.rssm_learner is not None
+        else {"brain_arch": "v1"}
+    )
+    cfg_hash = hashlib.sha1(
+        repr((sorted(vars(a).items()), sorted(cfg_dict.items()))).encode()
+    ).hexdigest()[:12]
     (out / f"{a.arm}_s{a.seed}.summary.json").write_text(
         json.dumps(
             {
@@ -145,7 +177,7 @@ def cmd_run(a):
                 "git": sha,
                 "torch": torch.__version__,
                 "cuda": torch.version.cuda,
-                "cfg_hash": hashlib.sha1(repr(sorted(vars(a).items())).encode()).hexdigest()[:12],
+                "cfg_hash": cfg_hash,
             }
         )
     )

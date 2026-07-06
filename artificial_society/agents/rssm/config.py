@@ -69,7 +69,8 @@ class RSSMConfig:
     retnorm_decay: float = 0.99
     slow_critic_decay: float = 0.98
     slow_critic_scale: float = 1.0
-    replay_critic_scale: float = 0.3
+    # deferred: replay-critic term wired but off until pilot signal (plan deviation)
+    replay_critic_scale: float = 0.0
     # cadence (spec §4.5/§8)
     train_every: int = 8  # K
     young_ratio_cap: int = 4  # max extra imagination passes for young actors
@@ -78,8 +79,11 @@ class RSSMConfig:
     prefill_transitions: int = 4096  # random-action prefill before first WM update
     own_start_frac_max: float = 0.75  # per-agent imagination seeding blend (spec §4.2)
     burn_in: int = 8  # burn-in window length for imagination seeding
-    # slab (spec §8)
-    max_slots: int = 128
+    # slab (spec §8). 256 gives ample headroom over the ~50-population A/B
+    # equilibrium (review fix, Important 7: acquire_slot still raises on
+    # exhaustion — a graceful degrade path isn't worth the complexity at this
+    # headroom).
+    max_slots: int = 256
     prototype_decay: float = 0.995
     # devices
     train_device: str = "cuda"  # WM-train + imagination; act path is ALWAYS cpu

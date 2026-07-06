@@ -104,7 +104,7 @@ def test_3a_aera_v2_checkpoint_wird_klar_abgewiesen(checkpoint_path):
         Simulation(seed=3, physics_v2=True, load_checkpoint=True, **_PARAMS)
 
 
-def test_payload_traegt_format_version_2(checkpoint_path):
+def test_payload_traegt_aktuelle_format_version(checkpoint_path):
     sim = Simulation(seed=3, physics_v2=True, load_checkpoint=False, **_PARAMS)
     sim._save_checkpoint()
     with open(checkpoint_path, "rb") as f:
