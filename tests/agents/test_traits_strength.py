@@ -49,7 +49,7 @@ def test_ensure_strength_trait_zieht_einmal_und_ist_idempotent():
     assert traits["strength"] == erster
 
 
-def test_derive_strength_fitness_gewichtet_mit_sigma_0012():
+def test_derive_strength_score_gewichtet_mit_sigma_0012():
     random.seed(8)
     a = SimpleNamespace(traits={"strength": 0.3}, learning_score=1.0)
     b = SimpleNamespace(traits={"strength": 0.7}, learning_score=1.0)

@@ -43,7 +43,7 @@ def test_threshold_ordering_is_consistent():
     assert AGE_HEALTH_DECAY_START < AGE_HEALTH_DECAY_HARD < AGE_LIMIT
 
 
-def test_no_senescence_decay_before_start():
+def test_no_decay_before_start():
     a = _agent()
     a.age = AGE_HEALTH_DECAY_START - 100
     a.health = 100.0

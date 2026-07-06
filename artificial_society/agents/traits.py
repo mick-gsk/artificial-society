@@ -29,7 +29,7 @@ TRAIT_RANGES = {
 # Biologisches Vorbild: Mendel'sche Segregation + natuerliche Selektion
 # -- erfolgreiche Allele setzen sich durch, rein zufaellige Drift ist sekundaer.
 PERTURBATION_BASE = 0.06  # Grundrauschen
-PERTURBATION_FITNESS_BIAS = 0.55  # Wie stark das bessere Elternteil das Kind dominiert
+PERTURBATION_SCORE_BIAS = 0.55  # Wie stark das bessere Elternteil das Kind dominiert
 STRENGTH_PERTURBATION_SIGMA = (
     0.012  # 0.012-Klasse (Spec C5) — NICHT 0.25 (~25 % der Range/Generation)
 )

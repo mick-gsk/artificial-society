@@ -2,7 +2,7 @@ from artificial_society.agents.agent import Agent
 from artificial_society.agents.traits import derive_traits
 
 
-class EvolutionSystem:
+class AdaptationSystem:
     def make_spawn(self, parent, x, y, traits=None, other_parent=None):
         """
         Erzeugt ein Kind mit korrekter Zwei-Eltern-Vererbung.

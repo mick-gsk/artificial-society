@@ -166,7 +166,7 @@ def _creep_to_fuel(world, event: dict) -> None:
 # ---------------------------------------------------------------------------
 # lifecycle: evolve existing events against the current world state
 # ---------------------------------------------------------------------------
-def _evolve(world, tick: int) -> None:
+def _adapt(world, tick: int) -> None:
     kept = []
     for e in world.active_events:
         e["ttl"] -= 1
@@ -321,7 +321,7 @@ def update_events(world, tick: int, season_state: dict, weather_state: dict) -> 
     reaches the model through the season-coupled temperature/moisture fields,
     not through name-string checks.
     """
-    _evolve(world, tick)
+    _adapt(world, tick)
     if tick >= EVENT_WARMUP_TICKS:
         _genesis(world, tick, weather_state or {})
 

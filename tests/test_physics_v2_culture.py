@@ -70,7 +70,7 @@ import ast
 import inspect
 import textwrap
 
-from artificial_society.systems.evolution import EvolutionSystem
+from artificial_society.systems.adaptation import AdaptationSystem
 
 
 def test_spawn_agent_wird_nie_mit_parent_aufgerufen():
@@ -80,7 +80,7 @@ def test_spawn_agent_wird_nie_mit_parent_aufgerufen():
     und bräuchten ein parent.physics_v2-Gate. (Substring-Check scheidet aus:
     die Signatur enthält `other_parent=None`, und "parent=" ist Substring von
     "other_parent=" → AST-basiert prüfen.)"""
-    src = textwrap.dedent(inspect.getsource(EvolutionSystem.make_spawn))
+    src = textwrap.dedent(inspect.getsource(AdaptationSystem.make_spawn))
     calls = [
         n
         for n in ast.walk(ast.parse(src))

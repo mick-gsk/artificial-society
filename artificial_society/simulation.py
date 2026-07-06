@@ -204,7 +204,7 @@ class Simulation:
         partner_id = getattr(parent, "_last_partner_id", None)
         if partner_id is not None:
             other_parent = agent_by_id.get(partner_id)
-        spawn = self.evolution.make_spawn(parent, x, y, traits=traits, other_parent=other_parent)
+        spawn = self.adaptation.make_spawn(parent, x, y, traits=traits, other_parent=other_parent)
         spawn.hidden_state = spawn.brain.initial_hidden()
         spawn.spawn_tick = self.tick
         # Birth is an energy TRANSFER from the mother, not minting: the child
