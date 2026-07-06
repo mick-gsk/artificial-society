@@ -52,14 +52,41 @@ Demografie-Instrumentierung (Runner-seitig, kein Paket-Eingriff):
     nicht auf der Klasse — betrifft nur diesen einen `sim`). Kumulativer
     Zähler (Anzahl AUFRUFE, nicht Anzahl respawnter Agenten) in jedem
     snap/final-Record als `respawns`.
-  - `deaths` (Review I-1): `sim.remove_dead` wird NACH dem Sim-Bau durch eine
-    zählende Wrapper-Closure ersetzt (gleiches Bound-Method-Wrap-Muster wie
-    `emergency_respawn`). `remove_dead()` wird laut `simulation.py` GENAU
-    EINMAL pro Tick in `Simulation.step()` aufgerufen (Zeile ~627) und ist der
-    ursachen-agnostische Todes-Aggregationspunkt (Spec B3) — jeder Agent, der
-    stirbt, durchläuft ihn. Der Wrapper zählt `len(sim.agents)` vor und nach
-    dem (genau einmal ausgeführten) Original-Aufruf und kumuliert die Differenz
-    über den ganzen Lauf. Das ist ein EXAKTER Zähler, keine Untergrenze.
+  - `deaths` (Team C, pfadunabhängig): der KANONISCHE Sterblichkeitszähler.
+    Die frühere `remove_dead`-Wrapper-Zählung (unten `deaths_removedead`) ist
+    im v1-Pfad BLIND: `Simulation.step()` filtert Tote im v1-Modus BEREITS VOR
+    `remove_dead()` aus der Roster-Liste (`simulation.py:626`
+    `if not self.physics_v2: self.agents = [a for a in self.agents if a.alive]`,
+    Zeile 627 `self.remove_dead()`) — im v1-Pfad sieht `remove_dead` also NIE
+    einen Toten, `before - after == 0`, `deaths_removedead ≈ 0`, während der
+    v2-Pfad (kein Pre-Filter) normal zählt. Jeder v1/v2-Sterblichkeits-Vergleich
+    über `deaths_removedead` ist damit korrupt. Fix (nur Harness): `sim.step`
+    selbst wird durch eine zählende Wrapper-Closure ersetzt (gleiches Bound-
+    Method-Muster). Der Wrapper merkt sich die Roster-IDs VOR dem Original-Step
+    und zählt nach dem Step, wie viele davon nicht mehr im Roster sind
+    (`len(pre_ids - post_ids)`). Ein Agent verlässt den Roster AUSSCHLIESSLICH
+    durch Tod (v1-Pre-Filter ODER `remove_dead`) — Geburten/Respawns bringen
+    NEUE IDs, die die Mengendifferenz nicht beeinflussen. Das ist ein EXAKTER,
+    pfadunabhängiger Zähler (v1 und v2 identisch). Siehe `_instrument_mortality`.
+  - `deaths_removedead` (Diagnose): die alte `remove_dead`-Wrapper-Zählung,
+    beibehalten als Kreuzprobe. Im v2-Pfad == `deaths`; im v1-Pfad ≈ 0 (blind,
+    s.o.) — macht das Messartefakt direkt sichtbar.
+  - `mate_seek_fired` (Allee-Signal, nur mit --taxis wirksam): kumulativer
+    Zähler, wie oft die angeborene Partner-Taxis tatsächlich einen Partner
+    verfolgt hat. `Agent._nearest_compatible_mate` (agent.py:690, wird pro
+    partnersuchendem Agenten-Tick aufgerufen) wird auf KLASSEN-Ebene um einen
+    zählenden Wrapper gehüllt (gleiches Muster wie `_assemble_curiosity_v2`);
+    gezählt werden nur Aufrufe mit non-None-Ziel (Partner in Reichweite +
+    verfolgt). Ohne --taxis nie aufgerufen ⇒ 0. Siehe `_install_mate_seek_counter`.
+  - Demografie-/Allee-Momentaufnahme je Snapshot (Team C, direkt aus
+    `sim.agents`, siehe `_snapshot`): `sex_m`/`sex_f` (lebende Population je
+    Geschlecht), `fertile_m`/`fertile_f` (davon `can_reproduce()`),
+    `sex_ratio_fertile` (fertile_m/fertile_f, null wenn fertile_f==0),
+    `pairwise_cheb_mean`/`pairwise_cheb_median` (paarweise Chebyshev-Distanz
+    aller Lebenden — gegen den Mate-Seek-Radius zu lesen),
+    `nearest_partner_min`/`nearest_partner_mean` (Distanz jedes fruchtbaren
+    Agenten zum nächsten fruchtbaren Gegen-Sex-Partner, ungekappt — das direkte
+    Allee-Signal; null wenn ein Geschlecht keine fruchtbaren Agenten hat).
   - `ids_seen_total`: Menge aller `Agent.id`, die in irgendeinem Snapshot
     (inkl. final) als lebend beobachtet wurden, kumulativ über den ganzen
     Lauf. Das ist eine unvollständige, aber KORREKTE Untergrenze für
@@ -163,6 +190,27 @@ Arm-Patches und Demografie-Knobs (geprüft, siehe jeweilige Datei:Zeile):
     der Respawn-Zaehlung/-Schwelle selbst.
   - `--regrow-scale`: pfadunabhängig, gleicher Call-Pfad wie
     `--plant-ceiling-scale` oben (`regrow_grid` via `world_regrowth`-Hook).
+
+Respawn-Krücke steuern (Team C, `--respawn-mode {scatter,inherit,off}`, Default
+scatter = bisheriges Verhalten):
+  - `scatter`: unveränderter Status quo — `emergency_respawn` streut
+    `RESPAWN_COUNT` frische Zufallshirn-Agenten ein, sobald `len(agents) <
+    MIN_POPULATION`.
+  - `inherit`: Respawn-Vererbungsmodus, den Team B (fix/pop-core) in
+    `emergency_respawn` ergänzt. ERWARTETER HOOK-NAME: Modul-Global
+    `simulation.RESPAWN_MODE` (Default "scatter"), call-time in
+    `emergency_respawn` gelesen — gleiches Patch-Muster wie
+    `MIN_POPULATION`/`RESPAWN_COUNT`/`CHECKPOINT_INTERVAL`. Der Harness setzt
+    `simulation_mod.RESPAWN_MODE = respawn_mode` NACH dem Import; sobald Team B
+    das Global anlegt + in `emergency_respawn` respektiert, ist die Integration
+    einzeilig. Bis dahin ist das Setzen des (noch nicht gelesenen) Attributs
+    ein wirkungsloser No-op (scatter-Verhalten bleibt), aber der gewählte Modus
+    landet bereits im meta-Record.
+  - `off`: Krücke KOMPLETT aus — der Harness setzt `simulation.MIN_POPULATION
+    = 0`, sodass `len(agents) < MIN_POPULATION` nie wahr wird und
+    `emergency_respawn` nie feuert. Funktioniert HEUTE ohne Paket-Änderung; das
+    Pass-Gate des entscheidenden Sweeps (respawns→0) ist im off-Arm per
+    Konstruktion erfüllt und prüft damit, ob die Population OHNE Krücke lebt.
 """
 
 from __future__ import annotations
@@ -435,6 +483,145 @@ def _set_min_food_per_capita(value: float) -> None:
 
 
 # --------------------------------------------------------------------------
+# Team C — pfadunabhängige Sterblichkeit + Allee-Instrumentierung.
+# --------------------------------------------------------------------------
+
+# Angeborene Partner-Taxis (`Agent._nearest_compatible_mate`) wird auf KLASSEN-
+# Ebene um einen zählenden Wrapper gehüllt. `_MATE_SEEK_ORIG` friert das ECHTE
+# Original beim ersten Install ein, damit wiederholte Installs im selben Prozess
+# (Batterie-Runner) das Original NICHT verschachteln (idempotent). `run_one`
+# setzt `_MATE_SEEK_STATE["count"]` je Lauf auf 0 zurück.
+_MATE_SEEK_STATE: dict = {"count": 0}
+_MATE_SEEK_ORIG = None
+
+
+def _install_mate_seek_counter() -> None:
+    """Zählt, wie oft die Partner-Taxis tatsächlich einen Partner verfolgt
+    (non-None-Rückgabe von `_nearest_compatible_mate`). Transparent (delegiert
+    unverändert, kein RNG) ⇒ determinismus-neutral. Siehe Modul-Docstring
+    (`mate_seek_fired`)."""
+    from artificial_society.agents.agent import Agent
+
+    global _MATE_SEEK_ORIG
+    if _MATE_SEEK_ORIG is None:
+        _MATE_SEEK_ORIG = Agent._nearest_compatible_mate
+    orig = _MATE_SEEK_ORIG
+
+    def _counting(self, agents):
+        target = orig(self, agents)
+        if target is not None:
+            _MATE_SEEK_STATE["count"] += 1
+        return target
+
+    Agent._nearest_compatible_mate = _counting
+
+
+def _instrument_mortality(sim):
+    """Installiert den pfadunabhängigen Sterblichkeitszähler (Team C) plus die
+    alte `remove_dead`-Kreuzprobe auf DIESER `sim`-Instanz. Gibt
+    `(mortality_state, removedead_state)` zurück (je ein Dict mit `count`).
+
+    Pfadunabhängig: `sim.step` wird umhüllt; ein Agent verlässt den Roster NUR
+    durch Tod (v1-Pre-Filter `simulation.py:626` ODER `remove_dead`), also ist
+    `len(pre_ids - post_ids)` je Step die exakte Todeszahl in BEIDEN Pfaden.
+    Die `remove_dead`-Zählung bleibt als `deaths_removedead` erhalten (im
+    v1-Pfad blind ≈ 0, siehe Modul-Docstring)."""
+    mortality_state = {"count": 0}
+    removedead_state = {"count": 0}
+
+    orig_step = sim.step
+
+    def _counting_step():
+        pre_ids = {a.id for a in sim.agents}
+        result = orig_step()
+        post_ids = {a.id for a in sim.agents}
+        mortality_state["count"] += len(pre_ids - post_ids)
+        return result
+
+    sim.step = _counting_step
+
+    orig_remove_dead = sim.remove_dead
+
+    def _counting_remove_dead():
+        before = len(sim.agents)
+        result = orig_remove_dead()
+        removedead_state["count"] += before - len(sim.agents)
+        return result
+
+    sim.remove_dead = _counting_remove_dead
+
+    return mortality_state, removedead_state
+
+
+def _living(sim):
+    return [a for a in sim.agents if getattr(a, "alive", True)]
+
+
+def _demography_fields(sim) -> dict:
+    """Allee-Momentaufnahme (Team C): Geschlechter-/Fertilitätszählung,
+    paarweise Chebyshev-Distanz, nächster fruchtbarer Gegen-Sex-Partner. Siehe
+    Modul-Docstring. `sex` ∈ {"m","f"} (agent.py); fruchtbar := `can_reproduce()`
+    (alive+Alter+Energie+Cooldown+nicht schwanger). Chebyshev = max(|dx|,|dy|).
+    O(n²) über die Lebenden, aber nur je `snapshot_interval` Ticks (billig)."""
+    agents = _living(sim)
+    n = len(agents)
+    sex_m = sum(1 for a in agents if getattr(a, "sex", None) == "m")
+    sex_f = sum(1 for a in agents if getattr(a, "sex", None) == "f")
+    fertile = [a for a in agents if a.can_reproduce()]
+    fert_m = [a for a in fertile if getattr(a, "sex", None) == "m"]
+    fert_f = [a for a in fertile if getattr(a, "sex", None) == "f"]
+    sex_ratio_fertile = round(len(fert_m) / len(fert_f), 3) if fert_f else None
+
+    # Paarweise Chebyshev-Distanz aller Lebenden.
+    if n >= 2:
+        dists = []
+        for i in range(n):
+            xi, yi = agents[i].pos
+            for j in range(i + 1, n):
+                xj, yj = agents[j].pos
+                dists.append(max(abs(xi - xj), abs(yi - yj)))
+        pairwise_mean = round(sum(dists) / len(dists), 2)
+        pairwise_median = round(float(_median(dists)), 2)
+    else:
+        pairwise_mean = pairwise_median = None
+
+    # Nächster fruchtbarer Gegen-Sex-Partner je fruchtbarem Agenten (ungekappt).
+    nearest_min = nearest_mean = None
+    if fert_m and fert_f:
+        near = []
+        for a in fertile:
+            ax, ay = a.pos
+            others = fert_f if getattr(a, "sex", None) == "m" else fert_m
+            best = min(max(abs(ax - b.pos[0]), abs(ay - b.pos[1])) for b in others)
+            near.append(best)
+        nearest_min = min(near)
+        nearest_mean = round(sum(near) / len(near), 2)
+
+    return {
+        "sex_m": sex_m,
+        "sex_f": sex_f,
+        "fertile_m": len(fert_m),
+        "fertile_f": len(fert_f),
+        "sex_ratio_fertile": sex_ratio_fertile,
+        "pairwise_cheb_mean": pairwise_mean,
+        "pairwise_cheb_median": pairwise_median,
+        "nearest_partner_min": nearest_min,
+        "nearest_partner_mean": nearest_mean,
+    }
+
+
+def _median(vals):
+    s = sorted(vals)
+    n = len(s)
+    if n == 0:
+        return 0.0
+    mid = n // 2
+    if n % 2:
+        return s[mid]
+    return (s[mid - 1] + s[mid]) / 2.0
+
+
+# --------------------------------------------------------------------------
 # Experiment-Registry (Spec §2, Tabelle).
 # --------------------------------------------------------------------------
 
@@ -524,7 +711,14 @@ EXPERIMENT_ORDER = [
 
 
 def _snapshot(
-    sim, tick: int, ids_seen: set, respawn_count: int, deaths: int, births_cum: int
+    sim,
+    tick: int,
+    ids_seen: set,
+    respawn_count: int,
+    deaths: int,
+    births_cum: int,
+    deaths_removedead: int = 0,
+    mate_seek_fired: int = 0,
 ) -> dict:
     """Baut den Snapshot-/Final-Record.
 
@@ -544,15 +738,13 @@ def _snapshot(
     pop = len(agents)
     mean_energy = sum(a.energy for a in agents) / pop if pop else 0.0
     ids_seen.update(a.id for a in agents)
-    mean_age = (
-        sum(tick - getattr(a, "birth_tick", tick) for a in agents) / pop if pop else 0.0
-    )
+    mean_age = sum(tick - getattr(a, "birth_tick", tick) for a in agents) / pop if pop else 0.0
     m = sim.world.objects.metrics_snapshot()
     cuts_tool = int(m.get("cuts_with_tool", 0))
     cuts_hand = int(m.get("cuts_bare_hand", 0))
     cuts_total = cuts_tool + cuts_hand
     verbs = m.get("verbs_fired", {}) or {}
-    return {
+    rec = {
         "tick": tick,
         "pop": pop,
         "mean_energy": round(mean_energy, 2),
@@ -569,10 +761,18 @@ def _snapshot(
         # K2 Respawn-Mühlen-Instrumentierung (siehe Modul-Docstring).
         "respawns": respawn_count,
         "ids_seen_total": len(ids_seen),
-        # Review I-1: exakter Todes-Zähler aus dem `remove_dead`-Wrapper.
+        # Team C: KANONISCHER pfadunabhängiger Sterblichkeitszähler (step-Wrapper).
         "deaths": deaths,
+        # Team C: alte remove_dead-Kreuzprobe (v1-blind ≈ 0; siehe Docstring).
+        "deaths_removedead": deaths_removedead,
+        # Team C: Allee-Signal — verfolgte Partner-Taxis (nur mit --taxis).
+        "mate_seek_fired": mate_seek_fired,
         "mean_age": round(mean_age, 2),
     }
+    # Team C: Demografie-/Allee-Momentaufnahme (Geschlechtsverhältnis, paarweise
+    # Distanz, nächster fruchtbarer Partner — siehe _demography_fields).
+    rec.update(_demography_fields(sim))
+    return rec
 
 
 def run_one(
@@ -594,6 +794,7 @@ def run_one(
     taxis: bool = False,
     taxis_hunger_threshold: float = 80.0,
     mate_seek_radius: int = 8,
+    respawn_mode: str = "scatter",
 ) -> str:
     conf = EXPERIMENTS[exp]
     # Patches VOR dem Simulation-Bau anwenden (Spec §1). Modul-Konstanten wie
@@ -617,6 +818,16 @@ def run_one(
     # gleiches Patch-Muster wie CHECKPOINT_INTERVAL oben.
     simulation_mod.MIN_POPULATION = min_pop
     simulation_mod.RESPAWN_COUNT = respawn_count_cfg
+
+    # Team C: Respawn-Krücke steuern (--respawn-mode, siehe Modul-Docstring).
+    # `off` schaltet die Krücke HEUTE aus (MIN_POPULATION=0 ⇒ emergency_respawn
+    # feuert nie). `scatter`/`inherit` setzen zusätzlich das ERWARTETE Team-B-
+    # Hook-Global `simulation.RESPAWN_MODE` (call-time in emergency_respawn zu
+    # lesen) — bis Team B es respektiert ein wirkungsloser No-op, aber der Modus
+    # landet bereits im meta-Record; Integration danach einzeilig.
+    simulation_mod.RESPAWN_MODE = respawn_mode
+    if respawn_mode == "off":
+        simulation_mod.MIN_POPULATION = 0
 
     # Etappe 1, Stellschraube 2/3 (siehe `_scale_regrowth`/
     # `_set_min_food_per_capita`-Docstrings für den call-time-Beleg). Bei den
@@ -680,22 +891,17 @@ def run_one(
 
     sim.emergency_respawn = _counting_respawn
 
-    # Review I-1: `remove_dead` auf der INSTANZ (nicht der Klasse) durch eine
-    # zählende Wrapper-Closure ersetzen. `remove_dead()` wird laut
-    # `Simulation.step()` GENAU EINMAL pro Tick aufgerufen und ist der
-    # ursachen-agnostische Todes-Aggregationspunkt (Spec B3) -- die Differenz
-    # aus `len(sim.agents)` vor/nach dem (genau einmal ausgeführten)
-    # Original-Aufruf ist die exakte Anzahl in diesem Tick entfernter Toter.
-    _death_state = {"count": 0}
-    _orig_remove_dead = sim.remove_dead
+    # Team C: pfadunabhängige Sterblichkeit. Ersetzt die frühere reine
+    # `remove_dead`-Zählung, die im v1-Pfad blind war (Pre-Filter
+    # simulation.py:626 entfernt Tote VOR remove_dead). `_instrument_mortality`
+    # umhüllt `sim.step` (kanonischer Zähler `deaths`) UND behält die
+    # `remove_dead`-Kreuzprobe (`deaths_removedead`) — siehe Modul-Docstring.
+    _mortality_state, _removedead_state = _instrument_mortality(sim)
 
-    def _counting_remove_dead():
-        before = len(sim.agents)
-        result = _orig_remove_dead()
-        _death_state["count"] += before - len(sim.agents)
-        return result
-
-    sim.remove_dead = _counting_remove_dead
+    # Team C: Allee-Signal `mate_seek_fired` (Klassen-Wrapper, idempotent, je
+    # Lauf zurückgesetzt). Nur mit --taxis wirksam (sonst nie aufgerufen ⇒ 0).
+    _MATE_SEEK_STATE["count"] = 0
+    _install_mate_seek_counter()
 
     # Etappe 1: `spawn_child_from_parent` auf der INSTANZ (nicht der Klasse)
     # durch eine zählende Wrapper-Closure ersetzen (gleiches Bound-Method-
@@ -730,6 +936,9 @@ def run_one(
             "snapshot_interval": snapshot_interval,
             "min_pop": min_pop,
             "respawn_count": respawn_count_cfg,
+            # Team C: Respawn-Krücken-Modus (scatter=Status quo, inherit=Team-B-
+            # Vererbung via simulation.RESPAWN_MODE, off=Krücke aus/MIN_POP=0).
+            "respawn_mode": respawn_mode,
             # Etappe 1 (K3-Empfehlung [1]): die drei Demografie-Knobs, siehe
             # Modul-Docstring "Etappe 1" + `_age_structure_founders`/
             # `_scale_regrowth`/`_set_min_food_per_capita`-Docstrings.
@@ -760,8 +969,10 @@ def run_one(
                     tick + 1,
                     ids_seen,
                     _respawn_state["count"],
-                    _death_state["count"],
+                    _mortality_state["count"],
                     _births_state["count"],
+                    _removedead_state["count"],
+                    _MATE_SEEK_STATE["count"],
                 )
                 rec["record"] = "snap"
                 f.write(json.dumps(rec) + "\n")
@@ -771,8 +982,10 @@ def run_one(
             ticks,
             ids_seen,
             _respawn_state["count"],
-            _death_state["count"],
+            _mortality_state["count"],
             _births_state["count"],
+            _removedead_state["count"],
+            _MATE_SEEK_STATE["count"],
         )
         final["record"] = "final"
         final["walltime_s"] = round(time.time() - t0, 1)
@@ -782,7 +995,8 @@ def run_one(
         f"[{exp} seed{seed}] done pop={final['pop']} "
         f"tool_cut_ratio={final['tool_cut_ratio']} "
         f"discoveries={final['discoveries']} respawns={final['respawns']} "
-        f"deaths={final['deaths']} births_cum={final['births_cum']} "
+        f"deaths={final['deaths']} (removedead={final['deaths_removedead']}) "
+        f"births_cum={final['births_cum']} mate_seek_fired={final['mate_seek_fired']} "
         f"mean_age={final['mean_age']} in {final['walltime_s']}s -> {path}"
     )
     return path
@@ -809,6 +1023,20 @@ def main() -> None:
         type=int,
         default=6,
         help="Patcht simulation.RESPAWN_COUNT (Agenten je Respawn-Batch, Default 6).",
+    )
+    ap.add_argument(
+        "--respawn-mode",
+        choices=["scatter", "inherit", "off"],
+        default="scatter",
+        help=(
+            "Team C: Respawn-Krücken-Modus. scatter (Default) = Status quo "
+            "(Zufallshirn-Einstreuung). inherit = Team-B-Vererbungsmodus (setzt "
+            "das erwartete Hook-Global simulation.RESPAWN_MODE; einzeilige "
+            "Integration sobald emergency_respawn es liest). off = Krücke ganz "
+            "aus (MIN_POPULATION=0, emergency_respawn feuert nie -> respawns=0 "
+            "als Pass-Gate-Nachweis, dass die Population OHNE Krücke lebt). "
+            "Landet als 'respawn_mode' im meta-Record."
+        ),
     )
     ap.add_argument(
         "--age-structured-founders",
@@ -916,6 +1144,7 @@ def main() -> None:
         args.taxis,
         args.taxis_hunger_threshold,
         args.mate_seek_radius,
+        args.respawn_mode,
     )
 
 

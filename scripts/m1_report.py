@@ -283,8 +283,77 @@ def _print_respawn_mill_check(arms: dict) -> None:
             )
         print(f"{exp:<20}{med_respawns:>22.1f}{med_mean_age:>22.1f}{deaths_col}  {note}")
     if not any_data:
-        print("(Keine Läufe mit K2-Demografie-Feldern gefunden -- alte JSONL ohne "
-              "respawns/mean_age/ids_seen_total/respawn_count; Check übersprungen.)")
+        print(
+            "(Keine Läufe mit K2-Demografie-Feldern gefunden -- alte JSONL ohne "
+            "respawns/mean_age/ids_seen_total/respawn_count; Check übersprungen.)"
+        )
+    print()
+
+
+def _median_present(finals: list, key: str):
+    """Median über die Finals, die `key` mit non-None-Wert haben. None, wenn
+    kein Lauf das Feld hat (alte JSONL vor Team-C-Patch) -> graceful skip."""
+    vals = [f[key] for f in finals if f.get(key) is not None]
+    return st.median(vals) if vals else None
+
+
+def _print_allee_check(arms: dict) -> None:
+    """Team C (Allee-Diagnose): je Arm die demografischen/Allee-Signale aus den
+    neuen Snapshot-Feldern (scripts/m1_pilot.py `_demography_fields`), plus den
+    pfadunabhängigen `deaths` neben der v1-blinden `deaths_removedead`-
+    Kreuzprobe. Zeigt auf einen Blick, ob die Reproduktion an der Partner-
+    Findung scheitert: `nearest_partner_mean` (Distanz zum nächsten fruchtbaren
+    Gegen-Sex-Partner) gegen den Mate-Seek-Radius (meta-Record) zu lesen; ein
+    schiefes `sex_ratio_fertile` (fern von 1.0) oder ein `nearest_partner_mean`
+    ≫ Mate-Seek-Radius = Allee-Falle.
+
+    Fehlende Felder (alte JSONL) werden je Arm still übersprungen; hat KEIN Arm
+    die Felder, wird das explizit vermerkt statt zu crashen."""
+    print("=== Allee-/Demografie-Diagnose (Team C) ===\n")
+    cols = [
+        ("fertile_m", "fert_m"),
+        ("fertile_f", "fert_f"),
+        ("sex_ratio_fertile", "fert_m/f"),
+        ("pairwise_cheb_mean", "pair_dist"),
+        ("nearest_partner_mean", "near_partner"),
+        ("mate_seek_fired", "mate_fired"),
+        ("deaths", "deaths(pathind)"),
+        ("deaths_removedead", "deaths(rmdead)"),
+    ]
+    header = f"{'Arm':<20}" + "".join(f"{label:>16}" for _, label in cols)
+    print(header)
+    print("-" * len(header))
+    any_data = False
+    for exp in EXPERIMENT_ORDER:
+        finals = arms.get(exp, [])
+        if not finals:
+            continue
+        # Nur Arme mit mindestens EINEM neuen Feld anzeigen.
+        if not any(any(k in f for k, _ in cols) for f in finals):
+            continue
+        any_data = True
+        cells = []
+        for key, _ in cols:
+            med = _median_present(finals, key)
+            cells.append(f"{med:>16.3g}" if med is not None else f"{'n/a':>16}")
+        print(f"{exp:<20}" + "".join(cells))
+    if not any_data:
+        print(
+            "(Keine Läufe mit Team-C-Demografie-Feldern gefunden -- alte JSONL "
+            "vor diesem Patch; Check übersprungen.)"
+        )
+    else:
+        # v1-Blindheits-Hinweis: deaths_removedead ≈ 0 bei deaths > 0 = v1-Pfad.
+        for exp in EXPERIMENT_ORDER:
+            finals = arms.get(exp, [])
+            d = _median_present(finals, "deaths")
+            dr = _median_present(finals, "deaths_removedead")
+            if d is not None and dr is not None and d > 0 and dr <= 0:
+                print(
+                    f"\n  Hinweis [{exp}]: deaths(pathind)={d:.0f} aber "
+                    f"deaths(rmdead)=0 -> v1-Pfad, remove_dead-Zählung blind "
+                    f"(Pre-Filter simulation.py:626). Pfadunabhängiger 'deaths' gilt."
+                )
     print()
 
 
@@ -426,6 +495,7 @@ def main() -> None:
     _print_comparisons(aggs)
     _print_confound_warnings(aggs)
     _print_respawn_mill_check(arms)
+    _print_allee_check(arms)
     _decision_tree(aggs)
 
 
