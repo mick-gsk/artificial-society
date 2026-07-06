@@ -42,3 +42,7 @@ def test_generator_deterministic_and_keyed():
     assert torch.equal(a1, a2)
     assert not torch.equal(a1, b)
     assert not torch.equal(a1, c)
+
+
+def test_generator_device_param_default_cpu():
+    assert make_generator(1, "x").device.type == "cpu"

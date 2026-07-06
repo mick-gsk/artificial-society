@@ -1,4 +1,5 @@
 """All RSSM hyperparameters (spec §9) + the RNG-isolation helper (spec §6)."""
+
 from __future__ import annotations
 
 import zlib
@@ -7,13 +8,13 @@ from dataclasses import dataclass
 import torch
 
 
-def make_generator(global_seed: int, key: object) -> torch.Generator:
-    """CPU torch.Generator seeded from (global_seed, key), independent of global RNG state.
+def make_generator(global_seed: int, key: object, device: str = "cpu") -> torch.Generator:
+    """torch.Generator seeded from (global_seed, key), independent of global RNG state.
 
     key is any repr-stable object, e.g. ("agent", agent_id) or "learner".
     """
     mix = zlib.crc32(repr(key).encode("utf-8"))
-    gen = torch.Generator(device="cpu")
+    gen = torch.Generator(device=device)
     gen.manual_seed((int(global_seed) * 0x9E3779B1 + mix) % (2**63))
     return gen
 
@@ -36,7 +37,11 @@ class RSSMConfig:
     beta_rep: float = 0.1
     unimix: float = 0.01
     # decoder grouping (dims down-weighted in recon target; filled in Task 3)
-    irreducible_dims: tuple = ()
+    # brain.py:24-41 layout: 15..16 = social (nearby count, friends count),
+    # 37..48 = episodic memory retrieval (12) — neither is a deterministic
+    # function of the agent's own egocentric state, so both groups are
+    # down-weighted in the reconstruction loss (spec §4.1).
+    irreducible_dims: tuple = (15, 16, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48)
     irreducible_weight: float = 0.05
     # twohot (fixed support, reward + value)
     num_bins: int = 255
