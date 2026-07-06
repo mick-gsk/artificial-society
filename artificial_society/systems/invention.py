@@ -390,7 +390,7 @@ def _dominant_need(agent, cell: dict) -> str:
     is_sick = getattr(agent, "disease_id", None) is not None
 
     if energy_ratio < 0.25:
-        return "hunger"
+        return "energy_need"
     if temperature < 5 or (
         hasattr(agent, "endocrine") and getattr(agent.endocrine, "cortisol", 0) > 0.7
     ):

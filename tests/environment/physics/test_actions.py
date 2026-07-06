@@ -13,7 +13,7 @@ from artificial_society.environment.physics.actions import (
     CUT_WORK_J_BASE,
     CUT_WORK_J_PER_EFFORT,
     DECAY_RATE,
-    KCAL_PER_KG_PER_NUTRITION,
+    KCAL_PER_KG_PER_RESOURCE_VALUE,
     SIM_ENERGY_PER_KCAL,
     TOX_DAMAGE_PER_KG,
     TOX_SPOILAGE_CAP,
@@ -37,8 +37,10 @@ from artificial_society.environment.physics.props import IDX2, pv
 def test_energie_kopplung_produkt_anker():
     """B5: nutrition-Konvention × SIM_ENERGY_PER_KCAL ≙ MEAT_ENERGY ± 1 (Produkt-Test —
     zwei Konstanten, eine Bilanz, kein stilles Driften)."""
-    nutrition_raw_meat = float(MATERIALS_V2["raw_meat"][IDX2["nutrition"]])
-    sim_energy_pro_kg = nutrition_raw_meat * KCAL_PER_KG_PER_NUTRITION * SIM_ENERGY_PER_KCAL
+    resource_value_raw_meat = float(MATERIALS_V2["raw_meat"][IDX2["resource_value"]])
+    sim_energy_pro_kg = (
+        resource_value_raw_meat * KCAL_PER_KG_PER_RESOURCE_VALUE * SIM_ENERGY_PER_KCAL
+    )
     assert abs(sim_energy_pro_kg - MEAT_ENERGY) <= 1.0  # 0.35*4000*0.032 = 44.8 ≈ 45
 
 

@@ -14,19 +14,19 @@ from artificial_society.systems.invention import (
 )
 
 
-class _HungryAgent:
+class _DepletedAgent:
     def __init__(self):
-        self.energy = 10.0  # energy_ratio ~0.04 -> dominant need is hunger
+        self.energy = 10.0  # energy_ratio ~0.04 -> dominant need is energy_need
         self.health = 100.0
         self.disease_id = None
 
 
-def test_learned_action_outside_hunger_cluster_dominates():
+def test_learned_action_outside_energy_need_cluster_dominates():
     seed_all(123)
-    agent = _HungryAgent()
-    # 'strike' is NOT in the old ACTIONS_FOR_HUNGER cluster, but the agent has learned
-    # it pays off under hunger.
-    agent._need_action_stats = {"hunger": {"strike": {"n": 5, "reward": 10.0}}}
+    agent = _DepletedAgent()
+    # 'strike' is NOT in the old ACTIONS_FOR_ENERGY_NEED cluster, but the agent has learned
+    # it pays off under energy_need.
+    agent._need_action_stats = {"energy_need": {"strike": {"n": 5, "reward": 10.0}}}
     cell = {"temperature": 20}
 
     counts = {}
@@ -40,16 +40,16 @@ def test_learned_action_outside_hunger_cluster_dominates():
 
 
 def test_record_need_action_learns_from_reward():
-    agent = _HungryAgent()
+    agent = _DepletedAgent()
     cell = {"temperature": 20}
     need = _dominant_need(agent, cell)
-    assert need == "hunger"
+    assert need == "energy_need"
 
     _record_need_action(agent, need, "strike", 4.0)
     _record_need_action(agent, need, "strike", 2.0)
     _record_need_action(agent, need, "eat", 0.1)
 
-    stats = agent._need_action_stats["hunger"]
+    stats = agent._need_action_stats["energy_need"]
     assert stats["strike"]["n"] == 2
     assert stats["strike"]["reward"] == 6.0
     # The higher-mean-reward action ranks first.

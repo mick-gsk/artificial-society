@@ -17,7 +17,7 @@
 | `ignition_temp` | Zündtemperatur / 1000 °C (Holz ≈ 300 °C → 0.3); 1.0 = praktisch nicht entzündbar | Zündtemperatur-Tabellen (Holz 280–340 °C) |
 | `melting_point` | Schmelz-/Sinterpunkt / 2000 °C (Ton sintert ≈ 1000 → 0.5, Quarz ≈ 1670 → 0.84); 1.0 = schmilzt praktisch nicht bzw. zersetzt sich vorher | Keramik-/Petrologie-Standardwerte |
 | `moisture` | Wasseranteil 0..1 (Frischfleisch ≈ 0.7, lufttrockenes Holz ≈ 0.12, Wasser = 1.0) | Holzfeuchte-/Lebensmitteltabellen |
-| `nutrition` | verwertbare Energie / 400 kcal pro 100 g (mageres Rohfleisch ≈ 140 → 0.35, Beeren ≈ 50 → 0.13) | Nährwerttabellen (USDA) |
+| `resource_value` | verwertbare Energie / 400 kcal pro 100 g (mageres Rohfleisch ≈ 140 → 0.35, Beeren ≈ 50 → 0.13) | Nährwerttabellen (USDA) |
 | `sharpness` | Kantenschärfe: 0 = stumpf … 1 ≈ frisch geschlagene Obsidianklinge. NUR als Prozessergebnis (Bruch) erzeugbar — kein Startmaterial hat sharpness > 0 | Experimentelle Archäologie: Schärfe geschlagener Steinwerkzeuge |
 | `tensile_strength` | Zugfestigkeit / 1000 MPa (Hanffaser ≈ 600 MPa → 0.6, Holz längs ≈ 100 → 0.1, Fels ≈ 10 → 0.01) | Werkstoffkunde-Tabellenwerte |
 | `thermal_conductivity` | Wärmeleitfähigkeit / 10 W/(m·K), geklemmt (Granit ≈ 2.8 → 0.28, Holz ≈ 0.15 → 0.02) | CRC Handbook, Wärmeleitfähigkeiten |

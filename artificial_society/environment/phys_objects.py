@@ -307,13 +307,13 @@ EPSILON_CULL_MASS_KG = 1e-6  # F4 (3a-Final-Review): Husks unterhalb dieser Mass
 def _decay_obj(obj, layer: ObjectLayer) -> None:
     """Ein Verwesungs-Schritt für EIN Objekt (eigenschaftsbasiertes Gate, B3.4)."""
     moisture = float(obj.props[IDX2["moisture"]])
-    nutrition = float(obj.props[IDX2["nutrition"]])
-    if moisture < DECAY_MOISTURE_MIN or nutrition <= 0.0:
+    resource_value = float(obj.props[IDX2["resource_value"]])
+    if moisture < DECAY_MOISTURE_MIN or resource_value <= 0.0:
         return
     verlust = obj.mass * DECAY_RATE
     obj.mass -= verlust
     layer.ledger["decayed"] += verlust
-    obj.props[IDX2["nutrition"]] = nutrition * (1.0 - DECAY_RATE)
+    obj.props[IDX2["resource_value"]] = resource_value * (1.0 - DECAY_RATE)
     tox = float(obj.props[IDX2["toxicity"]])
     if tox < TOX_SPOILAGE_CAP:
         obj.props[IDX2["toxicity"]] = min(TOX_SPOILAGE_CAP, tox + TOX_SPOILAGE_PER_TICK)

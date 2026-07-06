@@ -62,8 +62,16 @@ def test_storm_genesis_follows_storm_risk(monkeypatch):
 def test_storms_move_along_their_wind(monkeypatch):
     monkeypatch.setattr(ev, "EVENT_WARMUP_TICKS", 0)
     w = _world(moisture=80.0)
-    storm = {"kind": "storm", "x": 10, "y": 7, "radius": 5, "intensity": 1.0, "ttl": 60,
-             "vx": 1, "vy": 0}
+    storm = {
+        "kind": "storm",
+        "x": 10,
+        "y": 7,
+        "radius": 5,
+        "intensity": 1.0,
+        "ttl": 60,
+        "vx": 1,
+        "vy": 0,
+    }
     w.active_events.append(storm)
 
     w.update_events(2, {}, CALM_WEATHER)  # tick % STORM_MOVE_EVERY == 0
@@ -87,9 +95,7 @@ def test_drought_forms_over_driest_warm_region_and_rain_ends_it(monkeypatch):
     w.F["moisture"][:] = 80.0
     for tick in range(21, 70):
         w.update_events(tick, {}, CALM_WEATHER)
-    assert not any(e["kind"] == "drought" for e in w.active_events), (
-        "rain must end a drought"
-    )
+    assert not any(e["kind"] == "drought" for e in w.active_events), "rain must end a drought"
 
 
 def test_cold_region_gets_no_drought(monkeypatch):
@@ -133,7 +139,7 @@ def test_agent_ember_ignites_wildfire_only_when_dry(monkeypatch):
     assert not any(e["kind"] == "fire" for e in w2.active_events)
 
 
-def test_fire_starves_without_fuel(monkeypatch):
+def test_fire_depletes_without_fuel(monkeypatch):
     monkeypatch.setattr(ev, "EVENT_WARMUP_TICKS", 0)
     w = _world(moisture=0.0, plant=0.0, temperature=10.0)  # cold blocks drought noise
     w.active_events.append(
@@ -168,8 +174,16 @@ def test_global_cap_holds_for_every_genesis_path(monkeypatch):
     w.get_cell(4, 3).setdefault("materials", {})["ember"] = 1.0
     for i in range(ev.MAX_ACTIVE_EVENTS):
         w.active_events.append(
-            {"kind": "storm", "x": 2 + i, "y": 2, "radius": 4, "intensity": 1.0, "ttl": 50,
-             "vx": 0, "vy": 0}
+            {
+                "kind": "storm",
+                "x": 2 + i,
+                "y": 2,
+                "radius": 4,
+                "intensity": 1.0,
+                "ttl": 50,
+                "vx": 0,
+                "vy": 0,
+            }
         )
 
     w.update_events(ev.DROUGHT_CHECK_EVERY, {}, RISKY_WEATHER)
@@ -189,8 +203,16 @@ def test_fire_burns_agents_and_storms_exhaust_them():
         {"kind": "fire", "x": 5, "y": 5, "radius": 3, "intensity": 1.0, "ttl": 50}
     )
     w.active_events.append(
-        {"kind": "storm", "x": 10, "y": 10, "radius": 3, "intensity": 1.0, "ttl": 50,
-         "vx": 0, "vy": 0}
+        {
+            "kind": "storm",
+            "x": 10,
+            "y": 10,
+            "radius": 3,
+            "intensity": 1.0,
+            "ttl": 50,
+            "vx": 0,
+            "vy": 0,
+        }
     )
 
     h0, e0 = burned.health, soaked.energy
@@ -209,8 +231,16 @@ def test_camp_shelters_from_storms():
     w.S["camp"][4, 4] = 1.0
     for x, y in ((10, 10), (4, 4)):
         w.active_events.append(
-            {"kind": "storm", "x": x, "y": y, "radius": 3, "intensity": 1.0, "ttl": 50,
-             "vx": 0, "vy": 0}
+            {
+                "kind": "storm",
+                "x": x,
+                "y": y,
+                "radius": 3,
+                "intensity": 1.0,
+                "ttl": 50,
+                "vx": 0,
+                "vy": 0,
+            }
         )
 
     e_exposed, e_sheltered = exposed.energy, sheltered.energy

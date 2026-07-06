@@ -108,7 +108,7 @@ def test_admissible_masks_c2():
     assert masks["target"][i_hier] and masks["target"][8]
     assert not masks["target"][i_nah] and not masks["target"][i_fern]
     # Nutzlast-Check: 13 Props der Slot-Features stimmen mit IDX2-Layout überein
-    assert view.feats[i_hier][IDX2["nutrition"]] == hier.props[IDX2["nutrition"]]
+    assert view.feats[i_hier][IDX2["resource_value"]] == hier.props[IDX2["resource_value"]]
 
 
 def test_resolve_slot_of_ist_id_basiert():

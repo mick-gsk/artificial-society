@@ -67,13 +67,13 @@ def test_deterministic_given_same_rng_seed():
     assert [f.mass for f in a.fragments] == [f.mass for f in b.fragments]
 
 
-def test_striking_creates_no_nutrition():
+def test_striking_creates_no_resource_value():
     # Kein Zauber: ein Schlag erzeugt keinen Nährwert.
     result = strike(
         make_object("flint", 0.8), make_object("granite", 1.0), HAND_STRIKE_J, random.Random(42)
     )
     for f in result.fragments:
-        assert f.props[IDX2["nutrition"]] == 0.0
+        assert f.props[IDX2["resource_value"]] == 0.0
 
 
 def test_tough_and_liquid_targets_never_shatter_even_at_high_energy():

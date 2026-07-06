@@ -96,9 +96,9 @@ def compute_need_vector(agent, cell: dict) -> np.ndarray:
     is_sick = getattr(agent, "disease_id", None) is not None
     has_tool = getattr(agent, "tool", None) is not None
 
-    # Hunger -> edibility benoetigt
-    hunger_drive = max(0.0, 1.0 - energy_ratio)
-    need[IDX["edibility"]] += hunger_drive * 1.5
+    # Energy need -> edibility benoetigt
+    energy_need_drive = max(0.0, 1.0 - energy_ratio)
+    need[IDX["edibility"]] += energy_need_drive * 1.5
 
     # Immer: Toxisches meiden
     need[IDX["toxicity"]] -= 2.0
@@ -131,7 +131,7 @@ def compute_need_vector(agent, cell: dict) -> np.ndarray:
 
     # Neugier-Bonus: Agents mit hoher Neugier suchen breitere Eigenschaften
     curiosity = agent.traits.get("curiosity", 0.5)
-    if curiosity > 0.7 and hunger_drive < 0.3 and cold_drive < 0.3:
+    if curiosity > 0.7 and energy_need_drive < 0.3 and cold_drive < 0.3:
         # Kein unmittelbarer Druck -> erkunde interessante Eigenschaften
         need[IDX["scent"]] += curiosity * 0.4
         need[IDX["conductivity"]] += curiosity * 0.3

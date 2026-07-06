@@ -38,7 +38,7 @@ def test_spawn_transfers_energy_from_the_mother():
     )
 
 
-def test_starving_mother_bears_weak_spawn():
+def test_depleting_mother_bears_weak_spawn():
     sim = _sim(seed=23)
     mother = sim.agents[0]
     mother.sex = "f"
