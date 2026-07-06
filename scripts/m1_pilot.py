@@ -591,6 +591,9 @@ def run_one(
     min_food_per_capita: float = 6.0,
     plant_ceiling_scale: float = 1.0,
     physics: str = "v2",
+    taxis: bool = False,
+    taxis_hunger_threshold: float = 80.0,
+    mate_seek_radius: int = 8,
 ) -> str:
     conf = EXPERIMENTS[exp]
     # Patches VOR dem Simulation-Bau anwenden (Spec §1). Modul-Konstanten wie
@@ -630,6 +633,18 @@ def run_one(
     # `_train_v2`-No-op (Teil von `_freeze_learning`) wirkt im v1-Pfad nicht,
     # weil `finalize_terminal`/`_train_v2` dort nie aufgerufen werden
     # (`simulation.py:320-327`); `maybe_train`-No-op reicht in BEIDEN Pfaden.
+    # Angeborene Grund-Taxis (Architektur A2, agent.py). KLASSEN-Konfiguration
+    # (ClassVar auf Agent), VOR dem Sim-Bau gesetzt. Default AUS ⇒ Verhalten
+    # byte-gleich zum bisherigen v2-/v1-Pfad (primitive_move) — alle bisherigen
+    # A/B-Läufe bleiben vergleichbar. Bei AN ersetzt innate_locomotion im
+    # physics_v2-Pfad die Welt-Wirkung des Move-Kopfs; die Schwellen sind
+    # sweepbare Knobs und landen im meta-Record.
+    from artificial_society.agents.agent import Agent as _Agent
+
+    _Agent.taxis_enabled = bool(taxis)
+    _Agent.taxis_hunger_threshold = float(taxis_hunger_threshold)
+    _Agent.mate_seek_radius = int(mate_seek_radius)
+
     sim = Simulation(
         headless=True,
         load_checkpoint=False,
@@ -728,6 +743,12 @@ def run_one(
             # v1-vs-v2-Demografie-Vergleich (siehe Modul-Docstring): welcher
             # Simulation(physics_v2=...)-Pfad gebaut wurde.
             "physics": physics,
+            # Angeborene Grund-Taxis (A2, agent.py): ob der Grundtrieb aktiv war
+            # + seine Kalibrierung (sweepbare Knobs). Default AUS = bisheriges
+            # Verhalten. Wirkt nur im physics_v2-Pfad.
+            "taxis": bool(taxis),
+            "taxis_hunger_threshold": float(taxis_hunger_threshold),
+            "mate_seek_radius": int(mate_seek_radius),
             "patched": dict(conf["patched"], CHECKPOINT_INTERVAL=0),
         }
         f.write(json.dumps(meta) + "\n")
@@ -843,6 +864,37 @@ def main() -> None:
             "bewusst NUR Pflanzen, nicht das flache Fleisch-Decken-Konstante."
         ),
     )
+    ap.add_argument(
+        "--taxis",
+        action="store_true",
+        default=False,
+        help=(
+            "Angeborene Grund-Taxis (Architektur A2, agent.py): aktiviert im "
+            "physics_v2-Pfad die gerichtete Grundfortbewegung (hungrig->Nahrung, "
+            "sonst paarungsbereit->Partner), die die Welt-Wirkung des Move-Kopfs "
+            "ersetzt. Default AUS = bisheriges Verhalten (primitive_move), alle "
+            "bestehenden A/B-Läufe unverändert. Landet als 'taxis' im meta-Record."
+        ),
+    )
+    ap.add_argument(
+        "--taxis-hunger-threshold",
+        type=float,
+        default=80.0,
+        help=(
+            "Energie-Schwelle unter der ein Agent Nahrungs-Taxis statt Partner-"
+            "Taxis fährt (Default 80.0 > REPRODUCTION_ENERGY 60 -> Mate-Seek-Floor "
+            "= Schwelle). Nur mit --taxis wirksam; sweepbarer Knob."
+        ),
+    )
+    ap.add_argument(
+        "--mate-seek-radius",
+        type=int,
+        default=8,
+        help=(
+            "Chebyshev-Wahrnehmungsradius der Partner-Taxis (Default 8 > "
+            "±5-Konzeptionsbox). Nur mit --taxis wirksam; sweepbarer Knob."
+        ),
+    )
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     run_one(
@@ -861,6 +913,9 @@ def main() -> None:
         args.min_food_per_capita,
         args.plant_ceiling_scale,
         args.physics,
+        args.taxis,
+        args.taxis_hunger_threshold,
+        args.mate_seek_radius,
     )
 
 
