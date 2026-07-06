@@ -1,0 +1,16 @@
+v1_baseline|41|--grid-w 40 --grid-h 30 --min-pop 8 --respawn-count 6
+v1_baseline|42|--grid-w 40 --grid-h 30 --min-pop 8 --respawn-count 6
+v1_baseline|43|--grid-w 40 --grid-h 30 --min-pop 8 --respawn-count 6
+v1_baseline|44|--grid-w 40 --grid-h 30 --min-pop 8 --respawn-count 6
+v2_baseline|41|--grid-w 40 --grid-h 30 --min-pop 8 --respawn-count 6
+v2_baseline|42|--grid-w 40 --grid-h 30 --min-pop 8 --respawn-count 6
+v2_baseline|43|--grid-w 40 --grid-h 30 --min-pop 8 --respawn-count 6
+v2_baseline|44|--grid-w 40 --grid-h 30 --min-pop 8 --respawn-count 6
+v1_best|41|--grid-w 24 --grid-h 18 --min-pop 16 --respawn-count 8 --age-structured-founders --plant-ceiling-scale 3.4
+v1_best|42|--grid-w 24 --grid-h 18 --min-pop 16 --respawn-count 8 --age-structured-founders --plant-ceiling-scale 3.4
+v1_best|43|--grid-w 24 --grid-h 18 --min-pop 16 --respawn-count 8 --age-structured-founders --plant-ceiling-scale 3.4
+v1_best|44|--grid-w 24 --grid-h 18 --min-pop 16 --respawn-count 8 --age-structured-founders --plant-ceiling-scale 3.4
+v2_best|41|--grid-w 24 --grid-h 18 --min-pop 16 --respawn-count 8 --age-structured-founders --plant-ceiling-scale 3.4
+v2_best|42|--grid-w 24 --grid-h 18 --min-pop 16 --respawn-count 8 --age-structured-founders --plant-ceiling-scale 3.4
+v2_best|43|--grid-w 24 --grid-h 18 --min-pop 16 --respawn-count 8 --age-structured-founders --plant-ceiling-scale 3.4
+v2_best|44|--grid-w 24 --grid-h 18 --min-pop 16 --respawn-count 8 --age-structured-founders --plant-ceiling-scale 3.4

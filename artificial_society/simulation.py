@@ -53,6 +53,12 @@ RESPAWN_COUNT = 6
 # alive at respawn time, we fall back to scattering regardless (there is no living
 # agent to inherit from).
 RESPAWN_INHERITANCE = True
+# RESPAWN_MODE is the harness-facing string switch ("scatter" | "inherit" | "off")
+# read call-time in emergency_respawn; it is the primary selector. The older
+# boolean RESPAWN_INHERITANCE stays as a back-compat override: when it is False it
+# forces "scatter" regardless of RESPAWN_MODE (keeps the A/B unit tests valid).
+# "off" makes emergency_respawn a no-op (belt-and-suspenders with MIN_POPULATION=0).
+RESPAWN_MODE = "inherit"
 # Juvenile head-start age for an inherited replacement: old enough to be viable
 # and reach MIN_REPRODUCTION_AGE (=60) well within a lifespan, but still a
 # juvenile (below STAGE_CHILD=120 adulthood). Externally settable.
@@ -323,9 +329,14 @@ class Simulation:
 
     def emergency_respawn(self):
         living = [a for a in self.agents if a.alive]
-        # Fall back to the old scattered spawn when inheritance is disabled (A/B
-        # lever) or when there is simply no living agent to inherit from.
-        if not RESPAWN_INHERITANCE or not living:
+        # Resolve the effective mode: RESPAWN_MODE is primary; the boolean
+        # RESPAWN_INHERITANCE=False forces scatter (back-compat A/B lever).
+        mode = RESPAWN_MODE if RESPAWN_INHERITANCE else "scatter"
+        if mode == "off":
+            return
+        # Fall back to the old scattered spawn in scatter mode or when there is
+        # simply no living agent to inherit from.
+        if mode == "scatter" or not living:
             self._respawn_scattered()
             return
         for _ in range(RESPAWN_COUNT):
