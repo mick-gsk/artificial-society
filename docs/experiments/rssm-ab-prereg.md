@@ -9,6 +9,10 @@ Frozen BEFORE confirmatory seeds. Pilot (3 seeds) may amend §Numbers once, befo
 - Primary endpoint: KM-RMST(τ) of natural-born agents (spawn_origin=="birth", birth ≥ transient
   cutoff), right-censored at run end. Implemented in scripts/rssm_ab.py::rmst (unit-tested).
 - Primary regime: transitions-matched. Compute axis reported as secondary.
+- Transitions axis = cumulative stored transitions (B/C, `SharedLearner.transitions_stored`) /
+  cumulative agent-ticks (A, `sum(len(sim.agents))` per tick), as logged per 500 ticks.
+- Terminal marking = death flagged on the agent's last stored transition (≤1 tick offset
+  approximation — a v1-substrate agent that dies exits `Agent.update` before that tick's store).
 - Confirmatory tests: {B-vs-A, B-vs-C} on RMST, Wilcoxon signed-rank on within-seed deltas,
   Holm-corrected (2 comparisons). All other metrics exploratory.
 - Collapse := population < 8 (MIN_POPULATION) for ≥ 200 consecutive ticks. Collapsed runs
@@ -22,3 +26,5 @@ Frozen BEFORE confirmatory seeds. Pilot (3 seeds) may amend §Numbers once, befo
 - SD of within-seed deltas: ___ ; seed-pair correlation r: ___ (if r < 0.3 → unpaired analysis)
 - collapse fraction per arm: ___
 - N (paired seeds) for 80% power at +25% RMST: ___ ; if N > 12 → downgrade to estimation-with-CI.
+- n≥6 paired seeds required for any confirmatory Wilcoxon claim at α=0.05 (exact-test floor:
+  p_min=0.25 at n=3).

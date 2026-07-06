@@ -2255,5 +2255,5 @@ git add docs/experiments/rssm-ab-prereg.md && git commit -m "docs(rssm): freeze 
 | §10.3 correctness floor (full pytest + 500-tick no-collapse) | 8 Step 7 |
 | §12 phasing | Tasks 1–10 ≙ phases 1–8 |
 
-Known deliberate deviations from spec text (documented in the results note): update-count warm-up gate instead of loss threshold (Task 1); replay-critic term wired but default-off until pilot signal (Task 7); out-of-update deaths close episodes terminal-less (Task 8 Step 3.4).
+Known deliberate deviations from spec text (documented in the results note): update-count warm-up gate instead of loss threshold (Task 1); replay-critic term wired but default-off until pilot signal (Task 7). The originally-recorded third deviation ("out-of-update deaths close episodes terminal-less", Task 8 Step 3.4) rested on a false premise — it isn't a minority case, ALL v1-substrate deaths exit `Agent.update` before that tick's `store_transition()` call, so the terminal could never land on the current tick's transition. Fixed post-hoc (final review, Critical 2): `SharedLearner.on_death` now calls `SharedReplay.end_episode(agent_id, died=True)`, which marks the episode's LAST stored transition (from the prior tick) as terminal — a ≤1-tick offset approximation, not a deviation.
 
