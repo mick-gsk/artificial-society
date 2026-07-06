@@ -9,10 +9,10 @@ import torch
 from artificial_society.agents.brain import INPUT_SIZE, V1_HEAD_DIMS, Brain
 from artificial_society.agents.communication import CommunicationSystem
 from artificial_society.agents.emotional_memory import EmotionalMemory
-from artificial_society.agents.endocrine import EndocrineSystem
 from artificial_society.agents.knowledge import KnowledgeGraph
 from artificial_society.agents.life_stage import get_stage_stats
 from artificial_society.agents.memory import EpisodicMemory
+from artificial_society.agents.modulation import ModulationSystem
 from artificial_society.agents.perception_v2 import (
     NoveltyBuckets,
     admissible_masks,
@@ -157,8 +157,8 @@ def ensure_fields(agent) -> None:
         agent.causal_memory = CausalMemory(capacity=32)
     if not hasattr(agent, "material_inventory") or agent.material_inventory is None:
         agent.material_inventory = {}
-    if not hasattr(agent, "endocrine") or agent.endocrine is None:
-        agent.endocrine = EndocrineSystem()
+    if not hasattr(agent, "modulation") or agent.modulation is None:
+        agent.modulation = ModulationSystem()
     if not hasattr(agent, "is_sleeping"):
         agent.is_sleeping = False
     if not hasattr(agent, "tool"):
@@ -339,7 +339,7 @@ class Agent:
     memory: EpisodicMemory = field(default_factory=lambda: EpisodicMemory(10))
     brain: Brain = field(default_factory=Brain)
     communication: CommunicationSystem = field(default_factory=CommunicationSystem)
-    endocrine: EndocrineSystem = field(default_factory=EndocrineSystem)
+    modulation: ModulationSystem = field(default_factory=ModulationSystem)
     message_vector: list = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
     trust: dict = field(default_factory=dict)
     tribe_id: int | None = None
@@ -517,7 +517,7 @@ class Agent:
         mat_count = min(1.0, len(cell.get("materials", {})) / 6.0)
         causal_f = self.causal_memory.feature_vector()
         inv_size = min(1.0, sum(self.material_inventory.values()) / 5.0)
-        hormones = self.endocrine.as_features()
+        modulators = self.modulation.as_features()
         struct_f = structure_feature_vector(cell)
         return [
             self.energy / MAX_ENERGY,
@@ -554,13 +554,13 @@ class Agent:
             *struct_f,
             *causal_f,
             *retrieval,
-            *hormones,
+            *modulators,
         ]
 
     def visible_cells(self, world):
         x, y = self.pos
-        melatonin = self.endocrine.h[2]
-        vision_mult = max(0.4, 1.0 - 0.6 * melatonin)
+        rest = self.modulation.h[2]
+        vision_mult = max(0.4, 1.0 - 0.6 * rest)
         radius = max(
             1,
             int(round((self.traits["vision"] + 0.35 * self.traits["sense_radius"]) * vision_mult)),
@@ -618,8 +618,8 @@ class Agent:
                 self.energy = min(MAX_ENERGY, self.energy + take)
                 self.plant_eaten += 1
                 gain += take
-                self.endocrine.apply_substance("plant_food", take / PLANT_ENERGY)
-                self.endocrine.apply_successful_forage(take)
+                self.modulation.apply_substance("plant_food", take / PLANT_ENERGY)
+                self.modulation.apply_successful_forage(take)
         else:
             # Carnivore/omnivore: carcasses first (now correctly keyed on the
             # stored `carcasses` field, not the never-present `carcass`), then the
@@ -633,31 +633,31 @@ class Agent:
                 self.energy = min(MAX_ENERGY, self.energy + take)
                 self.meat_eaten += 1
                 gain += take
-                self.endocrine.apply_substance("raw_meat", take / MEAT_ENERGY)
-                self.endocrine.apply_successful_forage(take)
+                self.modulation.apply_substance("raw_meat", take / MEAT_ENERGY)
+                self.modulation.apply_successful_forage(take)
             elif meat_available > 0:
                 take = min(meat_available, MEAT_ENERGY * eff)
                 apply_consumption(world, x, y, meat=take)
                 self.energy = min(MAX_ENERGY, self.energy + take)
                 self.meat_eaten += 1
                 gain += take
-                self.endocrine.apply_substance("raw_meat", take / MEAT_ENERGY)
-                self.endocrine.apply_successful_forage(take)
+                self.modulation.apply_substance("raw_meat", take / MEAT_ENERGY)
+                self.modulation.apply_successful_forage(take)
             elif plant_available > 0:
                 take = min(plant_available, PLANT_ENERGY * eff)
                 apply_consumption(world, x, y, plant=take)
                 self.energy = min(MAX_ENERGY, self.energy + take)
                 self.plant_eaten += 1
                 gain += take
-                self.endocrine.apply_substance("plant_food", take / PLANT_ENERGY)
-                self.endocrine.apply_successful_forage(take)
+                self.modulation.apply_substance("plant_food", take / PLANT_ENERGY)
+                self.modulation.apply_successful_forage(take)
         water_available = cell.get("water", 0.0)
         if water_available > 0 and self.hydration < 100.0:
             take = min(water_available, 8.0 * eff)
             world.set_cell(x, y, "water", max(0.0, water_available - take))
             self.hydration = min(100.0, self.hydration + take)
             gain += take * 0.3
-            self.endocrine.apply_substance("water", take / 8.0)
+            self.modulation.apply_substance("water", take / 8.0)
         return gain
 
     def _collect_herbs(self, world):
@@ -669,7 +669,7 @@ class Agent:
         herb = random.choice(herbs)
         if collect_herb(world, x, y, herb):
             self.herbs_carried[herb] = self.herbs_carried.get(herb, 0) + 1
-            self.endocrine.apply_substance(f"herb_{herb}", 1.0)
+            self.modulation.apply_substance(f"herb_{herb}", 1.0)
 
     def _try_remedy(self):
         if self.disease_id is None or not self.herbs_carried:
@@ -714,7 +714,7 @@ class Agent:
         target = random.choice(targets)
         dmg = max(1.0, 8.0 * self.traits["aggression"] + agg_bias * 5.0)
         target.health -= dmg
-        target.endocrine.apply_attack_received()
+        target.modulation.apply_attack_received()
         if target.health <= 0:
             target.alive = False
             if self.physics_v2:
@@ -725,7 +725,7 @@ class Agent:
             loot = target.energy * 0.3
             self.energy = min(MAX_ENERGY, self.energy + loot)
             return loot
-        self.endocrine.apply_attack_received()
+        self.modulation.apply_attack_received()
         return 0.5
 
     def _cooperate(self, agents, mods, tick):
@@ -745,7 +745,7 @@ class Agent:
         same_tribe = [
             a for a in nearby if a.tribe_id == self.tribe_id and self.tribe_id is not None
         ]
-        self.endocrine.apply_social_signal(len(nearby), bool(same_tribe))
+        self.modulation.apply_social_signal(len(nearby), bool(same_tribe))
         # Redistributive group-foraging bonus (Phase 4): instead of minting
         # `forage_bonus` energy from nothing, the better-off nearby members pool a
         # little energy for the active cooperator. Zero-sum: self gains exactly what
@@ -1292,8 +1292,8 @@ class Agent:
             # Schlaf-Regeneration, Koop-Transfers — alles Physiologie).
             e_start, h_start = self.energy, self.health
 
-        self.endocrine.update(self, world)
-        mods = self.endocrine.modifiers()
+        self.modulation.update(self, world)
+        mods = self.modulation.modifiers()
         stage = get_stage_stats(self.age)
 
         self._age_tick()
@@ -1479,7 +1479,7 @@ class Agent:
                 inv_result = agent_invent_from_need(self, world, *self.pos, tick)
                 if inv_result:
                     reward += 0.5
-                    self.endocrine.apply_discovery(1.0)
+                    self.modulation.apply_discovery(1.0)
                 self._need_inv_cooldown = NEED_INVENTION_INTERVAL
             else:
                 self._need_inv_cooldown -= 1
@@ -1491,13 +1491,13 @@ class Agent:
             invented = agent_try_invention(self, world, *self.pos)
             if invented:
                 reward += 1.0
-                self.endocrine.apply_discovery(1.0)
+                self.modulation.apply_discovery(1.0)
 
         if not self.physics_v2 and tick % 4 == 0 and random.random() < 0.18:
             cooked = agent_try_cook(self, world, *self.pos)
             if cooked:
                 reward += 0.3
-                self.endocrine.apply_substance("cooked_meat", 1.0)
+                self.modulation.apply_substance("cooked_meat", 1.0)
 
         if economy is not None:
             economy.maybe_trade(self, agents)
@@ -1584,14 +1584,14 @@ class Agent:
         for other in nearby_agents:
             self.tom.observe_agent(other, tick)
 
-        h = self.endocrine.h
+        h = self.modulation.h
         arousal = min(1.0, max(0.0, (h[0] + h[1]) / 2))
-        context_hormones = [h[0], h[3], h[4], h[1]]
+        context_modulators = [h[0], h[3], h[4], h[1]]
         self.emotional_memory.encode_experience(
             stimulus=mode,
             valence=min(1.0, max(-1.0, reward * 0.1)),
             arousal=arousal,
-            context_hormones=context_hormones,
+            context_modulators=context_modulators,
             tick=tick,
         )
 

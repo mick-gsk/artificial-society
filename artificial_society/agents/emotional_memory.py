@@ -86,7 +86,7 @@ from typing import Optional
 BASE_DECAY_RATE = 0.0015  # full trace lasts ~667 ticks
 FLASHBULB_DECAY_RATE = 0.00025  # ~4000 ticks (years in agent time)
 TRAUMA_FLOOR = 0.20  # traumatic traces never drop below this strength
-TRAUMA_CORTISOL_THRESH = 0.78
+TRAUMA_STRESS_THRESH = 0.78
 
 # Extinction per safe re-exposure
 EXTINCTION_RATE = 0.06
@@ -155,7 +155,7 @@ class EmotionalTrace:
     traumatic: bool
     consolidation: float
     tick_encoded: int
-    context_hormones: list  # [cortisol, serotonin, dopamine, adrenaline]
+    context_modulators: list  # [cortisol, serotonin, dopamine, adrenaline]
     extinction_count: int = 0
     category: str = "unknown"
     last_retrieved: int = 0
@@ -189,7 +189,7 @@ class EmotionalMemory:
         stimulus: str,
         valence: float,
         arousal: float,
-        context_hormones: list,  # [cortisol, serotonin, dopamine, adrenaline]
+        context_modulators: list,  # [cortisol, serotonin, dopamine, adrenaline]
         tick: int,
         mood_bias: bool = True,
     ) -> EmotionalTrace:
@@ -204,7 +204,7 @@ class EmotionalMemory:
         If an existing trace for same stimulus exists, reconsolidate
         instead of creating duplicate.
         """
-        cortisol = context_hormones[0] if len(context_hormones) > 0 else 0.2
+        stress = context_modulators[0] if len(context_modulators) > 0 else 0.2
 
         # Mood-congruent encoding bias
         if mood_bias and abs(valence) < 0.4:
@@ -223,7 +223,7 @@ class EmotionalMemory:
             decay_rate = BASE_DECAY_RATE * (1.0 - 0.5 * arousal)
 
         # Trauma
-        traumatic = cortisol >= TRAUMA_CORTISOL_THRESH and arousal >= 0.55
+        traumatic = stress >= TRAUMA_STRESS_THRESH and arousal >= 0.55
         if traumatic:
             decay_rate = FLASHBULB_DECAY_RATE * 0.5
             base_strength = 1.0
@@ -256,7 +256,7 @@ class EmotionalMemory:
             traumatic=traumatic,
             consolidation=consolidation,
             tick_encoded=tick,
-            context_hormones=list(context_hormones[:4]),
+            context_modulators=list(context_modulators[:4]),
             category=cat,
         )
         self._add_trace(trace)
@@ -265,7 +265,7 @@ class EmotionalMemory:
         # Generalisation: spread weakly to same-category stimuli
         if cat != "unknown":
             self._generalise(
-                cat, valence, arousal * GENERALISATION_STRENGTH, tick, context_hormones
+                cat, valence, arousal * GENERALISATION_STRENGTH, tick, context_modulators
             )
 
         return trace
@@ -309,7 +309,7 @@ class EmotionalMemory:
     def retrieve(
         self,
         stimulus: str,
-        current_hormones: list,
+        current_modulators: list,
         tick: int,
     ) -> Optional[EmotionalTrace]:
         """
@@ -324,7 +324,7 @@ class EmotionalMemory:
             return None
 
         # State-dependent boost
-        context_sim = self._context_similarity(trace.context_hormones, current_hormones)
+        context_sim = self._context_similarity(trace.context_modulators, current_modulators)
         if context_sim > CONTEXT_MATCH_THRESHOLD:
             trace.strength = min(1.0, trace.strength + 0.02)
 
@@ -334,14 +334,14 @@ class EmotionalMemory:
     def fear_of(
         self,
         stimulus: str,
-        current_hormones: list,
+        current_modulators: list,
         tick: int,
     ) -> float:
         """
         Return fear level 0..1 for a stimulus.
         0 = no fear / positive association.
         """
-        trace = self.retrieve(stimulus, current_hormones, tick)
+        trace = self.retrieve(stimulus, current_modulators, tick)
         if trace is None:
             return 0.0
         fear = max(0.0, -trace.effective_valence())
@@ -350,25 +350,25 @@ class EmotionalMemory:
     def desire_of(
         self,
         stimulus: str,
-        current_hormones: list,
+        current_modulators: list,
         tick: int,
     ) -> float:
         """
         Return desire level 0..1 for a stimulus.
         0 = no desire / negative association.
         """
-        trace = self.retrieve(stimulus, current_hormones, tick)
+        trace = self.retrieve(stimulus, current_modulators, tick)
         if trace is None:
             return 0.0
         desire = max(0.0, trace.effective_valence())
         return min(1.0, desire)
 
-    def most_feared(self, current_hormones: list, tick: int) -> Optional[str]:
+    def most_feared(self, current_modulators: list, tick: int) -> Optional[str]:
         """Return stimulus with highest current fear."""
         if not self.traces:
             return None
         fears = [
-            (t.stimulus, self.fear_of(t.stimulus, current_hormones, tick))
+            (t.stimulus, self.fear_of(t.stimulus, current_modulators, tick))
             for t in self.traces
             if t.valence < 0
         ]
@@ -376,12 +376,12 @@ class EmotionalMemory:
             return None
         return max(fears, key=lambda x: x[1])[0]
 
-    def most_desired(self, current_hormones: list, tick: int) -> Optional[str]:
+    def most_desired(self, current_modulators: list, tick: int) -> Optional[str]:
         """Return stimulus with highest current desire."""
         if not self.traces:
             return None
         desires = [
-            (t.stimulus, self.desire_of(t.stimulus, current_hormones, tick))
+            (t.stimulus, self.desire_of(t.stimulus, current_modulators, tick))
             for t in self.traces
             if t.valence > 0
         ]
@@ -392,7 +392,7 @@ class EmotionalMemory:
     # ------------------------------------------------------------------
     # Endocrine modulations
     # ------------------------------------------------------------------
-    def endocrine_modulations(self) -> dict:
+    def modulation_modulations(self) -> dict:
         """
         Compute per-tick hormone deltas driven by emotional memory state.
 
@@ -406,10 +406,10 @@ class EmotionalMemory:
           High fear traces -> adrenaline priming near fear stimuli
           Flashbulb traces -> contextual adrenaline when retrieved
         """
-        cortisol_delta = 0.0
-        serotonin_delta = 0.0
-        dopamine_delta = 0.0
-        adrenaline_delta = 0.0
+        stress_delta = 0.0
+        satisfaction_delta = 0.0
+        reward_delta = 0.0
+        arousal_delta = 0.0
 
         for t in self.traces:
             ev = t.effective_valence()
@@ -417,35 +417,35 @@ class EmotionalMemory:
 
             if t.traumatic and t.strength > TRAUMA_FLOOR:
                 # Chronic low-level cortisol elevation from trauma
-                cortisol_delta += 0.004 * t.strength
-                adrenaline_delta += 0.002 * t.strength
+                stress_delta += 0.004 * t.strength
+                arousal_delta += 0.002 * t.strength
 
             if ev < -0.2:
                 # Fear/pain memory -> cortisol up, serotonin down
-                cortisol_delta += 0.003 * abs(ev)
-                serotonin_delta -= 0.002 * abs(ev)
+                stress_delta += 0.003 * abs(ev)
+                satisfaction_delta -= 0.002 * abs(ev)
             elif ev > 0.2:
                 # Positive memory -> serotonin + dopamine up
-                serotonin_delta += 0.002 * ev
-                dopamine_delta += 0.001 * ev
+                satisfaction_delta += 0.002 * ev
+                reward_delta += 0.001 * ev
 
         # Mood effect on baseline
         if self.mood > 0.1:
-            serotonin_delta += 0.005 * self.mood
-            dopamine_delta += 0.003 * self.mood
+            satisfaction_delta += 0.005 * self.mood
+            reward_delta += 0.003 * self.mood
         elif self.mood < -0.1:
-            cortisol_delta += 0.005 * abs(self.mood)
-            serotonin_delta -= 0.004 * abs(self.mood)
+            stress_delta += 0.005 * abs(self.mood)
+            satisfaction_delta -= 0.004 * abs(self.mood)
 
         # Clamp deltas to avoid runaway
         def _c(v):
             return max(-0.04, min(0.04, v))
 
         return {
-            "cortisol": _c(cortisol_delta),
-            "serotonin": _c(serotonin_delta),
-            "dopamine": _c(dopamine_delta),
-            "adrenaline": _c(adrenaline_delta),
+            "stress": _c(stress_delta),
+            "satisfaction": _c(satisfaction_delta),
+            "reward": _c(reward_delta),
+            "arousal": _c(arousal_delta),
         }
 
     # ------------------------------------------------------------------
@@ -518,7 +518,7 @@ class EmotionalMemory:
                 traumatic=False,  # trauma not directly inherited
                 consolidation=t.consolidation * 0.5,
                 tick_encoded=self._tick,
-                context_hormones=[0.2, 0.45, 0.3, 0.05],  # default baseline
+                context_modulators=[0.2, 0.45, 0.3, 0.05],  # default baseline
                 category=t.category,
             )
             self._add_trace(spawn_trace)
@@ -586,7 +586,7 @@ class EmotionalMemory:
         valence: float,
         weak_arousal: float,
         tick: int,
-        context_hormones: list,
+        context_modulators: list,
     ) -> None:
         """
         Apply weak generalisation: all existing traces of the same

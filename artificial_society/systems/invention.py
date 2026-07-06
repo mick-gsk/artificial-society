@@ -167,8 +167,8 @@ def agent_try_invention(agent, world, x, y) -> float:
         inv[mat_id] = inv.get(mat_id, 0.0) + 0.5
         agent.material_inventory = inv
         _maybe_upgrade_tool(agent, mat_id, new_vec)
-        if emergent_reward > 0.3 and hasattr(agent, "endocrine"):
-            agent.endocrine.apply_discovery(min(1.0, emergent_reward))
+        if emergent_reward > 0.3 and hasattr(agent, "modulation"):
+            agent.modulation.apply_discovery(min(1.0, emergent_reward))
 
     # FIX: emergent_reward-Gewichtung von 0.6 auf 1.0 erhöht
     total_reward = legacy_reward + emergent_reward * 1.0
@@ -271,8 +271,8 @@ def share_discovery(teacher, student, mat_id: str) -> bool:
     if inv.get(mat_id, 0.0) < 0.1:
         inv[mat_id] = 0.3
         student.material_inventory = inv
-        if hasattr(student, "endocrine"):
-            student.endocrine.apply_discovery(0.3)
+        if hasattr(student, "modulation"):
+            student.modulation.apply_discovery(0.3)
         return True
     return False
 
@@ -392,7 +392,7 @@ def _dominant_need(agent, cell: dict) -> str:
     if energy_ratio < 0.25:
         return "energy_need"
     if temperature < 5 or (
-        hasattr(agent, "endocrine") and getattr(agent.endocrine, "cortisol", 0) > 0.7
+        hasattr(agent, "modulation") and getattr(agent.modulation, "stress", 0) > 0.7
     ):
         return "cold"
     if is_sick or health_ratio < 0.4:

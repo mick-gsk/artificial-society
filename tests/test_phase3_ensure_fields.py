@@ -30,7 +30,7 @@ NEW_FIELDS = (
     "_brain_device",
     "causal_memory",
     "material_inventory",
-    "endocrine",
+    "modulation",
     "is_sleeping",
     "brain",
     "tool",

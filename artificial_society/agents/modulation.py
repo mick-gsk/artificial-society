@@ -43,16 +43,16 @@ External inputs shift them up or down; the agent's body handles the rest.
 from __future__ import annotations
 
 # Hormone indices (used as list positions, not labels for the brain)
-CORTISOL = 0
-ADRENALINE = 1
-MELATONIN = 2
-SEROTONIN = 3
-DOPAMINE = 4
-OXYTOCIN = 5
-INFLAMMATION = 6
+STRESS = 0
+AROUSAL = 1
+REST = 2
+SATISFACTION = 3
+REWARD = 4
+AFFILIATION = 5
+IRRITATION = 6
 UPKEEP = 7
 
-N_HORMONES = 8
+N_MODULATORS = 8
 
 # Baseline resting levels (0..1)
 BASELINE = [0.20, 0.05, 0.10, 0.45, 0.30, 0.25, 0.05, 0.50]
@@ -65,7 +65,7 @@ MIN_H = 0.0
 MAX_H = 1.0
 
 
-class EndocrineSystem:
+class ModulationSystem:
     """
     Maintains 8 hormone floats for one agent.
     Call update() each tick to apply decay + world-driven inputs.
@@ -95,8 +95,8 @@ class EndocrineSystem:
 
         # Light drives melatonin INVERSELY (darkness = high melatonin)
         light = dn.get("light", 1.0)
-        target_melatonin = BASELINE[MELATONIN] + 0.75 * (1.0 - light)
-        h[MELATONIN] = _nudge(h[MELATONIN], target_melatonin, rate=0.04)
+        target_rest = BASELINE[REST] + 0.75 * (1.0 - light)
+        h[REST] = _nudge(h[REST], target_rest, rate=0.04)
 
         # Danger / disturbance drives cortisol and adrenaline
         threat = (
@@ -104,26 +104,26 @@ class EndocrineSystem:
             + cell.get("disturbance", 0.0) * 0.005
             + dn.get("danger_mult", 1.0) * 0.02
         )
-        h[CORTISOL] = _clamp(h[CORTISOL] + threat)
-        h[ADRENALINE] = _clamp(h[ADRENALINE] + threat * 0.6)
+        h[STRESS] = _clamp(h[STRESS] + threat)
+        h[AROUSAL] = _clamp(h[AROUSAL] + threat * 0.6)
 
         # Starvation / low energy drives cortisol
         from artificial_society.agents.agent import MAX_ENERGY
 
         energy_need_stress = max(0.0, 0.8 - agent.energy / MAX_ENERGY) * 0.06
-        h[CORTISOL] = _clamp(h[CORTISOL] + energy_need_stress)
+        h[STRESS] = _clamp(h[STRESS] + energy_need_stress)
 
         # Disease / inflammation
         sick_drive = agent.sick / 100.0
         pollution_drive = cell.get("pollution", 0.0) / 100.0
-        h[INFLAMMATION] = _clamp(h[INFLAMMATION] + 0.05 * sick_drive + 0.01 * pollution_drive)
+        h[IRRITATION] = _clamp(h[IRRITATION] + 0.05 * sick_drive + 0.01 * pollution_drive)
 
         # Inflammation feeds back into cortisol (sickness stress)
-        h[CORTISOL] = _clamp(h[CORTISOL] + 0.02 * h[INFLAMMATION])
+        h[STRESS] = _clamp(h[STRESS] + 0.02 * h[IRRITATION])
 
         # Warmth + sunlight boost serotonin
         warmth = cell.get("warmth", 0.0)
-        h[SEROTONIN] = _clamp(h[SEROTONIN] + 0.015 * warmth + 0.01 * light)
+        h[SATISFACTION] = _clamp(h[SATISFACTION] + 0.015 * warmth + 0.01 * light)
 
         # Good hydration and food boosts metabolism
         fed_score = (agent.hydration / 100.0) * 0.5 + min(1.0, agent.energy / MAX_ENERGY) * 0.5
@@ -133,12 +133,12 @@ class EndocrineSystem:
         # (handled in agent via endocrine_modifiers)
 
         # High cortisol suppresses serotonin (stress kills wellbeing)
-        if h[CORTISOL] > 0.6:
-            h[SEROTONIN] = _clamp(h[SEROTONIN] - 0.02 * (h[CORTISOL] - 0.6))
+        if h[STRESS] > 0.6:
+            h[SATISFACTION] = _clamp(h[SATISFACTION] - 0.02 * (h[STRESS] - 0.6))
 
         # High serotonin suppresses aggression signal via cortisol reduction
-        if h[SEROTONIN] > 0.65:
-            h[CORTISOL] = _clamp(h[CORTISOL] - 0.01 * (h[SEROTONIN] - 0.65))
+        if h[SATISFACTION] > 0.65:
+            h[STRESS] = _clamp(h[STRESS] - 0.01 * (h[SATISFACTION] - 0.65))
 
         # Social proximity raises oxytocin
         # (caller passes nearby count via apply_social_signal)
@@ -146,7 +146,7 @@ class EndocrineSystem:
         # Dopamine: novelty decay — caller boosts on discovery
 
         # ---- decay all hormones toward baseline ----
-        for i in range(N_HORMONES):
+        for i in range(N_MODULATORS):
             h[i] = _nudge(h[i], BASELINE[i], rate=DECAY[i])
             h[i] = _clamp(h[i])
 
@@ -159,24 +159,24 @@ class EndocrineSystem:
         bond_boost = min(0.15, nearby_count * 0.025)
         if same_tribe:
             bond_boost += 0.04
-        self.h[OXYTOCIN] = _clamp(self.h[OXYTOCIN] + bond_boost)
-        self.h[SEROTONIN] = _clamp(self.h[SEROTONIN] + bond_boost * 0.3)
+        self.h[AFFILIATION] = _clamp(self.h[AFFILIATION] + bond_boost)
+        self.h[SATISFACTION] = _clamp(self.h[SATISFACTION] + bond_boost * 0.3)
 
     def apply_discovery(self, novelty: float):
         """Successful invention or new causal sequence raises dopamine."""
-        self.h[DOPAMINE] = _clamp(self.h[DOPAMINE] + 0.12 * novelty)
+        self.h[REWARD] = _clamp(self.h[REWARD] + 0.12 * novelty)
 
     def apply_attack_received(self):
         """Being attacked spikes adrenaline and cortisol."""
-        self.h[ADRENALINE] = _clamp(self.h[ADRENALINE] + 0.35)
-        self.h[CORTISOL] = _clamp(self.h[CORTISOL] + 0.20)
+        self.h[AROUSAL] = _clamp(self.h[AROUSAL] + 0.35)
+        self.h[STRESS] = _clamp(self.h[STRESS] + 0.20)
 
     def apply_successful_forage(self, gain: float):
         """Eating well raises serotonin and upkeep."""
         boost = min(0.12, gain * 0.04)
-        self.h[SEROTONIN] = _clamp(self.h[SEROTONIN] + boost)
+        self.h[SATISFACTION] = _clamp(self.h[SATISFACTION] + boost)
         self.h[UPKEEP] = _clamp(self.h[UPKEEP] + boost * 0.5)
-        self.h[DOPAMINE] = _clamp(self.h[DOPAMINE] + boost * 0.3)
+        self.h[REWARD] = _clamp(self.h[REWARD] + boost * 0.3)
 
     def apply_substance(self, tag: str, amount: float = 1.0):
         """
@@ -198,34 +198,34 @@ class EndocrineSystem:
         a = min(amount, 3.0)  # cap effect
         h = self.h
         if tag == "herb_willow":
-            h[INFLAMMATION] = _clamp(h[INFLAMMATION] - 0.18 * a)
-            h[CORTISOL] = _clamp(h[CORTISOL] - 0.12 * a)
+            h[IRRITATION] = _clamp(h[IRRITATION] - 0.18 * a)
+            h[STRESS] = _clamp(h[STRESS] - 0.12 * a)
         elif tag == "herb_garlic":
-            h[INFLAMMATION] = _clamp(h[INFLAMMATION] - 0.14 * a)
+            h[IRRITATION] = _clamp(h[IRRITATION] - 0.14 * a)
             h[UPKEEP] = _clamp(h[UPKEEP] + 0.10 * a)
         elif tag == "herb_elderberry":
-            h[SEROTONIN] = _clamp(h[SEROTONIN] + 0.12 * a)
-            h[INFLAMMATION] = _clamp(h[INFLAMMATION] - 0.10 * a)
+            h[SATISFACTION] = _clamp(h[SATISFACTION] + 0.12 * a)
+            h[IRRITATION] = _clamp(h[IRRITATION] - 0.10 * a)
         elif tag == "herb_mushroom":
             # Unpredictable: dopamine spike, cortisol may go either way
-            h[DOPAMINE] = _clamp(h[DOPAMINE] + 0.20 * a)
-            h[CORTISOL] = _clamp(h[CORTISOL] + (0.10 - 0.20 * (a % 1.0)) * a)
+            h[REWARD] = _clamp(h[REWARD] + 0.20 * a)
+            h[STRESS] = _clamp(h[STRESS] + (0.10 - 0.20 * (a % 1.0)) * a)
         elif tag == "herb_moss":
-            h[MELATONIN] = _clamp(h[MELATONIN] + 0.15 * a)
-            h[ADRENALINE] = _clamp(h[ADRENALINE] - 0.10 * a)
-            h[CORTISOL] = _clamp(h[CORTISOL] - 0.08 * a)
+            h[REST] = _clamp(h[REST] + 0.15 * a)
+            h[AROUSAL] = _clamp(h[AROUSAL] - 0.10 * a)
+            h[STRESS] = _clamp(h[STRESS] - 0.08 * a)
         elif tag == "raw_meat":
             h[UPKEEP] = _clamp(h[UPKEEP] + 0.08 * a)
-            h[ADRENALINE] = _clamp(h[ADRENALINE] + 0.05 * a)
+            h[AROUSAL] = _clamp(h[AROUSAL] + 0.05 * a)
         elif tag == "cooked_meat":
             h[UPKEEP] = _clamp(h[UPKEEP] + 0.12 * a)
-            h[SEROTONIN] = _clamp(h[SEROTONIN] + 0.06 * a)
+            h[SATISFACTION] = _clamp(h[SATISFACTION] + 0.06 * a)
         elif tag == "cooked_root":
             h[UPKEEP] = _clamp(h[UPKEEP] + 0.08 * a)
         elif tag == "plant_food":
-            h[SEROTONIN] = _clamp(h[SEROTONIN] + 0.04 * a)
+            h[SATISFACTION] = _clamp(h[SATISFACTION] + 0.04 * a)
         elif tag == "water":
-            h[CORTISOL] = _clamp(h[CORTISOL] - 0.05 * a)
+            h[STRESS] = _clamp(h[STRESS] - 0.05 * a)
             h[UPKEEP] = _clamp(h[UPKEEP] + 0.06 * a)
         # Unknown substances: no effect (agent must discover via trial)
 
@@ -256,18 +256,18 @@ class EndocrineSystem:
         h = self.h
         return {
             # Adrenaline gives short burst but costs extra energy
-            "energy_regen": 1.0 + 0.3 * h[UPKEEP] - 0.15 * h[CORTISOL],
-            "move_cost_mult": 1.0 + 0.3 * h[ADRENALINE] - 0.1 * h[UPKEEP],
-            "health_drain": 0.05 * h[INFLAMMATION] + 0.03 * h[CORTISOL],
+            "energy_regen": 1.0 + 0.3 * h[UPKEEP] - 0.15 * h[STRESS],
+            "move_cost_mult": 1.0 + 0.3 * h[AROUSAL] - 0.1 * h[UPKEEP],
+            "health_drain": 0.05 * h[IRRITATION] + 0.03 * h[STRESS],
             # Melatonin drives sleep; cortisol suppresses it
-            "sleep_drive": max(0.0, h[MELATONIN] - 0.5 * h[CORTISOL]),
-            "forage_eff": 0.7 + 0.6 * h[UPKEEP] - 0.2 * h[MELATONIN],
+            "sleep_drive": max(0.0, h[REST] - 0.5 * h[STRESS]),
+            "forage_eff": 0.7 + 0.6 * h[UPKEEP] - 0.2 * h[REST],
             # Oxytocin and serotonin bias toward social
-            "social_bias": 0.3 * h[OXYTOCIN] + 0.2 * h[SEROTONIN],
+            "social_bias": 0.3 * h[AFFILIATION] + 0.2 * h[SATISFACTION],
             # High cortisol/adrenaline lowers attack threshold
-            "aggression_bias": 0.4 * h[CORTISOL] + 0.3 * h[ADRENALINE] - 0.3 * h[OXYTOCIN],
+            "aggression_bias": 0.4 * h[STRESS] + 0.3 * h[AROUSAL] - 0.3 * h[AFFILIATION],
             # Dopamine and low cortisol = better learning
-            "cognition": max(0.2, 0.5 + 0.5 * h[DOPAMINE] - 0.4 * h[CORTISOL] - 0.3 * h[MELATONIN]),
+            "cognition": max(0.2, 0.5 + 0.5 * h[REWARD] - 0.4 * h[STRESS] - 0.3 * h[REST]),
         }
 
 

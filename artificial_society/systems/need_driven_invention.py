@@ -138,9 +138,9 @@ def compute_need_vector(agent, cell: dict) -> np.ndarray:
         need[IDX["light_emission"]] += curiosity * 0.2
 
     # Endocrine-Modulation: Cortisol verstaerkt alle Beduerfte
-    if hasattr(agent, "endocrine"):
-        cortisol = getattr(agent.endocrine, "h", [0] * 8)
-        stress = cortisol[1] if len(cortisol) > 1 else 0.0
+    if hasattr(agent, "modulation"):
+        stress = getattr(agent.modulation, "h", [0] * 8)
+        stress = stress[1] if len(stress) > 1 else 0.0
         need *= 1.0 + stress * 0.4
 
     return need
@@ -414,8 +414,8 @@ def agent_invent_from_need(
         _maybe_upgrade_tool(agent, mat_id, new_vec)
 
         # Starker Dopamin-Kick wenn Erfindung echten Need loest
-        if emergent_reward > 0.5 and hasattr(agent, "endocrine"):
-            agent.endocrine.apply_discovery(min(1.0, emergent_reward * 0.7))
+        if emergent_reward > 0.5 and hasattr(agent, "modulation"):
+            agent.modulation.apply_discovery(min(1.0, emergent_reward * 0.7))
 
     total_reward = legacy_reward + emergent_reward * EMERGENT_WEIGHT
 
