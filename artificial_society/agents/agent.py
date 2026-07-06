@@ -796,8 +796,14 @@ class Agent:
                         continue
                     # G3: Energie AUSSCHLIESSLICH über den do_eat-Rückgabewert
                     #     (eine Quelle der Wahrheit für kcal↔Energie, keine zweite
-                    #     Rechnung → keine Doppelgutschrift). Toxin-Health-Kopplung
-                    #     wie im Embodied-Pfad.
+                    #     Rechnung → keine Doppelgutschrift).
+                    # BEWUSST KEIN Toxin-health_delta: der innate Gnaw-Floor
+                    #     spiegelt die v1-Aas-Zugänglichkeit (Zellpool gab Energie
+                    #     OHNE Toxin-Strafe). Ein health_delta hier vergiftet jeden
+                    #     auf einem Kadaver campenden Agenten langsam (gemessen
+                    #     −2620 Health/1500 Ticks) → Demografie-Kollaps (mean_age
+                    #     61 statt 138). Die Toxin-Kopplung bleibt dem GELERNTEN
+                    #     verkörperten eat-Verb vorbehalten (agent.py:1118-1123).
                     if result.energy_delta_sim:
                         gained = result.energy_delta_sim
                         self.energy = max(0.0, min(MAX_ENERGY, self.energy + gained))
@@ -805,10 +811,6 @@ class Agent:
                         gain += gained
                         self.endocrine.apply_substance("raw_meat", gained / MEAT_ENERGY)
                         self.endocrine.apply_successful_forage(gained)
-                    if result.health_delta:
-                        self.health = max(0.0, self.health + result.health_delta)
-                        if self.health <= 0:
-                            self.alive = False
                     break  # ein Biss pro Tick, wie der verkörperte eat-Pfad
         else:
             # Carnivore/omnivore: carcasses first (now correctly keyed on the

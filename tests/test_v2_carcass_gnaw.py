@@ -105,6 +105,25 @@ def test_g2_satter_agent_macht_keinen_biss():
     assert sim.world.objects.ledger["eaten"] == pytest.approx(eaten_vorher)
 
 
+def test_auto_biss_kostet_keine_health_v1_paritaet():
+    """(6) v1-Parität: der innate Gnaw-Floor spiegelt den v1-Aas-Zellpool, der
+    Energie OHNE Toxin-Strafe gab. Ein Auto-Kadaver-Biss darf KEINE Health kosten
+    — sonst vergiftet er campende Agenten und kollabiert die Demografie (gemessen
+    mean_age 61 statt 138). Die Toxin-Kopplung bleibt dem gelernten eat-Verb."""
+    sim = Simulation(seed=42, physics_v2=True, **_PARAMS)
+    agent = sim.agents[0]
+    x, y = agent.pos
+    sim.world.set_cell(x, y, "plant_food", 0.0)
+    sim.world.objects.add(make_object("carcass", 70.0), (x, y), source="from_carcass")
+
+    agent.energy = 100.0
+    agent.health = 100.0
+    agent._forage(sim.world, {})
+
+    assert agent.meat_eaten == 1  # der Biss ist gefeuert
+    assert agent.health == pytest.approx(100.0)  # aber kostete keine Health
+
+
 def test_determinismus_gleicher_seed_gleiches_ergebnis():
     """(5) Gleicher Seed → identische Energie-Trajektorie über den Auto-Biss-Pfad."""
 
