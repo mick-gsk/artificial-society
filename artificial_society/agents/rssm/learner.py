@@ -163,10 +163,21 @@ class SharedLearner:
         )
 
     # --- checkpoint ---------------------------------------------------------------
+    @staticmethod
+    def _to_cpu_tree(obj):
+        """Recursively move all tensors in a nested dict/list structure to CPU."""
+        if torch.is_tensor(obj):
+            return obj.detach().to("cpu")
+        if isinstance(obj, dict):
+            return {k: SharedLearner._to_cpu_tree(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [SharedLearner._to_cpu_tree(v) for v in obj]
+        return obj
+
     def checkpoint_payload(self) -> dict:
         return {
             "wm": {k: v.cpu() for k, v in self.wm.state_dict().items()},
-            "wm_opt": self.wm.opt.state_dict(),
+            "wm_opt": self._to_cpu_tree(self.wm.opt.state_dict()),
             "wm_updates": self.wm.wm_updates,
             "prototype": self.prototype.state_dict(),
             "slab": self.slab.state_dict_all(),

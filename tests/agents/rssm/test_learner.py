@@ -107,3 +107,30 @@ def test_checkpoint_roundtrip():
     ln2.load_checkpoint_payload(payload, [ag2])
     step2 = ln2.act(ag2, _feats())
     assert step["action_list"] == step2["action_list"]
+
+
+def test_checkpoint_payload_wm_opt_is_cpu_tree():
+    ln = SharedLearner(CFG, 42)
+    ag = _agent(1)
+    ln.on_spawn(ag, "initial", 0)
+    for _t in range(70):
+        step = ln.act(ag, _feats())
+        ag.hidden_state = step["next_hidden"]
+        ln.store_transition(ag, step, 0.0, done=False)
+    ln.maybe_train(8, [ag])  # ensures the WM optimizer has real state tensors
+    payload = ln.checkpoint_payload()
+
+    def _assert_cpu(obj):
+        if torch.is_tensor(obj):
+            assert obj.device.type == "cpu"
+        elif isinstance(obj, dict):
+            for v in obj.values():
+                _assert_cpu(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                _assert_cpu(v)
+
+    _assert_cpu(payload["wm_opt"])
+    assert any(
+        torch.is_tensor(v) for s in payload["wm_opt"].get("state", {}).values() for v in s.values()
+    )  # optimizer state is non-trivial, so the check above proved something
