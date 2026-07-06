@@ -21,6 +21,7 @@ def test_defaults_match_spec():
     assert (cfg.retnorm_decay, cfg.slow_critic_decay) == (0.99, 0.98)
     assert cfg.replay_critic_scale == 0.3
     assert (cfg.train_every, cfg.young_ratio_cap) == (8, 4)
+    assert cfg.burn_in == 8
     assert cfg.prototype_decay == 0.995
     assert cfg.gene_slice == (17, 21)
     assert cfg.max_slots >= 128

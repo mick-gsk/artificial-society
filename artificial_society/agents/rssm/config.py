@@ -77,6 +77,7 @@ class RSSMConfig:
     wm_warmup_updates: int = 100  # imagination gated until this many WM updates
     prefill_transitions: int = 4096  # random-action prefill before first WM update
     own_start_frac_max: float = 0.75  # per-agent imagination seeding blend (spec §4.2)
+    burn_in: int = 8  # burn-in window length for imagination seeding
     # slab (spec §8)
     max_slots: int = 128
     prototype_decay: float = 0.995
