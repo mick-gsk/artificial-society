@@ -21,7 +21,7 @@ class StatisticsTracker:
         avg_plant = sum(a.plant_eaten for a in live) / pop if pop else 0
         avg_meat = sum(a.meat_eaten for a in live) / pop if pop else 0
         avg_hydration = sum(a.hydration for a in live) / pop if pop else 0
-        avg_sick = sum(a.sick for a in live) / pop if pop else 0
+        avg_impaired = sum(a.impaired for a in live) / pop if pop else 0
         avg_reward = sum(a.last_reward for a in live) / pop if pop else 0
         avg_loss = sum(a.last_loss for a in live) / pop if pop else 0
         # Life-stage counts. ``life_stage`` is a *method* on the agent returning
@@ -56,7 +56,7 @@ class StatisticsTracker:
             "avg_plant": avg_plant,
             "avg_meat": avg_meat,
             "avg_hydration": avg_hydration,
-            "avg_sick": avg_sick,
+            "avg_sick": avg_impaired,
             "avg_reward": avg_reward,
             "avg_loss": avg_loss,
             "world_food": world_means["food"],

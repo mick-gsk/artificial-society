@@ -114,9 +114,9 @@ class ModulationSystem:
         h[STRESS] = _clamp(h[STRESS] + energy_need_stress)
 
         # Disease / inflammation
-        sick_drive = agent.sick / 100.0
+        impaired_drive = agent.impaired / 100.0
         pollution_drive = cell.get("pollution", 0.0) / 100.0
-        h[IRRITATION] = _clamp(h[IRRITATION] + 0.05 * sick_drive + 0.01 * pollution_drive)
+        h[IRRITATION] = _clamp(h[IRRITATION] + 0.05 * impaired_drive + 0.01 * pollution_drive)
 
         # Inflammation feeds back into cortisol (sickness stress)
         h[STRESS] = _clamp(h[STRESS] + 0.02 * h[IRRITATION])

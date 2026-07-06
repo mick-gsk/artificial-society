@@ -211,14 +211,14 @@ ALL_HERB_TAGS: list[str] = sorted(
 )
 
 # Diseases that can spread person-to-person
-CONTACT_DISEASES = {
+CONTACT_FAULTS = {
     did
     for did, rec in REMEDY_REGISTRY.items()
     if rec["vector"] in ("contact", "airborne", "food_water", "wound") and rec["spread_rate"] > 0
 }
 
 # Non-contagious diseases (triggered by environment/diet)
-ENVIRONMENTAL_DISEASES = {
+ENVIRONMENTAL_FAULTS = {
     did for did, rec in REMEDY_REGISTRY.items() if rec["vector"] in ("dietary", "wound")
 }
 
@@ -228,31 +228,31 @@ ENVIRONMENTAL_DISEASES = {
 # ---------------------------------------------------------------------------
 
 
-def try_infect_agent(agent, disease_id: str, biome: str = "") -> bool:
-    """Attempt to infect agent with disease_id. Returns True if infection occurred."""
-    rec = REMEDY_REGISTRY.get(disease_id)
+def try_spread_agent(agent, fault_id: str, biome: str = "") -> bool:
+    """Attempt to infect agent with fault_id. Returns True if infection occurred."""
+    rec = REMEDY_REGISTRY.get(fault_id)
     if rec is None:
         return False
-    if getattr(agent, "disease_id", None) is not None:
+    if getattr(agent, "fault_id", None) is not None:
         return False
     rate = rec["spread_rate"]
     # Biome amplification
     if biome in rec.get("biome_amplify", []):
         rate = min(0.35, rate * rec["biome_amplify_factor"])
     if random.random() < rate:
-        agent.disease_id = disease_id
-        agent.sick = min(100.0, agent.sick + rec["initial_sick"])
+        agent.fault_id = fault_id
+        agent.impaired = min(100.0, agent.impaired + rec["initial_sick"])
         return True
     return False
 
 
-def try_environmental_infection(agent, cell: dict) -> bool:
+def try_environmental_propagation(agent, cell: dict) -> bool:
     """
     Environmental/dietary infection trigger (called from agent.apply_disease).
     Scurvy:      triggered in desert biomes when agent has eaten no plant food recently.
     Wound Fever: triggered when health < 35 (open wounds).
     """
-    if getattr(agent, "disease_id", None) is not None:
+    if getattr(agent, "fault_id", None) is not None:
         return False
 
     triggered = False
@@ -263,40 +263,40 @@ def try_environmental_infection(agent, cell: dict) -> bool:
         and getattr(agent, "plant_eaten", 0) % 80 == 0
         and random.random() < 0.03
     ):
-        agent.disease_id = "scurvy"
-        agent.sick = min(100.0, agent.sick + REMEDY_REGISTRY["scurvy"]["initial_sick"])
+        agent.fault_id = "scurvy"
+        agent.impaired = min(100.0, agent.impaired + REMEDY_REGISTRY["scurvy"]["initial_sick"])
         triggered = True
 
     # Wound Fever: triggered by low health (open wound proxy)
     if not triggered and agent.health < 35.0 and random.random() < 0.015:
-        agent.disease_id = "wound_fever"
-        agent.sick = min(100.0, agent.sick + REMEDY_REGISTRY["wound_fever"]["initial_sick"])
+        agent.fault_id = "wound_fever"
+        agent.impaired = min(100.0, agent.impaired + REMEDY_REGISTRY["wound_fever"]["initial_sick"])
         triggered = True
 
     return triggered
 
 
-def apply_disease_symptoms(agent, cell: dict):
+def apply_fault_indicators(agent, cell: dict):
     """
     Apply per-tick symptom effects for agent's current disease.
     Called from agent.apply_disease() instead of the generic formula.
     Returns True if symptoms were applied.
     """
-    disease_id = getattr(agent, "disease_id", None)
-    if disease_id is None:
+    fault_id = getattr(agent, "fault_id", None)
+    if fault_id is None:
         return False
 
-    rec = REMEDY_REGISTRY.get(disease_id)
+    rec = REMEDY_REGISTRY.get(fault_id)
     if rec is None:
         return False
 
     sym = rec.get("symptom", {})
-    sick_ratio = agent.sick / 100.0
+    impaired_ratio = agent.impaired / 100.0
 
     # Core stat drains (scaled by how sick the agent is)
-    agent.energy = max(0.0, agent.energy - sym.get("energy_drain", 0.08) * sick_ratio)
-    agent.hydration = max(0.0, agent.hydration - sym.get("hydration_drain", 0.10) * sick_ratio)
-    agent.health = max(0.0, agent.health - sym.get("health_drain_per_sick", 0.008) * agent.sick)
+    agent.energy = max(0.0, agent.energy - sym.get("energy_drain", 0.08) * impaired_ratio)
+    agent.hydration = max(0.0, agent.hydration - sym.get("hydration_drain", 0.10) * impaired_ratio)
+    agent.health = max(0.0, agent.health - sym.get("health_drain_per_sick", 0.008) * agent.impaired)
 
     # Special symptom flags
     if sym.get("regen_block"):
@@ -305,7 +305,7 @@ def apply_disease_symptoms(agent, cell: dict):
     else:
         agent._scurvy_active = False
 
-    if sym.get("confusion") and agent.sick > 50:
+    if sym.get("confusion") and agent.impaired > 50:
         # Typhoid: randomly corrupt one action weight this tick
         agent._confused = True
     else:
@@ -313,15 +313,15 @@ def apply_disease_symptoms(agent, cell: dict):
 
     # Natural recovery (slow, scaled by hydration + health)
     base_recovery = 0.12 * (agent.health / 100.0) + 0.04 * (agent.hydration / 100.0)
-    agent.sick = max(0.0, agent.sick - base_recovery)
+    agent.impaired = max(0.0, agent.impaired - base_recovery)
 
     # Warmth bonus (shelter / fire reduces sickness)
     warmth = cell.get("warmth", 0.0)
     if warmth > 0.2:
-        agent.sick = max(0.0, agent.sick - 0.12 * warmth)
+        agent.impaired = max(0.0, agent.impaired - 0.12 * warmth)
 
-    if agent.sick <= 2.0:
-        agent.disease_id = None
+    if agent.impaired <= 2.0:
+        agent.fault_id = None
 
     return True
 
@@ -376,11 +376,11 @@ def evaluate_remedy(agent, consumed_tags: list[str]) -> float:
     Schwierigkeit und Heilmengen kommen weiter aus der Krankheits-Definition (window,
     cure_health, cure_sick) -- das ist kein Zutaten-Lookup.
     """
-    disease_id = getattr(agent, "disease_id", None)
-    if disease_id is None:
+    fault_id = getattr(agent, "fault_id", None)
+    if fault_id is None:
         return 0.0
 
-    rec = REMEDY_REGISTRY[disease_id]
+    rec = REMEDY_REGISTRY[fault_id]
 
     if not hasattr(agent, "_remedy_window"):
         agent._remedy_window = []
@@ -392,9 +392,9 @@ def evaluate_remedy(agent, consumed_tags: list[str]) -> float:
     threshold = 1.5 + 0.3 * rec["window"]
     if _medicinal_dose(agent._remedy_window) >= threshold:
         agent.health = min(100.0, agent.health + rec["cure_health"])
-        agent.sick = max(0.0, agent.sick - rec["cure_sick"])
-        if agent.sick <= 0:
-            agent.disease_id = None
+        agent.impaired = max(0.0, agent.impaired - rec["cure_sick"])
+        if agent.impaired <= 0:
+            agent.fault_id = None
         agent._remedy_window = []
         return rec["cure_health"] / 25.0
 
@@ -402,12 +402,12 @@ def evaluate_remedy(agent, consumed_tags: list[str]) -> float:
     fresh_dose = _medicinal_dose(consumed_tags)
     if fresh_dose <= 0.0:
         return 0.0
-    sick_red = min(agent.sick, fresh_dose * 7.0)
-    health_gain = sick_red * 0.3
-    agent.sick = max(0.0, agent.sick - sick_red)
+    impaired_red = min(agent.impaired, fresh_dose * 7.0)
+    health_gain = impaired_red * 0.3
+    agent.impaired = max(0.0, agent.impaired - impaired_red)
     agent.health = min(100.0, agent.health + health_gain)
-    if agent.sick <= 0:
-        agent.disease_id = None
+    if agent.impaired <= 0:
+        agent.fault_id = None
     return health_gain / 25.0
 
 
@@ -420,30 +420,30 @@ def share_remedy_knowledge(sender, receiver) -> bool:
     sender_knowledge: dict = getattr(sender, "remedy_knowledge", {})
     if not sender_knowledge:
         return False
-    disease_id, ingredient_clue = random.choice(list(sender_knowledge.items()))
+    fault_id, ingredient_clue = random.choice(list(sender_knowledge.items()))
     receiver_knowledge: dict = getattr(receiver, "remedy_knowledge", {})
-    if disease_id not in receiver_knowledge:
-        receiver_knowledge[disease_id] = set()
+    if fault_id not in receiver_knowledge:
+        receiver_knowledge[fault_id] = set()
     # Coerce to set — old checkpoints may have deserialized this as a list
-    if not isinstance(receiver_knowledge[disease_id], set):
-        receiver_knowledge[disease_id] = set(receiver_knowledge[disease_id])
+    if not isinstance(receiver_knowledge[fault_id], set):
+        receiver_knowledge[fault_id] = set(receiver_knowledge[fault_id])
     # ingredient_clue may itself be a list/set; normalise before update
     if isinstance(ingredient_clue, (list, set)):
         clue_set = set(ingredient_clue)
     else:
         clue_set = {ingredient_clue}
-    before_len = len(receiver_knowledge[disease_id])
-    receiver_knowledge[disease_id].update(clue_set)
+    before_len = len(receiver_knowledge[fault_id])
+    receiver_knowledge[fault_id].update(clue_set)
     receiver.remedy_knowledge = receiver_knowledge
-    return len(receiver_knowledge[disease_id]) > before_len
+    return len(receiver_knowledge[fault_id]) > before_len
 
 
-def record_cure_discovery(agent, disease_id: str, ingredients_used: list[str]):
+def record_cure_discovery(agent, fault_id: str, ingredients_used: list[str]):
     if not hasattr(agent, "remedy_knowledge"):
         agent.remedy_knowledge = {}
-    if disease_id not in agent.remedy_knowledge:
-        agent.remedy_knowledge[disease_id] = set()
+    if fault_id not in agent.remedy_knowledge:
+        agent.remedy_knowledge[fault_id] = set()
     # Coerce to set — old checkpoints may have deserialized this as a list
-    if not isinstance(agent.remedy_knowledge[disease_id], set):
-        agent.remedy_knowledge[disease_id] = set(agent.remedy_knowledge[disease_id])
-    agent.remedy_knowledge[disease_id].update(ingredients_used)
+    if not isinstance(agent.remedy_knowledge[fault_id], set):
+        agent.remedy_knowledge[fault_id] = set(agent.remedy_knowledge[fault_id])
+    agent.remedy_knowledge[fault_id].update(ingredients_used)

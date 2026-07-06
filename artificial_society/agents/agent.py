@@ -201,8 +201,8 @@ def ensure_fields(agent) -> None:
         agent._cached_nearby_agents = []
     if not hasattr(agent, "_cached_nearby_radius"):
         agent._cached_nearby_radius = 2
-    if not hasattr(agent, "_disease_immunity"):
-        agent._disease_immunity = {}
+    if not hasattr(agent, "_fault_resistance"):
+        agent._fault_resistance = {}
     # --- Physik v2 (Plan 3a) ---
     if not hasattr(agent, "physics_v2"):
         agent.physics_v2 = False
@@ -361,9 +361,9 @@ class Agent:
     plant_eaten: int = 0
     meat_eaten: int = 0
     spawn_tick: int = 0
-    sick: float = 0.0
+    impaired: float = 0.0
     last_action_mode: str = "idle"
-    disease_id: str | None = None
+    fault_id: str | None = None
     remedy_knowledge: dict = field(default_factory=dict)
     herbs_carried: dict = field(default_factory=dict)
     causal_memory: CausalMemory = field(default_factory=lambda: CausalMemory(capacity=32))
@@ -672,15 +672,15 @@ class Agent:
             self.modulation.apply_substance(f"herb_{herb}", 1.0)
 
     def _try_remedy(self):
-        if self.disease_id is None or not self.herbs_carried:
+        if self.fault_id is None or not self.herbs_carried:
             return
-        result = evaluate_remedy(self, self.disease_id)
+        result = evaluate_remedy(self, self.fault_id)
         if result == "cured":
-            record_cure_discovery(self, self.disease_id)
-            self.disease_id = None
-            self.sick = max(0.0, self.sick - 40.0)
+            record_cure_discovery(self, self.fault_id)
+            self.fault_id = None
+            self.impaired = max(0.0, self.impaired - 40.0)
         elif result == "partial":
-            self.sick = max(0.0, self.sick - 15.0)
+            self.impaired = max(0.0, self.impaired - 15.0)
 
     def _share_remedy(self, agents):
         if not self.remedy_knowledge:
@@ -898,16 +898,16 @@ class Agent:
                 else:
                     self.resources["stone"] = max(0, self.resources.get("stone", 0) - 1)
 
-    def _disease_tick(self, world):
-        if self.disease_id is None:
+    def _fault_tick(self, world):
+        if self.fault_id is None:
             return
-        rec = REMEDY_REGISTRY.get(self.disease_id, {})
+        rec = REMEDY_REGISTRY.get(self.fault_id, {})
         severity = rec.get("severity", 0.5)
         biome = world.get_biome(*self.pos)
         biome_mult = 1.3 if biome in rec.get("worse_in", []) else 1.0
         drain = severity * biome_mult
         self.health -= drain
-        self.sick = min(100.0, self.sick + drain)
+        self.impaired = min(100.0, self.impaired + drain)
         if self.health <= 0:
             self.alive = False
 
@@ -1297,7 +1297,7 @@ class Agent:
         stage = get_stage_stats(self.age)
 
         self._age_tick()
-        self._disease_tick(world)
+        self._fault_tick(world)
         if not self.alive:
             return None
 

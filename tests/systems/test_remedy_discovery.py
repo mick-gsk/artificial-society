@@ -11,40 +11,40 @@ it, while a property-irrelevant material cannot.
 from artificial_society.systems.remedy import REMEDY_REGISTRY, evaluate_remedy
 
 
-class _SickAgent:
-    def __init__(self, disease_id="malaria", sick=60.0, health=50.0):
-        self.disease_id = disease_id
-        self.sick = sick
+class _ImpairedAgent:
+    def __init__(self, fault_id="malaria", impaired=60.0, health=50.0):
+        self.fault_id = fault_id
+        self.impaired = impaired
         self.health = health
 
 
-def test_property_material_relieves_disease_though_not_an_ingredient():
-    agent = _SickAgent()
+def test_property_material_relieves_fault_though_not_an_ingredient():
+    agent = _ImpairedAgent()
     assert "flower_petals" not in REMEDY_REGISTRY["malaria"]["ingredients"]
-    before = agent.sick
+    before = agent.impaired
 
     # flower_petals is aromatic + low-toxicity: medicinal by property, never named a cure.
     reward = evaluate_remedy(agent, ["flower_petals"])
 
     assert reward > 0.0
-    assert agent.sick < before, "a property-medicinal material gave no relief"
+    assert agent.impaired < before, "a property-medicinal material gave no relief"
 
 
 def test_non_medicinal_material_gives_no_relief():
-    agent = _SickAgent()
-    before = agent.sick
+    agent = _ImpairedAgent()
+    before = agent.impaired
 
     reward = evaluate_remedy(agent, ["stone"])
 
     assert reward == 0.0
-    assert agent.sick == before
+    assert agent.impaired == before
 
 
 def test_sustained_medicinal_treatment_can_fully_cure():
-    agent = _SickAgent(sick=40.0, health=40.0)
+    agent = _ImpairedAgent(impaired=40.0, health=40.0)
     # A sustained aromatic/herbal regimen accumulates enough medicinal dose to fully cure,
     # even though none of these are malaria's authored ingredients.
     for _ in range(8):
         evaluate_remedy(agent, ["flower_petals", "tree_resin", "herb_garlic"])
 
-    assert agent.disease_id is None, "sustained medicinal treatment failed to cure"
+    assert agent.fault_id is None, "sustained medicinal treatment failed to cure"

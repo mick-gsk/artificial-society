@@ -31,7 +31,7 @@ from artificial_society.systems.invention import (
     tick_materials,
 )
 from artificial_society.systems.language import TOKEN_WORLD
-from artificial_society.systems.remedy import REMEDY_REGISTRY, try_infect_agent
+from artificial_society.systems.remedy import REMEDY_REGISTRY, try_spread_agent
 from artificial_society.world import World
 
 EVENT_WARMUP_TICKS = 600
@@ -46,7 +46,7 @@ CHECKPOINT_PATH = "checkpoint.pkl"
 # hart statt still frisch zu starten.
 CHECKPOINT_FORMAT_VERSION = 2
 
-IMMUNITY_WINDOW_DEFAULT = 200
+RESISTANCE_WINDOW_DEFAULT = 200
 
 DERIVE_SEQUENCES = 10
 DERIVE_FIDELITY = 0.70
@@ -238,9 +238,9 @@ class Simulation:
                 for seq in list(parent_mem.sequences.keys())[:DERIVE_SEQUENCES]:
                     spawn.causal_memory.receive_transmitted(seq, fidelity=DERIVE_FIDELITY)
             if parent.remedy_knowledge:
-                for disease, herbs in parent.remedy_knowledge.items():
+                for fault, herbs in parent.remedy_knowledge.items():
                     if random.random() < DERIVE_FIDELITY:
-                        spawn.remedy_knowledge[disease] = list(herbs)
+                        spawn.remedy_knowledge[fault] = list(herbs)
             parent_inv = getattr(parent, "material_inventory", {})
             parent_discoveries = {
                 m: q
@@ -288,12 +288,12 @@ class Simulation:
                     recipient.causal_memory.receive_transmitted(
                         seq, fidelity=DEATH_BROADCAST_FIDELITY
                     )
-            for disease, herbs in agent.remedy_knowledge.items():
+            for fault, herbs in agent.remedy_knowledge.items():
                 if (
-                    disease not in recipient.remedy_knowledge
+                    fault not in recipient.remedy_knowledge
                     and random.random() < DEATH_BROADCAST_FIDELITY
                 ):
-                    recipient.remedy_knowledge[disease] = list(herbs)
+                    recipient.remedy_knowledge[fault] = list(herbs)
             r_inv = getattr(recipient, "material_inventory", {})
             for mat_id, qty in discoveries.items():
                 if random.random() < DEATH_MATERIAL_TRANSFER_FIDELITY:
@@ -347,32 +347,30 @@ class Simulation:
         body_mass = body.body_mass if body is not None else BODY_MASS_DEFAULT_KG
         layer.add(make_object("carcass", body_mass), agent.pos, source="from_carcass")
 
-    def _is_immune(self, agent, disease_id):
-        return self.tick < getattr(agent, "_disease_immunity", {}).get(disease_id, 0)
+    def _is_resistant(self, agent, fault_id):
+        return self.tick < getattr(agent, "_fault_resistance", {}).get(fault_id, 0)
 
-    def _grant_immunity(self, agent, disease_id):
-        if not hasattr(agent, "_disease_immunity"):
-            agent._disease_immunity = {}
-        window = REMEDY_REGISTRY.get(disease_id, {}).get("immunity_after", IMMUNITY_WINDOW_DEFAULT)
-        agent._disease_immunity[disease_id] = self.tick + window
+    def _grant_resistance(self, agent, fault_id):
+        if not hasattr(agent, "_fault_resistance"):
+            agent._fault_resistance = {}
+        window = REMEDY_REGISTRY.get(fault_id, {}).get("immunity_after", RESISTANCE_WINDOW_DEFAULT)
+        agent._fault_resistance[fault_id] = self.tick + window
 
-    def tick_immunity_and_recovery(self):
+    def tick_resistance_and_recovery(self):
         for agent in self.agents:
             if not agent.alive:
                 continue
-            prev = getattr(agent, "_prev_disease_id", None)
-            curr = getattr(agent, "disease_id", None)
+            prev = getattr(agent, "_prev_fault_id", None)
+            curr = getattr(agent, "fault_id", None)
             if prev is not None and curr is None:
-                self._grant_immunity(agent, prev)
-            agent._prev_disease_id = curr
+                self._grant_resistance(agent, prev)
+            agent._prev_fault_id = curr
 
-    def spread_diseases(self):
-        infectious = [
-            a for a in self.agents if a.alive and getattr(a, "disease_id", None) is not None
-        ]
-        for carrier in infectious:
-            disease_id = carrier.disease_id
-            rec = REMEDY_REGISTRY.get(disease_id, {})
+    def spread_faults(self):
+        spreading = [a for a in self.agents if a.alive and getattr(a, "fault_id", None) is not None]
+        for carrier in spreading:
+            fault_id = carrier.fault_id
+            rec = REMEDY_REGISTRY.get(fault_id, {})
             if rec.get("spread_rate", 0) == 0:
                 continue
             radius = 2 if rec.get("vector") == "airborne" else 1
@@ -384,10 +382,10 @@ class Simulation:
                     and a.alive
                     and abs(a.pos[0] - cx) <= radius
                     and abs(a.pos[1] - cy) <= radius
-                    and getattr(a, "disease_id", None) is None
-                    and not self._is_immune(a, disease_id)
+                    and getattr(a, "fault_id", None) is None
+                    and not self._is_resistant(a, fault_id)
                 ):
-                    try_infect_agent(a, disease_id, biome=biome)
+                    try_spread_agent(a, fault_id, biome=biome)
 
     def _apply_hamilton_rewards(self):
         # Kin selection, made energy-conservative (Phase 4): instead of minting a
@@ -529,7 +527,7 @@ class Simulation:
         n_elder = sum(1 for a in alive if getattr(a, "life_stage", STAGE_ADULT) == STAGE_ELDER)
         avg_age = sum(self.tick - getattr(a, "spawn_tick", self.tick) for a in alive) / len(alive)
         avg_hyd = sum(getattr(a, "hydration", 50.0) for a in alive) / len(alive)
-        avg_sick = sum(getattr(a, "sick", 0.0) for a in alive) / len(alive)
+        avg_impaired = sum(getattr(a, "impaired", 0.0) for a in alive) / len(alive)
         avg_rew = sum(getattr(a, "last_reward", 0.0) for a in alive) / len(alive)
         n_preg = sum(1 for a in alive if getattr(a, "pending_spawn", False))
         n_tribes = len({a.tribe_id for a in alive if a.tribe_id is not None})
@@ -566,7 +564,7 @@ class Simulation:
                 "n_elder": n_elder,
                 "average_age": avg_age,
                 "avg_hydration": avg_hyd,
-                "avg_sick": avg_sick,
+                "avg_sick": avg_impaired,
                 "avg_reward": avg_rew,
                 "pregnant": n_preg,
                 "tribes": n_tribes,
@@ -626,7 +624,7 @@ class Simulation:
             self.agents = [a for a in self.agents if a.alive]
         self.remove_dead()
 
-        self.tick_immunity_and_recovery()
+        self.tick_resistance_and_recovery()
         self._apply_hamilton_rewards()
 
         # Registered systems with a tick hook run here in ascending `order`. The

@@ -131,7 +131,7 @@ def test_drought_dries_soil_and_withers_plants():
     assert _event_delta("drought", "plant_food") == pytest.approx(-2.4, abs=0.5)
 
 
-def test_blight_eats_plants_and_raises_disease():
+def test_blight_eats_plants_and_raises_fault():
     assert _event_delta("blight", "plant_food") == pytest.approx(-3.6, abs=0.5)
     assert _event_delta("blight", "disease") == pytest.approx(4.0, abs=0.5)
     assert _event_delta("blight", "pollution") > 0.0
@@ -349,7 +349,9 @@ def test_fire_damages_structures():
     assert any(w.S[s][cy, cx] < 1.0 for s in ("camp", "farm", "well"))
 
 
-@pytest.mark.xfail(strict=True, reason="fire should consume flammable objects — not implemented yet")
+@pytest.mark.xfail(
+    strict=True, reason="fire should consume flammable objects — not implemented yet"
+)
 def test_fire_consumes_flammable_objects():
     """Flammable material lying in a burning cell should be consumed (and feed
     the ash it helped ignite)."""

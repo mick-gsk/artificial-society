@@ -18,7 +18,7 @@ class _DepletedAgent:
     def __init__(self):
         self.energy = 10.0  # energy_ratio ~0.04 -> dominant need is energy_need
         self.health = 100.0
-        self.disease_id = None
+        self.fault_id = None
 
 
 def test_learned_action_outside_energy_need_cluster_dominates():

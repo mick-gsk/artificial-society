@@ -1,8 +1,8 @@
 """Disease system (Phase 2).
 
 Activates infection, which was wired but dead: no agent ever got infected because
-the environmental trigger (:func:`try_environmental_infection`) was never called, and
-person-to-person contagion (:meth:`Simulation.spread_diseases`) had no call site.
+the environmental trigger (:func:`try_environmental_propagation`) was never called, and
+person-to-person contagion (:meth:`Simulation.spread_faults`) had no call site.
 
 This module supplies only those two missing call sites:
 
@@ -10,8 +10,8 @@ This module supplies only those two missing call sites:
   cell (scurvy in deserts on low plant intake; wound fever at low health);
 * **contagion** — infected carriers then spread to nearby susceptible agents.
 
-Per-tick symptom drain (``Agent._disease_tick``) and immunity/recovery
-(``Simulation.tick_immunity_and_recovery``) are already wired in the step loop, so this
+Per-tick symptom drain (``Agent._fault_tick``) and immunity/recovery
+(``Simulation.tick_resistance_and_recovery``) are already wired in the step loop, so this
 file does not touch agents or ``simulation.py``. Behaviour-changing → golden regen.
 
 Determinism: the infection draws use ``remedy``'s global ``random``, which
@@ -23,10 +23,10 @@ same tick's prices and statistics reflect the new infections.
 from __future__ import annotations
 
 from artificial_society.systems.registry import register
-from artificial_society.systems.remedy import try_environmental_infection
+from artificial_society.systems.remedy import try_environmental_propagation
 
 
-class DiseaseSystem:
+class FaultSystem:
     """Marker system; all behaviour lives in the registered tick hook."""
 
 
@@ -35,11 +35,11 @@ def _tick(sim, tick: int) -> None:
         if not agent.alive:
             continue
         # Environmental source: the cell can seed a fresh infection (no-op if already sick).
-        try_environmental_infection(agent, sim.world.get_cell(*agent.pos))
+        try_environmental_propagation(agent, sim.world.get_cell(*agent.pos))
     # Contagion: carriers infect nearby susceptible agents.
-    sim.spread_diseases()
+    sim.spread_faults()
 
 
-@register(name="disease", order=35, tick=_tick)
+@register(name="fault", order=35, tick=_tick)
 def _build(sim):
-    return DiseaseSystem()
+    return FaultSystem()

@@ -93,7 +93,7 @@ def compute_need_vector(agent, cell: dict) -> np.ndarray:
     health_ratio = agent.health / 100.0
     temperature = cell.get("temperature", 20)
     light = cell.get("light", 1.0)
-    is_sick = getattr(agent, "disease_id", None) is not None
+    is_impaired = getattr(agent, "fault_id", None) is not None
     has_tool = getattr(agent, "tool", None) is not None
 
     # Energy need -> edibility benoetigt
@@ -119,7 +119,7 @@ def compute_need_vector(agent, cell: dict) -> np.ndarray:
         need[IDX["hardness"]] += 0.5
 
     # Krank -> Heilende Eigenschaften (niedrige Toxizitaet + hohe Edibility)
-    if is_sick:
+    if is_impaired:
         need[IDX["edibility"]] += 0.6
         need[IDX["toxicity"]] -= 1.0  # extra toxicity-aversion
         need[IDX["trail"]] += 0.3  # aromatische Heilpflanzen

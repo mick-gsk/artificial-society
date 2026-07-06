@@ -17,10 +17,10 @@ die Vitalkurven danach besser laufen.
 """
 
 CAMP_COLD_REDUCTION = 0.65  # Kaelteschaden-Faktor mit Camp (35% weniger)
-CAMP_DISEASE_REDUCTION = 0.50  # Krankheitsexpositions-Faktor mit Camp
+CAMP_FAULT_REDUCTION = 0.50  # Krankheitsexpositions-Faktor mit Camp
 CAMP_RAIN_PROTECTION = 0.40  # Feuchtigkeitsverlust-Reduktion
 WELL_HYDRATION_BONUS = 0.25  # Zusaetzliche Hydration pro Tick auf Brunnen-Zelle
-WELL_DISEASE_REDUCTION = 0.30  # Sauberes Wasser reduziert Krankheitsrisiko
+WELL_FAULT_REDUCTION = 0.30  # Sauberes Wasser reduziert Krankheitsrisiko
 FARM_GATHER_BONUS = 0.22  # Sammel-Effizienz-Bonus auf Farm-Zelle
 
 # Reward fuer erfolgreichen Bau -- NICHT als "Bauen ist gut"-Label,
@@ -57,11 +57,11 @@ def apply_structure_effects(agent, cell: dict):
 
     if camp_level > 0:
         mods["cold_factor"] *= max(CAMP_COLD_REDUCTION, 1.0 - 0.35 * camp_level)
-        mods["disease_factor"] *= max(CAMP_DISEASE_REDUCTION, 1.0 - 0.50 * camp_level)
+        mods["disease_factor"] *= max(CAMP_FAULT_REDUCTION, 1.0 - 0.50 * camp_level)
 
     if well_level > 0:
         mods["hydration_bonus"] += WELL_HYDRATION_BONUS * well_level
-        mods["disease_factor"] *= max(WELL_DISEASE_REDUCTION, 1.0 - 0.30 * well_level)
+        mods["disease_factor"] *= max(WELL_FAULT_REDUCTION, 1.0 - 0.30 * well_level)
 
     if farm_level > 0:
         mods["forage_bonus"] += FARM_GATHER_BONUS * farm_level

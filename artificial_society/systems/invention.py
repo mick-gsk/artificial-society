@@ -387,7 +387,7 @@ def _dominant_need(agent, cell: dict) -> str:
     energy_ratio = agent.energy / max_energy
     health_ratio = agent.health / 100.0
     temperature = cell.get("temperature", 20)
-    is_sick = getattr(agent, "disease_id", None) is not None
+    is_impaired = getattr(agent, "fault_id", None) is not None
 
     if energy_ratio < 0.25:
         return "energy_need"
@@ -395,7 +395,7 @@ def _dominant_need(agent, cell: dict) -> str:
         hasattr(agent, "modulation") and getattr(agent.modulation, "stress", 0) > 0.7
     ):
         return "cold"
-    if is_sick or health_ratio < 0.4:
+    if is_impaired or health_ratio < 0.4:
         return "sick"
     return "curious"
 

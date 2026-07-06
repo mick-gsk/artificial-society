@@ -7,7 +7,7 @@ from artificial_society.agents.life_stage import STAGE_ADULT, STAGE_ELDER, STAGE
 from artificial_society.environment.biomes import BIOME_DETAIL_COLOR
 from artificial_society.visualization.overlays import draw_dashboard
 
-DISEASE_COLORS = {
+FAULT_COLORS = {
     "malaria": (200, 230, 80),
     "dysentery": (160, 110, 50),
     "tuberculosis": (200, 200, 200),
@@ -15,7 +15,7 @@ DISEASE_COLORS = {
     "scurvy": (220, 110, 30),
     "wound_fever": (220, 40, 40),
 }
-DEFAULT_SICK_COLOR = (210, 60, 60)
+DEFAULT_IMPAIRED_COLOR = (210, 60, 60)
 
 MODE_COLORS = {
     "gather": (120, 245, 120),
@@ -257,10 +257,10 @@ class Renderer:
                 )
 
             # Disease ring
-            sick = getattr(agent, "sick", 0.0)
-            disease_id = getattr(agent, "disease_id", None)
-            if sick > 8 or disease_id:
-                ring_col = DISEASE_COLORS.get(disease_id, DEFAULT_SICK_COLOR)
+            impaired = getattr(agent, "impaired", 0.0)
+            fault_id = getattr(agent, "fault_id", None)
+            if impaired > 8 or fault_id:
+                ring_col = FAULT_COLORS.get(fault_id, DEFAULT_IMPAIRED_COLOR)
                 pygame.draw.circle(screen, ring_col, (px, py), radius + 3, 2)
 
             # Pregnancy ring

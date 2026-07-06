@@ -74,12 +74,12 @@ def test_season_and_weather_state_published():
 
 def test_society_systems_registered():
     sim = _fresh()
-    for name in ("tribes", "economy", "technology", "stats", "disease"):
+    for name in ("tribes", "economy", "technology", "stats", "fault"):
         assert name in sim.systems, f"{name} not built from registry"
         assert hasattr(sim, name)
 
 
-def test_tick_order_stats_last_and_disease_before_economy():
+def test_tick_order_stats_last_and_fault_before_economy():
     """Order is a contract: stats must read post-update state (last), and disease must
     seed/spread before economy and stats so the same tick reflects new infections."""
     # `disease`/`world_regrowth`/etc. only enter the registry when discovery runs (driven
@@ -89,8 +89,8 @@ def test_tick_order_stats_last_and_disease_before_economy():
     _fresh()
     ticked = [s.name for s in registry.specs() if s.tick is not None]
     assert ticked[-1] == "stats", f"stats must tick last, got {ticked}"
-    assert ticked.index("tribes") < ticked.index("disease") < ticked.index("economy")
-    assert ticked.index("disease") < ticked.index("stats")
+    assert ticked.index("tribes") < ticked.index("fault") < ticked.index("economy")
+    assert ticked.index("fault") < ticked.index("stats")
 
 
 def test_life_stage_counts_are_collected_not_zero():
@@ -148,21 +148,21 @@ def test_technology_tracks_capabilities():
     assert len(sim.technology.capability_map) >= 1, "technology.update never populated capabilities"
 
 
-def test_disease_environmental_infection_fires():
+def test_fault_environmental_propagation_fires():
     """Before this phase no agent could ever be infected: the environmental trigger had no
     call site. Holding an agent at the wound-fever precondition (health < 35), the disease
     system must eventually infect someone. Asserts 'eventually', never a single RNG draw."""
     sim = _fresh()
-    assert "disease" in sim.systems
+    assert "fault" in sim.systems
     target = next((a for a in sim.agents if a.alive), None)
-    infected = False
+    spread = False
     for _ in range(300):
         if target is None or not target.alive:
             target = next((a for a in sim.agents if a.alive), None)
         if target is not None:
             target.health = 10.0  # keep the wound-fever window open against health regen
         sim.step()
-        if any(getattr(a, "disease_id", None) is not None for a in sim.agents if a.alive):
-            infected = True
+        if any(getattr(a, "fault_id", None) is not None for a in sim.agents if a.alive):
+            spread = True
             break
-    assert infected, "disease system never produced an infection despite wound-fever conditions"
+    assert spread, "disease system never produced an infection despite wound-fever conditions"

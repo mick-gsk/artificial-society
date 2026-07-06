@@ -280,10 +280,10 @@ class World:
             "events": len(self.active_events),
         }
 
-    def hotspots(self, min_pollution=35, min_disease=30):
+    def hotspots(self, min_pollution=35, min_fault=30):
         mask = (
             (self.F["pollution"] >= min_pollution)
-            | (self.F["disease"] >= min_disease)
+            | (self.F["disease"] >= min_fault)
             | (self.F["disturbance"] >= 30)
             | (self.S["camp"] != 0.0)
             | (self.S["farm"] != 0.0)
