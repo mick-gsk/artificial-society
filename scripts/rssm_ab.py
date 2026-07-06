@@ -41,6 +41,11 @@ def wilcoxon_exact(deltas):
 
     d = [x for x in deltas if x != 0]
     n = len(d)
+    # Sequential (not midrank) tie ranks are intentional: this ranking is only
+    # used internally to build the enumerated reference distribution `ws` below,
+    # which is generated with the SAME sequential scheme, so it stays internally
+    # consistent. RMST deltas are continuous-valued, so exact ties are practically
+    # impossible anyway.
     ranks = {
         i: r + 1 for r, (i, _) in enumerate(sorted(enumerate(map(abs, d)), key=lambda kv: kv[1]))
     }
@@ -158,6 +163,13 @@ def cmd_analyze(a):
                 births[r["id"]] = r
             elif r["e"] == "death":
                 deaths[r["id"]] = r["t"]
+        # Censoring time = the run's true --ticks, not the max observed event
+        # timestamp (a run can end with no events near the tail, understating
+        # survival for still-alive agents). Fall back to max-event-timestamp
+        # only if the sibling summary.json is missing.
+        summary_path = f.parent / f"{arm}_s{seed}.summary.json"
+        if summary_path.exists():
+            last_t = json.loads(summary_path.read_text())["ticks"]
         cohort = [
             (i, b) for i, b in births.items() if b["origin"] == "birth" and b["t"] >= a.transient
         ]

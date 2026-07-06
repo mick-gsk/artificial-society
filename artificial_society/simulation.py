@@ -207,6 +207,7 @@ class Simulation:
         for _ in range(n):
             x, y = self.world.random_land_position()
             agent = Agent.spawn_random(x, y)
+            agent.spawn_origin = "initial"
             if self.physics_v2:
                 attach_body(agent)
             self.agents.append(agent)
@@ -229,6 +230,7 @@ class Simulation:
             other_parent = agent_by_id.get(mate_id)
         child = self.evolution.make_child(parent, x, y, genes=genes, other_parent=other_parent)
         child.birth_tick = self.tick
+        child.spawn_origin = "birth"
         # Birth is an energy TRANSFER from the mother, not minting: the child
         # keeps at most its default start energy, the mother keeps at least
         # BIRTH_ENERGY_FLOOR — a starving mother bears a weak child. (Energy only;
@@ -338,6 +340,7 @@ class Simulation:
             x, y = self.world.random_land_position()
             a = Agent.spawn_random(x, y)
             a.birth_tick = self.tick
+            a.spawn_origin = "respawn"
             if self.physics_v2:
                 attach_body(a)
             self.agents.append(a)

@@ -60,6 +60,22 @@ def test_training_hook_fires_via_registry():
     assert sim.rssm_learner.wm.wm_updates >= 1
 
 
+def test_v1_arm_stamps_spawn_origin_unconditionally():
+    """Finding 1: spawn_origin must be stamped for ALL arms (incl. plain v1), not
+    only when an rssm_learner is attached — otherwise the A/B analyzer's
+    origin=="birth" cohort is permanently empty for the baseline arm."""
+    sim = Simulation(seed=42, **_PARAMS)
+    assert sim.rssm_learner is None and sim.brain_arch == "v1"
+    for a in sim.agents:
+        assert a.spawn_origin == "initial"
+    for _ in range(60):
+        sim.step()
+    origins = {getattr(a, "spawn_origin", None) for a in sim.agents}
+    assert origins  # non-empty: agents survived
+    assert origins <= {"initial", "birth", "respawn"}
+    assert all(hasattr(a, "spawn_origin") for a in sim.agents)
+
+
 def test_checkpoint_roundtrip_and_mismatch_guard(tmp_path, monkeypatch):
     import artificial_society.simulation as sim_mod
 

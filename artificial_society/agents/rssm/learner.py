@@ -150,7 +150,10 @@ class SharedLearner:
             self.prototype.update(self.slab)
         if self._act_wm is not self.wm:
             self._act_wm = copy.deepcopy(self.wm).cpu().eval()
-        if self._act_actor is not None:  # actor params may have moved this cycle
+        if cfg.policy_mode == "actor" and self._act_actor is not None:
+            # actor params may have moved this cycle — mirror is only consulted
+            # in "actor" mode (mpc always reads self.slab directly), so skip the
+            # refresh there.
             self._act_actor = self.slab.actor_snapshot_cpu()
         return metrics
 
