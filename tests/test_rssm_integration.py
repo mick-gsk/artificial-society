@@ -76,6 +76,23 @@ def test_v1_arm_stamps_spawn_origin_unconditionally():
     assert all(hasattr(a, "spawn_origin") for a in sim.agents)
 
 
+def test_deaths_reach_replay_as_terminals():
+    """CRITICAL 2 regression (final review): on_death must mark the dying agent's
+    last stored transition as terminal in the shared replay, so the continue
+    head and death-stratified sampling actually see real deaths. Force a death
+    directly (draining health) instead of relying on natural attrition within a
+    short test window — the early-return death path in `Agent.update` (health
+    <= 0 -> alive=False; return None) is exactly the "exits before the store
+    point" case this fix targets.
+    """
+    sim = Simulation(seed=42, brain_arch="rssm", rssm_config=_FAST, **_PARAMS)
+    sim.step()  # everyone gets at least one stored transition first
+    victim = sim.agents[0]
+    victim.health = 0.0
+    sim.step()  # victim's early death-return fires before this tick's store point
+    assert sim.rssm_learner.replay.num_death_episodes > 0
+
+
 def test_checkpoint_roundtrip_and_mismatch_guard(tmp_path, monkeypatch):
     import artificial_society.simulation as sim_mod
 

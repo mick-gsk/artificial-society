@@ -49,10 +49,18 @@ class SharedReplay:
             ep.done = True
             self.end_episode(agent_id)
 
-    def end_episode(self, agent_id: int) -> None:
+    def end_episode(self, agent_id: int, died: bool = False) -> None:
+        """Close the agent's open episode. `died=True` (real death, called from
+        SharedLearner.on_death) marks the episode's LAST stored transition as
+        terminal — the terminal-marking review fix: a v1-substrate agent that
+        dies exits Agent.update before this tick's store_transition() call, so
+        the terminal can only land on the previous tick's already-stored
+        transition (documented ≤1-tick offset approximation, spec §4.4)."""
         ep = self._open.pop(agent_id, None)
         if ep is None or len(ep) == 0:
             return
+        if died:
+            ep.done = True
         ep.open = False
         self._episodes.append(ep)
         while self._size > self.cfg.replay_capacity and len(self._episodes) > 1:

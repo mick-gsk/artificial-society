@@ -225,6 +225,54 @@ def test_act_single_params_override_matches_self_params():
     assert torch.equal(a_direct, a_override)
 
 
+def test_reinforce_score_term_matches_analytic_score_and_pins_cancellation_bug():
+    """CRITICAL 1 regression (final review): the reinforce-mode advantage-weighted
+    term must evaluate `_log_prob` at a DETACHED sample (`pre.detach()`,
+    `a.detach()`) so its mu-gradient equals the textbook Gaussian score
+    (pre-mu)/sigma^2 — the score-function estimator's defining property (a
+    positive advantage must increase the sampled action's probability).
+
+    Before the fix, the non-detached, reparameterized `pre = mu + eps*sigma` was
+    fed into `_log_prob` instead. Since d(pre-mu)/dmu == 0 identically for that
+    `pre`, autograd's total derivative silently cancelled the intended score
+    term, leaving only a small, wrong-direction leftover through the tanh
+    log-det-Jacobian (probe from the review: bandit true grad -0.893 vs. the
+    buggy estimator's +0.218 — opposite sign).
+
+    This test bypasses the world model entirely and probes `_log_prob`'s
+    gradient math directly, per the reviewer's simplest-robust-design note.
+    """
+    gen = make_generator(0, "score-term-probe")
+    mu = torch.zeros(64, 1, requires_grad=True)
+    logstd = torch.zeros(64, 1)  # sigma == 1 keeps the analytic formula simple
+    eps = torch.randn(64, 1, generator=gen)
+    pre = mu + eps * logstd.exp()
+    a = torch.tanh(pre)
+    adv = torch.ones(64, 1)  # fixed positive advantage
+
+    # --- fixed formulation: density at a CONSTANT sample (the review fix) ---
+    logp_score = ActorCriticSlab._log_prob(mu, logstd, pre.detach(), a.detach())
+    loss_fixed = -(adv.detach() * logp_score).mean()
+    (grad_fixed,) = torch.autograd.grad(loss_fixed, mu)
+
+    # Analytic Gaussian score d(logp)/d(mu) with pre held constant: (pre-mu)/sigma^2.
+    analytic_score = (pre.detach() - mu.detach()) / logstd.exp() ** 2
+    expected = -(adv * analytic_score) / mu.shape[0]
+    assert torch.allclose(grad_fixed, expected, atol=1e-6)
+    # Score-function property: positive advantage → the loss gradient DESCENT
+    # step (-grad_fixed) moves mu toward the sampled `pre` (increases its prob).
+    assert torch.all((-grad_fixed).sign() == (pre.detach() - mu.detach()).sign())
+
+    # --- OLD (buggy) formulation: density at the reparameterized, non-detached pre ---
+    logp_old = ActorCriticSlab._log_prob(mu, logstd, pre, a)
+    loss_old = -(adv.detach() * logp_old).mean()
+    (grad_old,) = torch.autograd.grad(loss_old, mu)
+
+    # Pin the cancellation: the old formulation's mu-gradient is materially
+    # different from (not just a rescaling of) the correct score term above.
+    assert not torch.allclose(grad_old, grad_fixed, atol=1e-3)
+
+
 def test_actor_mirror_slot_refresh_plumbing():
     """GPU-pilot blocker regression: actor_snapshot_cpu()/refresh_actor_mirror_slot
     are the mechanism SharedLearner uses to keep a CPU act-path mirror of a

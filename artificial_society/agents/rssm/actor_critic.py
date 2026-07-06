@@ -183,15 +183,29 @@ class ActorCriticSlab:
         N, H = h0.shape[0], cfg.horizon
         reinforce = cfg.actor_grad == "reinforce"
         h, z = h0, z0
-        s_list, logp_list, ent_list, rew_list, cont_list = [], [], [], [], []
+        s_list, logp_list, logp_score_list, ent_list, rew_list, cont_list = [], [], [], [], [], []
         for _ in range(H):
             s_g = wm.head_input(h, z, genes)
             mu, logstd = self._actor_dist(self.params, slots, s_g)
             a, pre = self._tanh_normal_sample(mu, logstd, gen)
+            # Pathwise (reparameterized) log-prob — used ONLY for the entropy
+            # bonus below, where `-logp`'s gradient through mu/logstd via `pre`
+            # is a valid reparameterized entropy gradient.
             logp = self._log_prob(mu, logstd, pre, a)
             s_list.append(s_g)
             logp_list.append(logp)
             ent_list.append(-logp)  # sample-based entropy estimate
+            if reinforce:
+                # Score-function term (review fix, Critical 1): density evaluated
+                # at a CONSTANT sample (pre/a detached) so d(logp_score)/d(mu,
+                # logstd) is the textbook score (pre-mu)/sigma^2. Feeding the
+                # non-detached, reparameterized `pre` here instead (the pre-fix
+                # bug) is wrong: pre = mu + eps*sigma makes d(pre-mu)/dmu == 0
+                # identically, so autograd's total derivative silently cancels
+                # the intended score term, leaving only a small wrong-direction
+                # leftover through the tanh log-det-Jacobian (probe: bandit true
+                # grad -0.893 vs the buggy estimator's +0.218).
+                logp_score_list.append(self._log_prob(mu, logstd, pre.detach(), a.detach()))
             a_step = a if not reinforce else a.detach()
             h, z, _ = wm.img_step(h, z, a_step, gen)
             s_next = wm.head_input(h, z, genes)
@@ -223,8 +237,9 @@ class ActorCriticSlab:
         scale = max(1.0, self.ret_scale)
 
         if reinforce:
+            logp_score = torch.stack(logp_score_list, 1)
             adv = ((R - values.detach()) / scale).detach()
-            actor_loss = -(w * adv * logp).mean() - cfg.entropy_eta * (w * entropy).mean()
+            actor_loss = -(w * adv * logp_score).mean() - cfg.entropy_eta * (w * entropy).mean()
         else:  # dynamics backprop: stop-grad baseline, differentiable R
             adv = (R - values.detach()) / scale
             actor_loss = -(w * adv).mean() - cfg.entropy_eta * (w * entropy).mean()

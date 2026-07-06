@@ -157,6 +157,9 @@ class Simulation:
             self.rssm_learner = SharedLearner(
                 rssm_config or RSSMConfig(), seed if seed is not None else 0
             )
+        assert not (self.brain_arch == "rssm" and self.physics_v2), (
+            "brain_arch=rssm requires physics_v2=False"
+        )
         if seed is not None:
             seed_all(seed)
             # Reset the agent id sequence so a seed reproduces the same ids too.
@@ -359,7 +362,11 @@ class Simulation:
             # update() (e.g. attacked later in the tick) has its last stored
             # transition at done=False — the continue head still learns deaths
             # from the majority in-update deaths + stratified sampling (spec §4.4).
-            if self.rssm_learner is not None and getattr(agent, "rssm_slot", None) is not None:
+            # Guard is brain_arch=="rssm", NOT rssm_slot is not None (review fix,
+            # Important 6): on_death must also run for slot-less arm-C (MPC) agents
+            # — it closes their replay episode terminal regardless, and release_slot
+            # is itself a no-op when agent.rssm_slot is None.
+            if self.rssm_learner is not None and getattr(agent, "brain_arch", None) == "rssm":
                 self.rssm_learner.on_death(agent)
             if self.physics_v2:
                 # v2 (C2/C3): echte Terminal-Transition — done=True erreicht den
@@ -678,12 +685,17 @@ class Simulation:
                 new_children.append(self.spawn_child_from_parent(agent, child_genes))
         self.agents.extend(new_children)
 
-        # Flag aus: Pre-Filtering unverändert (Golden-Garantie) — Tote erreichen
-        # remove_dead() dort wie bisher nicht. Im v2-Modus MÜSSEN Tote
+        # Flag aus (v1): Pre-Filtering unverändert (Golden-Garantie) — Tote
+        # erreichen remove_dead() dort wie bisher nicht. Im v2-Modus MÜSSEN Tote
         # remove_dead() erreichen (Kadaver-Objekt + Erhaltung, Spec B3): ohne
         # diesen Fix entstünden nie Kadaver — Massenleck im Ledger, und die
         # Kern-Kette Kadaver→Schneiden→Essen existierte nicht.
-        if not self.physics_v2:
+        # rssm (review fix, Critical 2 dependency): brain_arch=="rssm" also runs
+        # on physics_v2=False, but its dead agents MUST reach remove_dead() too —
+        # otherwise on_death (replay terminal-marking, slab slot release) never
+        # fires and every death silently leaks a slab slot. v1 behaviour
+        # (brain_arch=="v1") is untouched, preserving the golden trajectory.
+        if not self.physics_v2 and self.brain_arch != "rssm":
             self.agents = [a for a in self.agents if a.alive]
         self.remove_dead()
 

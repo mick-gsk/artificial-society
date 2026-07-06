@@ -52,6 +52,10 @@ class SharedLearner:
         self._gen_learner = make_generator(self.global_seed, "learner")
         self._gen_train = make_generator(self.global_seed, "train", device=self.train_device)
         self._agent_gens: dict[int, torch.Generator] = {}
+        # Monotone cumulative counter (A/B harness transitions-matched primary
+        # axis, spec §10.2/review Important-3): unlike len(self.replay), which
+        # shrinks on FIFO eviction, this never decreases.
+        self.transitions_stored = 0
 
     # --- per-agent RNG ------------------------------------------------------
     def _gen(self, agent_id: int) -> torch.Generator:
@@ -75,7 +79,7 @@ class SharedLearner:
         self.replay.start_episode(agent.id, origin)
 
     def on_death(self, agent) -> None:
-        self.replay.end_episode(agent.id)
+        self.replay.end_episode(agent.id, died=True)
         if agent.rssm_slot is not None:
             self.slab.release_slot(agent.rssm_slot)
         self._agent_gens.pop(agent.id, None)
@@ -134,6 +138,7 @@ class SharedLearner:
         self.replay.add(
             agent.id, brain_step["obs_tensor"], brain_step["action_tensor"], reward, done
         )
+        self.transitions_stored += 1
 
     # --- training cadence -------------------------------------------------------
     def maybe_train(self, tick: int, agents) -> dict | None:
