@@ -118,6 +118,51 @@ Geburtenzähler, der das bestehende `births`-Feld (Σ `children` NUR der
 aktuell LEBENDEN Agenten) ergänzt, weil dieses durch Tode untererfasst wird:
 ein Agent, der ein Kind bekommt und dann stirbt, verschwindet aus der Summe,
 obwohl die Geburt stattfand.
+
+v1-vs-v2-Demografie-Vergleich: `--physics {v1,v2}` (Default v2, unverändertes
+Verhalten für alle bisherigen Läufe/Skripte) steuert `Simulation(physics_v2=
+...)`. Landet als `physics` im meta-Record. Interaktion mit den bestehenden
+Arm-Patches und Demografie-Knobs (geprüft, siehe jeweilige Datei:Zeile):
+
+  - `_freeze_learning` (A2/A3, "nolearn*"): `maybe_train`-No-op wirkt in
+    BEIDEN Pfaden -- `Brain.maybe_train` (agents/brain.py:850) ist der
+    einzige PPO-Aufrufpunkt im v1-Pfad (der v1-Zweig ab Zeile 858 trainiert
+    direkt im No-op'd Methodenkörper, wird also nie erreicht) und dispatcht
+    NUR bei `self.physics_v2` (Brain-Instanzflag, construction-time aus dem
+    Sim-`physics_v2`-Flag übernommen) an `_train_v2`. `_train_v2`-No-op ist
+    im v1-Pfad dagegen wirkungslos: `finalize_terminal`
+    (agents/brain.py:1006, ruft `_train_v2` DIREKT) wird nur erreicht, wenn
+    `simulation.py:320-327` `self.physics_v2` (Sim-Flag) true ist -- im
+    v1-Pfad läuft die `remove_dead`-Todesbehandlung stattdessen über den
+    `else`-Zweig (Zeile 331-332, `add_carcass`, kein Brain-Aufruf). D.h.
+    `_train_v2`-No-op ist im v1-Pfad totes Gewicht, ändert aber nichts (kein
+    zusätzlicher Trainingspfad wird dadurch übersehen).
+  - `--plant-ceiling-scale`: pfadunabhängig. `World._init_biome_statics`
+    baut `world._bio["plant_ceiling"]` in JEDEM `World.__init__` (world.py,
+    unabhängig von `physics_v2`); `regrow_grid` (environment/resources.py)
+    liest es aus `world._bio` ohne physics_v2-Verzweigung. Läuft in beiden
+    Pfaden über den registrierten `world_regrowth`-Tick-Hook
+    (systems/world_regrowth.py, `order=25`, ungated in
+    `registry.tick_systems`, die `Simulation.step()` fuer JEDEN Tick
+    unabhaengig von `physics_v2` aufruft).
+  - `--min-food-per-capita`: pfadunabhängig. `agent.py:817-822`
+    `_try_reproduce` liest `REPRODUCTION_MIN_FOOD_PER_CAPITA` als freien
+    Modul-Global; der Aufruf `if stage.get("can_reproduce", True):
+    self._try_reproduce(...)` (agent.py:1482-1483) ist nicht auf
+    `self.physics_v2` (Agent-Instanzflag) verzweigt -- die einzige
+    physics_v2-Verzweigung in der Naehe (`agent.py:1488`) betrifft NUR die
+    v1-Erfindungslogik weiter unten.
+  - `--age-structured-founders`: pfadunabhängig. Setzt `agent.age`/
+    `agent.birth_tick` direkt auf den Instanzen; `can_reproduce`
+    (agent.py:500-504, `self.age >= MIN_REPRODUCTION_AGE`) ist ebenfalls
+    nicht physics_v2-verzweigt.
+  - `--min-pop`/`--respawn-count`: pfadunabhängig. `simulation.py:639-640`
+    (`MIN_POPULATION`-Check + `emergency_respawn()`-Aufruf) hat keine
+    physics_v2-Verzweigung; `emergency_respawn` selbst (simulation.py:304-311)
+    verzweigt nur beim Anhängen der Körperphysik (`attach_body`), nicht bei
+    der Respawn-Zaehlung/-Schwelle selbst.
+  - `--regrow-scale`: pfadunabhängig, gleicher Call-Pfad wie
+    `--plant-ceiling-scale` oben (`regrow_grid` via `world_regrowth`-Hook).
 """
 
 from __future__ import annotations
@@ -545,6 +590,7 @@ def run_one(
     regrow_scale: float = 1.0,
     min_food_per_capita: float = 6.0,
     plant_ceiling_scale: float = 1.0,
+    physics: str = "v2",
 ) -> str:
     conf = EXPERIMENTS[exp]
     # Patches VOR dem Simulation-Bau anwenden (Spec §1). Modul-Konstanten wie
@@ -577,10 +623,17 @@ def run_one(
     _scale_regrowth(regrow_scale)
     _set_min_food_per_capita(min_food_per_capita)
 
+    # v1-vs-v2-Demografie-Vergleich: `--physics` steuert NUR den Bau-Parameter
+    # von `Simulation` (physics_v2-Kern-/Brain-Pfad). Die Arm-Patches oben und
+    # die Etappe-1-Demografie-Knobs unten sind (siehe Modul-Docstring
+    # "v1-vs-v2-Interaktion") überwiegend pfadunabhängig -- Ausnahme:
+    # `_train_v2`-No-op (Teil von `_freeze_learning`) wirkt im v1-Pfad nicht,
+    # weil `finalize_terminal`/`_train_v2` dort nie aufgerufen werden
+    # (`simulation.py:320-327`); `maybe_train`-No-op reicht in BEIDEN Pfaden.
     sim = Simulation(
         headless=True,
         load_checkpoint=False,
-        physics_v2=True,
+        physics_v2=(physics == "v2"),
         grid_w=grid_w,
         grid_h=grid_h,
         initial_population=pop,
@@ -672,6 +725,9 @@ def run_one(
             # skaliert die Pflanzen-Nahrungs-DECKE (world._bio["plant_ceiling"]),
             # nicht die Zufluss-RATE wie `regrow_scale`.
             "plant_ceiling_scale": plant_ceiling_scale,
+            # v1-vs-v2-Demografie-Vergleich (siehe Modul-Docstring): welcher
+            # Simulation(physics_v2=...)-Pfad gebaut wurde.
+            "physics": physics,
             "patched": dict(conf["patched"], CHECKPOINT_INTERVAL=0),
         }
         f.write(json.dumps(meta) + "\n")
@@ -765,6 +821,16 @@ def main() -> None:
         ),
     )
     ap.add_argument(
+        "--physics",
+        choices=["v1", "v2"],
+        default="v2",
+        help=(
+            "v1-vs-v2-Demografie-Vergleich: steuert `Simulation(physics_v2=...)` "
+            "(Default v2 = bisheriges Verhalten, alle bestehenden Läufe/Skripte "
+            "unverändert). Landet als 'physics' im meta-Record."
+        ),
+    )
+    ap.add_argument(
         "--plant-ceiling-scale",
         type=float,
         default=1.0,
@@ -794,6 +860,7 @@ def main() -> None:
         args.regrow_scale,
         args.min_food_per_capita,
         args.plant_ceiling_scale,
+        args.physics,
     )
 
 
