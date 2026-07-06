@@ -93,6 +93,117 @@ def test_slot_hygiene_on_release_and_reacquire():
     assert torch.all(slab.adam_v["a_w1"][s2] == 0)
 
 
+def _snapshot(slab):
+    """Deep-clone the slab's full optimizer/param state so a run can be replayed
+    from an identical starting point (`state_dict_all()` returns live references,
+    not clones, so it can't be used as-is for restore-after-mutation)."""
+    return {
+        "params": {k: v.clone() for k, v in slab.params.items()},
+        "adam_m": {k: v.clone() for k, v in slab.adam_m.items()},
+        "adam_v": {k: v.clone() for k, v in slab.adam_v.items()},
+        "step_count": slab.step_count.clone(),
+        "ret_scale": slab.ret_scale,
+    }
+
+
+def _restore(slab, snap):
+    for k, v in snap["params"].items():
+        slab.params[k].data.copy_(v)
+    for k, v in snap["adam_m"].items():
+        slab.adam_m[k].copy_(v)
+    for k, v in snap["adam_v"].items():
+        slab.adam_v[k].copy_(v)
+    slab.step_count.copy_(snap["step_count"])
+    slab.ret_scale = snap["ret_scale"]
+
+
+def _naive_combined_update(slab, wm, h0, z0, genes, slots, seed):
+    """Replicates the PRE-FIX behavior: a single
+    `torch.autograd.grad(actor_loss + critic_loss, all_params)` call feeding
+    `_adam_step`, instead of the split actor/critic grad calls. Used as a reference
+    to diff against the real (fixed) `imagination_update` from an identical
+    snapshotted starting state.
+    """
+    for p in slab.params.values():
+        p.requires_grad_(True)
+    wm_req = [p.requires_grad for p in wm.parameters()]
+    for p in wm.parameters():
+        p.requires_grad_(False)
+    actor_loss, critic_loss, _entropy, _scale = slab._losses(
+        wm, h0, z0, genes, slots, make_generator(seed, "img"), None
+    )
+    actor_params = [slab.params[k] for k in slab.ACTOR_KEYS]
+    critic_to_actor = torch.autograd.grad(
+        critic_loss, actor_params, retain_graph=True, allow_unused=True
+    )
+    loss = actor_loss + critic_loss
+    grads = torch.autograd.grad(loss, list(slab.params.values()), allow_unused=True)
+    slab._adam_step(dict(zip(slab.params.keys(), grads)), slots)
+    for p, r in zip(wm.parameters(), wm_req):
+        p.requires_grad_(r)
+    for p in slab.params.values():
+        p.requires_grad_(False)
+    return critic_to_actor
+
+
+def _run_mode_comparison(cfg, seed):
+    """Run the REAL (fixed) imagination_update, then reset to the same starting
+    state and run a manual replication of the pre-fix combined-grad update; return
+    both resulting critic params (keyed slot-only) plus critic_loss's raw gradient
+    onto actor params (must be None/zero in both modes regardless of the fix,
+    since critic_loss's inputs are always detached from the actor's rollout)."""
+    slab = ActorCriticSlab(cfg, make_generator(0, "slab"))
+    slots = torch.tensor([slab.acquire_slot(None)])
+    wm = RSSMWorldModel(cfg)
+    h0, z0, genes = _starts(1)
+    snap = _snapshot(slab)
+
+    slab.imagination_update(wm, h0, z0, genes, slots, make_generator(seed, "img"), None)
+    real_critic = {k: slab.params[k][slots].clone() for k in slab.CRITIC_KEYS}
+
+    _restore(slab, snap)
+    critic_to_actor = _naive_combined_update(slab, wm, h0, z0, genes, slots, seed)
+    naive_critic = {k: slab.params[k][slots].clone() for k in slab.CRITIC_KEYS}
+
+    return real_critic, naive_critic, critic_to_actor
+
+
+def test_reinforce_mode_critic_update_matches_naive_combined_grad():
+    """Sanity companion to the dynamics regression below: reinforce mode has no
+    actor->critic dependency (the advantage is fully `.detach()`-ed), so splitting
+    the grad call per the review fix must be a functional no-op here — the real
+    (split) update and a manually replicated pre-fix combined-loss update, run from
+    an identical starting state, must land on identical critic params. Also checks
+    the always-true invariant that critic_loss never reaches actor params.
+    """
+    real_critic, naive_critic, critic_to_actor = _run_mode_comparison(CFG, seed=8)
+    assert all(g is None or torch.all(g == 0) for g in critic_to_actor)
+    for k in ActorCriticSlab.CRITIC_KEYS:
+        assert torch.allclose(real_critic[k], naive_critic[k], atol=1e-6)
+
+
+def test_dynamics_mode_critic_update_excludes_actor_objective():
+    """Regression for the review finding: in dynamics mode, R^lambda (and hence
+    actor_loss) is differentiable w.r.t. critic params through the un-detached value
+    bootstrap, so the pre-fix single `torch.autograd.grad(actor_loss + critic_loss,
+    all_params)` call let the actor objective's nonzero d(actor_loss)/d(critic_params)
+    contaminate the critic's own weight update (~3% spurious norm per review).
+    This runs the REAL `imagination_update` (which must split the grad calls) and an
+    identically-seeded manual replication of the pre-fix combined-loss update from
+    the same snapshotted starting state, and asserts the resulting critic params
+    diverge — proving the split materially changes (fixes) what the critic learns,
+    not just an inert refactor. Also checks the always-true invariant that
+    critic_loss never reaches actor params.
+    """
+    cfg = dataclasses.replace(CFG, actor_grad="dynamics")
+    real_critic, naive_critic, critic_to_actor = _run_mode_comparison(cfg, seed=9)
+    assert all(g is None or torch.all(g == 0) for g in critic_to_actor)
+    assert any(
+        not torch.allclose(real_critic[k], naive_critic[k], atol=1e-6)
+        for k in ActorCriticSlab.CRITIC_KEYS
+    )
+
+
 def test_prototype_snapshot_roundtrip():
     slab = _slab()
     s = slab.acquire_slot(None)

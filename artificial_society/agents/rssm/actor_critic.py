@@ -142,16 +142,16 @@ class ActorCriticSlab:
         return a.squeeze(0), None
 
     # --- training -----------------------------------------------------------
-    def imagination_update(self, wm, h0, z0, genes, slots, gen, replay_batch):
+    def _losses(self, wm, h0, z0, genes, slots, gen, replay_batch):
+        """Build the imagined rollout and return (actor_loss, critic_loss, entropy, scale).
+
+        Pure loss construction, no grad/optimizer side effects — split out so tests
+        can probe the gradient topology (which params each loss actually touches)
+        without going through `_adam_step`.
+        """
         cfg = self.cfg
         N, H = h0.shape[0], cfg.horizon
         reinforce = cfg.actor_grad == "reinforce"
-        for p in self.params.values():
-            p.requires_grad_(True)
-        wm_req = [p.requires_grad for p in wm.parameters()]
-        for p in wm.parameters():
-            p.requires_grad_(False)  # WM frozen during AC update (both modes)
-
         h, z = h0, z0
         s_list, logp_list, ent_list, rew_list, cont_list = [], [], [], [], []
         for _ in range(H):
@@ -223,9 +223,39 @@ class ActorCriticSlab:
                 -(twohot(symlog(ra), self.bins) * torch.log_softmax(rl, -1)).sum(-1).mean()
             )
 
-        loss = actor_loss + critic_loss
-        grads = torch.autograd.grad(loss, list(self.params.values()), allow_unused=True)
-        self._adam_step(dict(zip(self.params.keys(), grads)), slots)
+        return actor_loss, critic_loss, entropy, scale
+
+    def imagination_update(self, wm, h0, z0, genes, slots, gen, replay_batch):
+        for p in self.params.values():
+            p.requires_grad_(True)
+        wm_req = [p.requires_grad for p in wm.parameters()]
+        for p in wm.parameters():
+            p.requires_grad_(False)  # WM frozen during AC update (both modes)
+
+        actor_loss, critic_loss, entropy, scale = self._losses(
+            wm, h0, z0, genes, slots, gen, replay_batch
+        )
+
+        # Split grad computation (review fix, dynamics-mode cross-term leak): in
+        # "dynamics" mode actor_loss is differentiable w.r.t. critic params too (it
+        # depends on the critic's own `values` forward pass through the un-detached
+        # λ-return bootstrap). A single torch.autograd.grad(actor_loss + critic_loss,
+        # all_params) would therefore let the ACTOR objective push the CRITIC's
+        # weights. Requesting grads against each param list separately keeps the
+        # actor's pathwise gradient through critic params as intermediate *nodes*
+        # (chain rule still traverses them to reach actor params) while excluding
+        # d(actor_loss)/d(critic_params) and d(critic_loss)/d(actor_params) from the
+        # respective updates. retain_graph=True on the first call because the second
+        # call's backward may still need buffers from the shared forward graph.
+        actor_param_list = [self.params[k] for k in self.ACTOR_KEYS]
+        critic_param_list = [self.params[k] for k in self.CRITIC_KEYS]
+        actor_grads = torch.autograd.grad(
+            actor_loss, actor_param_list, retain_graph=True, allow_unused=True
+        )
+        critic_grads = torch.autograd.grad(critic_loss, critic_param_list, allow_unused=True)
+        grads = dict(zip(self.ACTOR_KEYS, actor_grads))
+        grads.update(zip(self.CRITIC_KEYS, critic_grads))
+        self._adam_step(grads, slots)
         for p, r in zip(wm.parameters(), wm_req):
             p.requires_grad_(r)
         for p in self.params.values():
@@ -242,8 +272,11 @@ class ActorCriticSlab:
         cfg = self.cfg
         self.step_count[slots] += 1
         with torch.no_grad():
-            # global-norm clip over the touched slots' grads
-            total = torch.sqrt(sum((g[slots] ** 2).sum() for g in grads.values() if g is not None))
+            # global-norm clip over the touched slots' grads. `slots` legitimately
+            # contains duplicates (a young agent can get multiple imagination starts
+            # in one learner batch); dedup so a slot's grad isn't squared in k times.
+            uniq = slots.unique()
+            total = torch.sqrt(sum((g[uniq] ** 2).sum() for g in grads.values() if g is not None))
             clip = min(1.0, cfg.ac_clip / (float(total) + 1e-8))
             for k, g in grads.items():
                 if g is None:
