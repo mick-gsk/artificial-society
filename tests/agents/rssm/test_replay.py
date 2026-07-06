@@ -61,6 +61,18 @@ def test_sample_starts_blend_and_none_when_empty():
     assert (obs[:, :, 0] == 5.0).all()  # own_frac=1 → all windows from agent 5
 
 
+def test_stratified_deaths_with_replacement_when_few_death_episodes():
+    rp = SharedReplay(CFG)
+    for a in range(10):
+        _fill(rp, a, 80, die=False)
+    _fill(rp, 99, 30, die=True)  # exactly ONE death episode
+    for seed in range(5):
+        batch = rp.sample_sequences(make_generator(seed, "s"))
+        has_death = ((batch["cont"] == 0) & batch["mask"].bool()).any(1)
+        assert has_death.sum() >= CFG.min_death_seqs  # 2, via replacement
+        assert batch["obs"].shape[0] == CFG.batch_size
+
+
 def test_fifo_eviction_whole_episodes():
     import dataclasses
 

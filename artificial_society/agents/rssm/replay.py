@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
+from typing import Any
 
 import torch
+
+from .config import RSSMConfig
 
 
 @dataclass
@@ -23,7 +26,7 @@ class _Episode:
 
 
 class SharedReplay:
-    def __init__(self, cfg):
+    def __init__(self, cfg: RSSMConfig) -> None:
         self.cfg = cfg
         self._episodes: deque[_Episode] = deque()  # closed episodes, FIFO
         self._open: OrderedDict[int, _Episode] = OrderedDict()
@@ -33,7 +36,7 @@ class SharedReplay:
     def start_episode(self, agent_id: int, origin: str) -> None:
         self._open[agent_id] = _Episode(agent_id, origin)
 
-    def add(self, agent_id, obs, action, reward, done) -> None:
+    def add(self, agent_id: int, obs: Any, action: Any, reward: float, done: bool) -> None:
         ep = self._open.get(agent_id)
         if ep is None:  # tolerate missed start
             ep = _Episode(agent_id, "unknown")
@@ -67,7 +70,9 @@ class SharedReplay:
     def _all(self):
         return list(self._episodes) + [e for e in self._open.values() if len(e) > 0]
 
-    def _window(self, ep: _Episode, gen) -> tuple:
+    def _window(
+        self, ep: _Episode, gen: torch.Generator
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         L = self.cfg.seq_len
         n = len(ep)
         start = 0 if n <= L else int(torch.randint(0, n - L + 1, (1,), generator=gen))
@@ -86,13 +91,14 @@ class SharedReplay:
             cont[k - 1] = 0.0  # real death only
         return obs, act, rew, cont, mask
 
-    def sample_sequences(self, gen) -> dict:
+    def sample_sequences(self, gen: torch.Generator) -> dict[str, torch.Tensor]:
         eps = self._all()
         if not eps:
             raise ValueError("empty replay")
         B = self.cfg.batch_size
         death_eps = [e for e in eps if e.done]
-        n_deaths = min(self.cfg.min_death_seqs, len(death_eps))
+        # Sample with replacement from death episodes to guarantee min_death_seqs when any death exists
+        n_deaths = min(self.cfg.min_death_seqs, B) if death_eps else 0
         picks = []
         for _ in range(n_deaths):
             picks.append(death_eps[int(torch.randint(0, len(death_eps), (1,), generator=gen))])
@@ -110,7 +116,9 @@ class SharedReplay:
         obs, act, rew, cont, mask = (torch.stack(x) for x in zip(*cols))
         return {"obs": obs, "act": act, "reward": rew, "cont": cont, "mask": mask}
 
-    def sample_starts(self, agent_id, n, own_frac, gen):
+    def sample_starts(
+        self, agent_id: int, n: int, own_frac: float, gen: torch.Generator
+    ) -> tuple[torch.Tensor, torch.Tensor] | None:
         b = self.cfg.burn_in
         pool = [e for e in self._all() if len(e) >= b]
         if not pool:
