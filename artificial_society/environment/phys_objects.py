@@ -322,7 +322,7 @@ def _decay_obj(obj, layer: ObjectLayer) -> None:
 def tick_decay(layer: ObjectLayer, hands_list=()) -> None:
     """Ein Verwesungs-Tick über alle Boden-Objekte UND die Hände lebender
     Agenten (F5: Frischhalte-Loophole zu — Tragen konserviert nicht). Masse und
-    nutrition sinken exponentiell, toxicity steigt bis zur Kappe; verweste
+    resource_value sinken exponentiell, toxicity steigt bis zur Kappe; verweste
     Masse fließt bilanziert in ledger['decayed'] (kein Leck). ε-Cull (F4):
     Objekte unter EPSILON_CULL_MASS_KG werden bilanziert entfernt — am Boden
     UND aus der Hand, unabhängig vom Verwesungs-Gate."""

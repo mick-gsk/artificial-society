@@ -63,7 +63,7 @@ def test_verb_init_bias_und_logstd_floor():
 
 
 def test_neugier_target_ausschluss_dims():
-    """D3 Neugier (a): last_reward (26), Causal (34–36), Episodic (37–48), Hormone (49–56)."""
+    """D3 Neugier (a): last_reward (26), Causal (34–36), Episodic (37–48), Modulator (49–56)."""
     assert frozenset({26} | set(range(34, 57))) == OBS_TARGET_EXCLUDED
     assert len(OBS_TARGET_INCLUDED_IDX) == 33
     assert 26 not in OBS_TARGET_INCLUDED_IDX
@@ -100,7 +100,7 @@ def test_forward_v2_teilmaske_nutzt_nur_belegte_slots():
 
 
 def test_derive_weights_ueberspringt_shape_mismatch_v1_v2():
-    """C5: inherit_weights_from überspringt Mismatches still (gewollt beim
+    """C5: derive_weights_from überspringt Mismatches still (gewollt beim
     Architektur-Wechsel) — v2-Kind von v1-Eltern crasht nicht."""
     torch.manual_seed(1)
     v1, v2 = Brain(), Brain(physics_v2=True)

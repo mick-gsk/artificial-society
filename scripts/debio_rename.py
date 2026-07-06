@@ -5,13 +5,14 @@ Rewrites Python *identifier* word-parts per a concept map, leaving string
 literals and comments untouched. Word-part aware: a NAME token is split on
 underscores, each segment further split on CamelCase / digit boundaries; only
 parts that equal a map key (case-insensitive) are replaced, each preserving its
-original case pattern. So `genes`, `inherit_genes`, `GeneStore` are renamed
+original case pattern. So `traits`, `derive_traits`, `GeneStore` are renamed
 while `generation`, `genesis`, `generate`, `eigener` are not.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import tokenize
@@ -71,6 +72,57 @@ def rewrite_source(src: str, mapping: dict[str, str]):
             line = line[:scol] + new + line[ecol:]
         lines[row - 1] = line
     return "".join(lines), changes
+
+
+def _sub_words(text: str, mapping: dict[str, str]) -> str:
+    def repl(m):
+        w = m.group(0)
+        r = mapping.get(w.lower())
+        return _recase(r, w) if r is not None else w
+
+    return re.sub(r"[A-Za-z]+", repl, text)
+
+
+def rewrite_prose(src: str, mapping: dict[str, str]) -> str:
+    """Rewrite words only inside COMMENT tokens and docstrings; code strings kept."""
+    mapping = {k.lower(): v for k, v in mapping.items()}
+    # docstring line ranges (module/class/func first-statement string expressions)
+    doc_ranges = set()
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        tree = None
+    if tree is not None:
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if isinstance(body, list) and body:
+                first = body[0]
+                if (
+                    isinstance(first, ast.Expr)
+                    and isinstance(getattr(first, "value", None), ast.Constant)
+                    and isinstance(first.value.value, str)
+                ):
+                    for ln in range(first.lineno, first.end_lineno + 1):
+                        doc_ranges.add(ln)
+    lines = src.splitlines(keepends=True)
+    readline = iter(lines).__next__
+    edits: dict[int, list[tuple[int, int, str]]] = {}
+    for tok in tokenize.generate_tokens(readline):
+        if tok.type == tokenize.COMMENT and tok.start[0] == tok.end[0]:
+            new = _sub_words(tok.string, mapping)
+            if new != tok.string:
+                edits.setdefault(tok.start[0], []).append((tok.start[1], tok.end[1], new))
+    for row in sorted(doc_ranges):
+        line = lines[row - 1]
+        edits.setdefault(row, []).append(
+            (0, len(line.rstrip("\n")), _sub_words(line.rstrip("\n"), mapping))
+        )
+    for row, row_edits in edits.items():
+        line = lines[row - 1]
+        for scol, ecol, new in sorted(row_edits, reverse=True):
+            line = line[:scol] + new + line[ecol:]
+        lines[row - 1] = line
+    return "".join(lines)
 
 
 def main(argv=None) -> int:

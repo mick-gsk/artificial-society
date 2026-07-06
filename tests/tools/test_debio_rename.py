@@ -46,3 +46,12 @@ def test_strings_and_comments_untouched():
     new, changes = rewrite_source(src, MAP)
     assert new == 'x = "gene"  # gene comment\ny = traits\n'
     assert changes == {"genes->traits": 1}
+
+
+def test_prose_mode_rewrites_comments_and_docstrings_only():
+    from debio_rename import rewrite_prose
+
+    src = '"""Handle gene mutation."""\nx = "gene"  # a gene here\n'
+    new = rewrite_prose(src, {"gene": "trait", "mutation": "perturbation"})
+    # docstring + comment rewritten; the semantic string "gene" left intact
+    assert new == '"""Handle trait perturbation."""\nx = "gene"  # a trait here\n'

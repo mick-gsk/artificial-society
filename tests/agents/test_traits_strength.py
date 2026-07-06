@@ -23,7 +23,7 @@ def test_trait_ranges_hat_strength_als_16_gen():
 
 
 def test_random_traits_zieht_kein_strength():
-    """v1-RNG-Strom byte-identisch: random_genes darf den neuen Key NICHT ziehen."""
+    """v1-RNG-Strom byte-identisch: random_traits darf den neuen Key NICHT ziehen."""
     random.seed(5)
     traits = random_traits()
     assert "strength" not in traits
@@ -31,8 +31,8 @@ def test_random_traits_zieht_kein_strength():
 
 
 def test_derive_traits_ueberspringt_strength_auch_bei_v2_eltern():
-    """Der GENE_RANGES-Loop in inherit_genes darf für strength keinen gauss-Draw
-    machen (v1-Strom!) und keinen Key erzeugen — Vererbung läuft über inherit_strength."""
+    """Der TRAIT_RANGES-Loop in derive_traits darf für strength keinen gauss-Draw
+    machen (v1-Strom!) und keinen Key erzeugen — Vererbung läuft über derive_strength."""
     random.seed(6)
     parent = SimpleNamespace(traits={**random_traits(), "strength": 0.7}, learning_score=1.0)
     spawn = derive_traits(parent, parent)
@@ -60,7 +60,7 @@ def test_derive_strength_score_gewichtet_mit_sigma_0012():
         kinder.append(spawn["strength"])
     mittel = sum(kinder) / len(kinder)
     streuung = (sum((k - mittel) ** 2 for k in kinder) / len(kinder)) ** 0.5
-    assert abs(mittel - 0.5) < 0.01  # gleiche Fitness ⇒ Mittelwert der Eltern
+    assert abs(mittel - 0.5) < 0.01  # gleiche Score ⇒ Mittelwert der Eltern
     assert 0.006 < streuung < 0.020  # σ ≈ 0.012, NICHT 0.25-Klasse
 
 
@@ -76,8 +76,8 @@ def test_attach_body_speist_body_aus_dem_gen():
 
 def test_spawn_agent_from_parent_v2_laeuft_ohne_namenskollision():
     """Regression (Review F1): spawn_agent_from_parent hat eine LOKALE Variable
-    `inherit_strength` (Gewichts-Vererbungsstärke für inherit_weights_from) —
-    der genetics-Import MUSS aliased sein (inherit_strength_gene), sonst
+    `derive_strength` (Gewichts-Vererbungsstärke für derive_weights_from) —
+    der traits-Import MUSS aliased sein (derive_strength_trait), sonst
     UnboundLocalError beim ersten v2-Kind-Spawn (latent bis Task 14)."""
     from artificial_society.simulation import Simulation
 

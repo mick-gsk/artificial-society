@@ -260,7 +260,7 @@ def test_verwesung_verschont_trockene_stoffe():
 
 
 def test_kadaver_rekalibrierung():
-    """Spec B5: dressed yield ~40 % → nutrition 0.35·0.40 = 0.14; frisch fast unbedenklich."""
+    """Spec B5: dressed yield ~40 % → resource_value 0.35·0.40 = 0.14; frisch fast unbedenklich."""
     from artificial_society.environment.physics.materials_v2 import MATERIALS_V2
     from artificial_society.environment.physics.props import IDX2
 

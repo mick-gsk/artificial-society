@@ -39,12 +39,12 @@ def test_world_regrowth_runs_each_step():
 
 
 def test_births_occur_and_grow_population():
-    # Agents reach MIN_REPRODUCTION_AGE (60) then gestate 40 ticks, so births need
+    # Agents reach MIN_REPLICATION_AGE (60) then gestate 40 ticks, so births need
     # ~100+ ticks. Phase 4's energy conservation tightened survival, so the
     # population now grows to and oscillates around its carrying capacity (~20-23):
     # a single end-of-run sample can dip back to the 16 founders on a death tick.
-    # Assert the robust intent across the whole run instead — at least one child was
-    # born, and the live population peaked above the founder count via those births.
+    # Assert the robust intent across the whole run instead — at least one spawn was
+    # spawn, and the live population peaked above the founder count via those births.
     sim = Simulation(
         headless=True, seed=3, grid_w=22, grid_h=16, initial_population=16, load_checkpoint=False
     )
@@ -69,7 +69,7 @@ def test_season_and_weather_state_published():
     assert "rain_map" in sim._weather_state
 
 
-# --- Society systems activated this phase (tribes / economy / technology / stats / disease) ---
+# --- Society systems activated this phase (tribes / economy / technology / stats / fault) ---
 
 
 def test_society_systems_registered():
@@ -80,9 +80,9 @@ def test_society_systems_registered():
 
 
 def test_tick_order_stats_last_and_fault_before_economy():
-    """Order is a contract: stats must read post-update state (last), and disease must
-    seed/spread before economy and stats so the same tick reflects new infections."""
-    # `disease`/`world_regrowth`/etc. only enter the registry when discovery runs (driven
+    """Order is a contract: stats must read post-update state (last), and fault must
+    seed/spread before economy and stats so the same tick reflects new propagation."""
+    # `fault`/`world_regrowth`/etc. only enter the registry when discovery runs (driven
     # by building a Simulation). Construct one first so this test does not depend on an
     # earlier test having populated the registry (it would raise in isolation / under
     # pytest-randomly / xdist otherwise).
@@ -105,7 +105,7 @@ def test_life_stage_counts_are_collected_not_zero():
     total = last["n_child"] + last["n_adult"] + last["n_elder"]
     assert total == len(live), "life-stage counts do not sum to the living population"
     assert total > 0, "life-stage counts are all zero (the getattr-on-a-method bug)"
-    # agents spawn at age 0, so early on every living agent is a child
+    # agents spawn at age 0, so early on every living agent is a spawn
     assert last["n_child"] >= 1
 
 
@@ -149,9 +149,9 @@ def test_technology_tracks_capabilities():
 
 
 def test_fault_environmental_propagation_fires():
-    """Before this phase no agent could ever be infected: the environmental trigger had no
-    call site. Holding an agent at the wound-fever precondition (health < 35), the disease
-    system must eventually infect someone. Asserts 'eventually', never a single RNG draw."""
+    """Before this phase no agent could ever be spread: the environmental trigger had no
+    call site. Holding an agent at the wound-fever precondition (health < 35), the fault
+    system must eventually spread someone. Asserts 'eventually', never a single RNG draw."""
     sim = _fresh()
     assert "fault" in sim.systems
     target = next((a for a in sim.agents if a.alive), None)

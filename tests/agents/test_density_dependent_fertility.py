@@ -1,7 +1,7 @@
 """Density-dependent fertility (population-stability fix).
 
-Reproduction used to key off the mother's personal energy alone
-(``energy >= REPRODUCTION_ENERGY``). Because agents hoard energy far above that
+Replication used to key off the mother's personal energy alone
+(``energy >= REPLICATION_ENERGY``). Because agents hoard energy far above that
 threshold (MAX_ENERGY 240 vs. threshold 60), they bred off fat reserves
 accumulated when food was plentiful — blind to current crowding — so the
 population overshot the world's carrying capacity and then mass-starved.

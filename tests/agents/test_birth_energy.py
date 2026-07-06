@@ -1,11 +1,11 @@
-"""Birth must TRANSFER energy from the mother, not mint it (audit fix 23).
+"""Spawn must TRANSFER energy from the mother, not mint it (audit fix 23).
 
-Newborns spawn with CHILD_START_ENERGY while parents pay only ~REPRODUCTION_COST
-at conception. The old net mint per birth subsidised population overshoot far
-past the world's food-regrowth carrying capacity, ending in mass starvation.
-Birth is now a transfer capped by BIRTH_ENERGY_FLOOR: a starving mother bears a
-weak child. (Ported onto the physik-v2 path — energy only, no learned
-inheritance; Plan-4 stays intact.)
+Newborns spawn with SPAWN_START_ENERGY while parents pay only ~REPLICATION_COST
+at conception. The old net mint per spawn subsidised population overshoot far
+past the world's food-regrowth carrying capacity, ending in mass depletion.
+Spawn is now a transfer capped by SPAWN_ENERGY_FLOOR: a depleting mother bears a
+weak spawn. (Ported onto the physik-v2 path — energy only, no learned
+derivation; Plan-4 stays intact.)
 """
 
 from __future__ import annotations

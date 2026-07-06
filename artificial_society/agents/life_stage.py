@@ -1,7 +1,7 @@
 """Life-stage definitions and stat modifiers.
 
 Tick scale (1 season = 900 ticks, AGE_LIMIT = 5000):
-  CHILD  :   0 –  500   (~0–15 years)  — dependent, high learning, no reproduction
+  SPAWN  :   0 –  500   (~0–15 years)  — dependent, high learning, no replication
   ADULT  : 500 – 3200   (~15–80 years) — full capabilities
   ELDER  : 3200– 5000   (~80+ years)   — wisdom bonus, physical decline
 """
@@ -33,7 +33,7 @@ STAGE_STATS = {
         "max_energy_mult": 0.60,  # smaller body
         "move_cost_mult": 0.70,  # lighter
         "hydration_loss_mult": 0.75,
-        "health_regen_mult": 1.40,  # children heal fast
+        "health_regen_mult": 1.40,  # spawn_count recover fast
         "attack_damage_mult": 0.20,  # can barely hurt anyone
         # Cognitive
         "learning_mult": 2.20,  # fast learner
@@ -64,13 +64,13 @@ STAGE_STATS = {
         "max_energy_mult": 0.80,
         "move_cost_mult": 1.35,  # slower
         "hydration_loss_mult": 1.20,  # dehydrates faster
-        "health_regen_mult": 0.55,  # slower healing
+        "health_regen_mult": 0.55,  # slower recovery
         "attack_damage_mult": 0.55,
         # Wisdom bonus
         "learning_mult": 0.50,  # learning slows
         "sense_radius_mult": 1.25,  # experienced, better awareness
         "memory_retention_mult": 1.10,  # long memory
-        "can_reproduce": False,  # post-reproductive
+        "can_reproduce": False,  # post-replication
         "can_attack": True,
         "can_build": True,
         "foraging_mult": 0.75,

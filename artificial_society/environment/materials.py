@@ -9,7 +9,7 @@ nobody has ever defined upfront.
 Property dimensions (PROP_DIMS):
   0  flammable       -- ignition susceptibility   [0..1]
   1  hardness        -- structural rigidity        [0..1]
-  2  edibility       -- caloric/nutritional value  [0..1]
+  2  edibility       -- caloric/resource value        [0..1]
   3  toxicity        -- harm when ingested         [0..1]
   4  heat_emission   -- radiated warmth            [0..1]
   5  light_emission  -- luminance                  [0..1]
@@ -119,7 +119,7 @@ MATERIALS: dict[str, np.ndarray] = {
         flammable=0.0, hardness=0.95, edibility=0.0, mass=0.5, dryness=0.8, sharpness=0.8
     ),
     "fiber": _v(flammable=0.5, hardness=0.05, edibility=0.0, mass=0.1, dryness=0.5),
-    # ── Scent / solubility group ─────────────────────────────────────────────
+    # ── Trail / solubility group ─────────────────────────────────────────────
     "flower_petals": _v(
         flammable=0.2,
         hardness=0.02,

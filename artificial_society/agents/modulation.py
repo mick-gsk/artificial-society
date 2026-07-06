@@ -1,48 +1,48 @@
 """
-Endocrine System
+Modulation System
 ----------------
 Agents do NOT perceive the world directly. They perceive their own
 internal chemical state, which is CAUSED by world events.
 
-This mirrors how biological organisms work:
+This mirrors how biological agents work:
   - Light does not "tell" the brain it's daytime.
-    Light suppresses melatonin -> melatonin drop wakes the organism.
+    Light suppresses rest -> rest drop wakes the agent.
   - Danger does not "tell" the agent to flee.
-    Danger triggers cortisol/adrenaline -> those chemicals change behaviour.
-  - A herb does not "cure" a disease.
+    Danger triggers stress/arousal -> those chemicals change behaviour.
+  - A herb does not "cure" a fault.
     A herb shifts chemical levels -> those levels happen to counteract illness.
 
-The Brain receives only the 8 hormone levels (float 0..1 each).
-It NEVER receives raw labels like 'is_night', 'light', 'disease_level'.
+The Brain receives only the 8 modulator levels (float 0..1 each).
+It NEVER receives raw labels like 'is_night', 'light', 'fault_level'.
 All semantic meaning must be inferred by the agent from correlations
 between its own body chemistry and outcomes over time.
 
-Hormones
+Modulators
 --------
-CORTISOL      Stress / threat response. High -> more energy use, health cost.
-              Triggered by: danger, disturbance, depletion, disease.
-ADRENALINE   Acute threat. High -> speed boost short term, crash afterward.
-              Triggered by: sudden danger spike, attack, predators at night.
-MELATONIN    Sleep onset. High -> fatigue, reduced cognition.
-              Triggered by: darkness (low light), circadian timer.
-SEROTONIN    Wellbeing / satiety. High -> cooperation, reduced aggression.
+STRESS      Stress / threat response. High -> more energy use, health cost.
+              Triggered by: danger, disturbance, depletion, fault.
+AROUSAL   Acute threat. High -> speed boost short term, crash afterward.
+              Triggered by: sudden danger spike, attack, attackers at night.
+REST    Sleep onset. High -> fatigue, reduced cognition.
+              Triggered by: darkness (low light), day_cycle timer.
+SATISFACTION    Wellbeing / satiety. High -> cooperation, reduced aggression.
               Triggered by: good food, social bonding, warmth, sunlight.
-DOPAMINE     Reward anticipation. High -> explore / experiment drive.
-              Triggered by: novelty, successful foraging, discovery.
-OXYTOCIN     Social bonding. High -> increased trust, reduced attack urge.
+REWARD     Reward anticipation. High -> explore / experiment drive.
+              Triggered by: novelty, successful gathering, discovery.
+AFFILIATION     Social bonding. High -> increased trust, reduced attack urge.
               Triggered by: proximity to known agents, tribe membership.
-INFLAMMATION Disease / injury marker. High -> health drain, sick amplifier.
-              Triggered by: active disease, wounds, pollution.
+IRRITATION Fault / damage marker. High -> health drain, impaired amplifier.
+              Triggered by: active fault, damage, pollution.
 UPKEEP       Energy regulation. High -> efficient processing, low energy need.
               Triggered by: good hydration, recent food, body heat.
 
-All hormones decay toward a baseline each tick.
+All modulators decay toward a baseline each tick.
 External inputs shift them up or down; the agent's body handles the rest.
 """
 
 from __future__ import annotations
 
-# Hormone indices (used as list positions, not labels for the brain)
+# Modulator indices (used as list positions, not labels for the brain)
 STRESS = 0
 AROUSAL = 1
 REST = 2
@@ -67,7 +67,7 @@ MAX_H = 1.0
 
 class ModulationSystem:
     """
-    Maintains 8 hormone floats for one agent.
+    Maintains 8 modulator floats for one agent.
     Call update() each tick to apply decay + world-driven inputs.
     Call apply_substance() when the agent consumes something.
     """
@@ -83,8 +83,8 @@ class ModulationSystem:
 
     def update(self, agent, world):
         """
-        Apply all automatic tick-by-tick hormonal influences.
-        agent: the Agent dataclass (for energy, health, sick, pos, etc.)
+        Apply all automatic tick-by-tick modulatory influences.
+        agent: the Agent dataclass (for energy, health, impaired, pos, etc.)
         world: the World object (for cell data and day_state)
         """
         h = self.h
@@ -93,12 +93,12 @@ class ModulationSystem:
 
         # ---- inputs from world state (all indirect) ----
 
-        # Light drives melatonin INVERSELY (darkness = high melatonin)
+        # Light drives rest INVERSELY (darkness = high rest)
         light = dn.get("light", 1.0)
         target_rest = BASELINE[REST] + 0.75 * (1.0 - light)
         h[REST] = _nudge(h[REST], target_rest, rate=0.04)
 
-        # Danger / disturbance drives cortisol and adrenaline
+        # Danger / disturbance drives stress and arousal
         threat = (
             cell.get("danger", 0.0) * 0.008
             + cell.get("disturbance", 0.0) * 0.005
@@ -107,45 +107,45 @@ class ModulationSystem:
         h[STRESS] = _clamp(h[STRESS] + threat)
         h[AROUSAL] = _clamp(h[AROUSAL] + threat * 0.6)
 
-        # Starvation / low energy drives cortisol
+        # Depletion / low energy drives stress
         from artificial_society.agents.agent import MAX_ENERGY
 
         energy_need_stress = max(0.0, 0.8 - agent.energy / MAX_ENERGY) * 0.06
         h[STRESS] = _clamp(h[STRESS] + energy_need_stress)
 
-        # Disease / inflammation
+        # Fault / irritation
         impaired_drive = agent.impaired / 100.0
         pollution_drive = cell.get("pollution", 0.0) / 100.0
         h[IRRITATION] = _clamp(h[IRRITATION] + 0.05 * impaired_drive + 0.01 * pollution_drive)
 
-        # Inflammation feeds back into cortisol (sickness stress)
+        # Irritation feeds back into stress (impairment stress)
         h[STRESS] = _clamp(h[STRESS] + 0.02 * h[IRRITATION])
 
-        # Warmth + sunlight boost serotonin
+        # Warmth + sunlight boost satisfaction
         warmth = cell.get("warmth", 0.0)
         h[SATISFACTION] = _clamp(h[SATISFACTION] + 0.015 * warmth + 0.01 * light)
 
-        # Good hydration and food boosts metabolism
+        # Good hydration and food boosts upkeep
         fed_score = (agent.hydration / 100.0) * 0.5 + min(1.0, agent.energy / MAX_ENERGY) * 0.5
         h[UPKEEP] = _nudge(h[UPKEEP], BASELINE[UPKEEP] + 0.4 * fed_score, rate=0.03)
 
         # Upkeep regulates energy efficiency
-        # (handled in agent via endocrine_modifiers)
+        # (handled in agent via modulation_modifiers)
 
-        # High cortisol suppresses serotonin (stress kills wellbeing)
+        # High stress suppresses satisfaction (stress kills wellbeing)
         if h[STRESS] > 0.6:
             h[SATISFACTION] = _clamp(h[SATISFACTION] - 0.02 * (h[STRESS] - 0.6))
 
-        # High serotonin suppresses aggression signal via cortisol reduction
+        # High satisfaction suppresses aggression signal via stress reduction
         if h[SATISFACTION] > 0.65:
             h[STRESS] = _clamp(h[STRESS] - 0.01 * (h[SATISFACTION] - 0.65))
 
-        # Social proximity raises oxytocin
+        # Social proximity raises affiliation
         # (caller passes nearby count via apply_social_signal)
 
-        # Dopamine: novelty decay — caller boosts on discovery
+        # Reward: novelty decay — caller boosts on discovery
 
-        # ---- decay all hormones toward baseline ----
+        # ---- decay all modulators toward baseline ----
         for i in range(N_MODULATORS):
             h[i] = _nudge(h[i], BASELINE[i], rate=DECAY[i])
             h[i] = _clamp(h[i])
@@ -155,7 +155,7 @@ class ModulationSystem:
     # ------------------------------------------------------------------
 
     def apply_social_signal(self, nearby_count: int, same_tribe: bool):
-        """Proximity to known agents raises oxytocin."""
+        """Proximity to known agents raises affiliation."""
         bond_boost = min(0.15, nearby_count * 0.025)
         if same_tribe:
             bond_boost += 0.04
@@ -163,16 +163,16 @@ class ModulationSystem:
         self.h[SATISFACTION] = _clamp(self.h[SATISFACTION] + bond_boost * 0.3)
 
     def apply_discovery(self, novelty: float):
-        """Successful invention or new causal sequence raises dopamine."""
+        """Successful invention or new causal sequence raises reward."""
         self.h[REWARD] = _clamp(self.h[REWARD] + 0.12 * novelty)
 
     def apply_attack_received(self):
-        """Being attacked spikes adrenaline and cortisol."""
+        """Being attacked spikes arousal and stress."""
         self.h[AROUSAL] = _clamp(self.h[AROUSAL] + 0.35)
         self.h[STRESS] = _clamp(self.h[STRESS] + 0.20)
 
     def apply_successful_gather(self, gain: float):
-        """Eating well raises serotonin and upkeep."""
+        """Eating well raises satisfaction and upkeep."""
         boost = min(0.12, gain * 0.04)
         self.h[SATISFACTION] = _clamp(self.h[SATISFACTION] + boost)
         self.h[UPKEEP] = _clamp(self.h[UPKEEP] + boost * 0.5)
@@ -185,15 +185,15 @@ class ModulationSystem:
         Tags are herb names, food types, or material names.
 
         Effects are physiological, not semantic:
-          willow  -> anti-inflammatory (reduces INFLAMMATION, CORTISOL)
-          garlic  -> immune stimulant (reduces INFLAMMATION, boosts UPKEEP)
-          elderberry -> antioxidant (boosts SEROTONIN, reduces INFLAMMATION)
-          mushroom -> psychoactive (spikes DOPAMINE, can raise or lower CORTISOL)
-          moss    -> calming/sleep aid (raises MELATONIN, lowers ADRENALINE)
-          raw_meat  -> energy processing (boosts UPKEEP, ADRENALINE)
-          cooked_meat -> efficient fuel (boosts UPKEEP, SEROTONIN)
+          willow  -> anti-inflammatory (reduces IRRITATION, STRESS)
+          garlic  -> resistant stimulant (reduces IRRITATION, boosts UPKEEP)
+          elderberry -> antioxidant (boosts SATISFACTION, reduces IRRITATION)
+          mushroom -> psychoactive (spikes REWARD, can raise or lower STRESS)
+          moss    -> calming/sleep aid (raises REST, lowers AROUSAL)
+          raw_meat  -> energy processing (boosts UPKEEP, AROUSAL)
+          cooked_meat -> efficient fuel (boosts UPKEEP, SATISFACTION)
           cooked_root -> steady fuel (boosts UPKEEP moderately)
-          plant_food  -> light boost SEROTONIN
+          plant_food  -> light boost SATISFACTION
         """
         a = min(amount, 3.0)  # cap effect
         h = self.h
@@ -207,7 +207,7 @@ class ModulationSystem:
             h[SATISFACTION] = _clamp(h[SATISFACTION] + 0.12 * a)
             h[IRRITATION] = _clamp(h[IRRITATION] - 0.10 * a)
         elif tag == "herb_mushroom":
-            # Unpredictable: dopamine spike, cortisol may go either way
+            # Unpredictable: reward spike, stress may go either way
             h[REWARD] = _clamp(h[REWARD] + 0.20 * a)
             h[STRESS] = _clamp(h[STRESS] + (0.10 - 0.20 * (a % 1.0)) * a)
         elif tag == "herb_moss":
@@ -234,20 +234,20 @@ class ModulationSystem:
     # ------------------------------------------------------------------
 
     def as_features(self) -> list[float]:
-        """Return the 8 hormone levels as brain input features."""
+        """Return the 8 modulator levels as brain input features."""
         return list(self.h)
 
     def modifiers(self) -> dict:
         """
-        Translate hormone levels into physiological modifiers.
+        Translate modulator levels into physiological modifiers.
         These are applied by the agent body, NOT visible to the brain.
-        The brain sees hormones; the body translates hormones to effects.
+        The brain sees modulators; the body translates modulators to effects.
 
         Returns dict with:
           energy_regen   : float multiplier on energy gain
           move_cost_mult : float multiplier on movement cost
           health_drain   : float extra health drain per tick
-          sleep_drive    : float 0..1 (high melatonin = sleep pressure)
+          sleep_drive    : float 0..1 (high rest = sleep pressure)
           forage_eff     : float multiplier on foraging yield
           social_bias    : float added to cooperation signal
           aggression_bias: float shift in attack threshold
@@ -255,18 +255,18 @@ class ModulationSystem:
         """
         h = self.h
         return {
-            # Adrenaline gives short burst but costs extra energy
+            # Arousal gives short burst but costs extra energy
             "energy_regen": 1.0 + 0.3 * h[UPKEEP] - 0.15 * h[STRESS],
             "move_cost_mult": 1.0 + 0.3 * h[AROUSAL] - 0.1 * h[UPKEEP],
             "health_drain": 0.05 * h[IRRITATION] + 0.03 * h[STRESS],
-            # Melatonin drives sleep; cortisol suppresses it
+            # Rest drives sleep; stress suppresses it
             "sleep_drive": max(0.0, h[REST] - 0.5 * h[STRESS]),
             "forage_eff": 0.7 + 0.6 * h[UPKEEP] - 0.2 * h[REST],
-            # Oxytocin and serotonin bias toward social
+            # Affiliation and satisfaction bias toward social
             "social_bias": 0.3 * h[AFFILIATION] + 0.2 * h[SATISFACTION],
-            # High cortisol/adrenaline lowers attack threshold
+            # High stress/arousal lowers attack threshold
             "aggression_bias": 0.4 * h[STRESS] + 0.3 * h[AROUSAL] - 0.3 * h[AFFILIATION],
-            # Dopamine and low cortisol = better learning
+            # Reward and low stress = better learning
             "cognition": max(0.2, 0.5 + 0.5 * h[REWARD] - 0.4 * h[STRESS] - 0.3 * h[REST]),
         }
 

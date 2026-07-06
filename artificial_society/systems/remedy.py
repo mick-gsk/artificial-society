@@ -1,12 +1,12 @@
 """
-Realistic Disease System — v2.0
+Realistic Fault System — v2.0
 
-Six historically-grounded diseases, each modelling:
+Six historically-grounded faults, each modelling:
   - Real transmission vector (water, contact, airborne, wound)
   - Biome affinity (where spread is amplified)
-  - Unique symptom effects per tick on agent stats
+  - Unique indicator effects per tick on agent stats
   - Real historical herb/food remedies (hidden from agents)
-  - Two-tier healing: partial relief from individual ingredients,
+  - Two-tier recovery: partial relief from individual ingredients,
     full cure only when the complete recipe is applied within the window
 
 Real-world inspirations:
@@ -15,7 +15,7 @@ Real-world inspirations:
   Tuberculosis   → Mycobacterium, airborne, cold/damp biomes
   Typhoid Fever  → Salmonella typhi, contaminated food & water
   Scurvy         → Vitamin C deficiency, no direct spread
-  Wound Fever    → Sepsis/Erysipelas, spread via contact with injured agents
+  Wound Fever    → Sepsis/Erysipelas, spread via contact with damaged agents
 
 NOTE: This registry is NEVER exposed to agents directly.
 Agents must discover cures through experimentation and social sharing.
@@ -34,7 +34,7 @@ REMEDY_REGISTRY: dict[str, dict] = {
     # ------------------------------------------------------------------
     # MALARIA
     # Real: Plasmodium parasite, mosquito vector, sub-Saharan Africa.
-    # Symptoms: cyclic fever, chills, fatigue, anaemia (energy & hydration drain).
+    # Indicators: cyclic fever, chills, fatigue, anaemia (energy & hydration drain).
     # Historical cure: Cinchona bark (quinine). Artemisia (wormwood) as partial.
     # Biome: swamp >> grassland >> forest
     # ------------------------------------------------------------------
@@ -50,8 +50,8 @@ REMEDY_REGISTRY: dict[str, dict] = {
         "cure_sick": 65.0,
         "spread_rate": 0.010,
         "initial_sick": 10.0,
-        "immunity_after": 300,  # ticks of immunity after recovery
-        # Per-tick symptom effects (applied inside apply_disease)
+        "immunity_after": 300,  # ticks of resistance after recovery
+        # Per-tick indicator effects (applied inside apply_fault)
         "symptom": {
             "energy_drain": 0.12,  # fatigue
             "hydration_drain": 0.20,  # sweating / chills
@@ -63,7 +63,7 @@ REMEDY_REGISTRY: dict[str, dict] = {
     # ------------------------------------------------------------------
     # DYSENTERY
     # Real: Shigella/Entamoeba, contaminated water, history of campaigns.
-    # Symptoms: severe dehydration, gut pain → hydration collapses fast.
+    # Indicators: severe dehydration, gut pain → hydration collapses fast.
     # Historical cure: Blackberry root, oak bark (tannins), charcoal.
     # Biome: swamp, near water cells with high pollution
     # ------------------------------------------------------------------
@@ -73,7 +73,7 @@ REMEDY_REGISTRY: dict[str, dict] = {
         "vector": "water",  # spreads through shared water cells
         "biome_amplify": ["swamp", "grassland"],
         "biome_amplify_factor": 1.8,
-        "ingredients": ["herb_oak_bark", "plant_food"],  # tannins + nutrition
+        "ingredients": ["herb_oak_bark", "plant_food"],  # tannins + resource_value
         "window": 5,
         "cure_health": 22.0,
         "cure_sick": 55.0,
@@ -82,7 +82,7 @@ REMEDY_REGISTRY: dict[str, dict] = {
         "immunity_after": 180,
         "symptom": {
             "energy_drain": 0.08,
-            "hydration_drain": 0.50,  # major symptom: dehydration
+            "hydration_drain": 0.50,  # major indicator: dehydration
             "health_drain_per_sick": 0.010,
         },
         "partial_ingredients": {"herb_oak_bark": 8.0, "plant_food": 4.0},
@@ -90,7 +90,7 @@ REMEDY_REGISTRY: dict[str, dict] = {
     # ------------------------------------------------------------------
     # TUBERCULOSIS
     # Real: Mycobacterium tuberculosis, airborne, cold/damp environments.
-    # Symptoms: slow progressive health drain, energy loss, chronic.
+    # Indicators: slow progressive health drain, energy loss, chronic.
     # Historical cure: Garlic (allicin), eucalyptus oil, fresh air + sunlight.
     # Biome: mountain, forest (cold & damp)
     # ------------------------------------------------------------------
@@ -106,7 +106,7 @@ REMEDY_REGISTRY: dict[str, dict] = {
         "cure_sick": 45.0,
         "spread_rate": 0.008,  # airborne but slower incubation
         "initial_sick": 6.0,  # slow onset
-        "immunity_after": 400,  # long immunity after recovery
+        "immunity_after": 400,  # long resistance after recovery
         "symptom": {
             "energy_drain": 0.10,
             "hydration_drain": 0.05,
@@ -117,16 +117,16 @@ REMEDY_REGISTRY: dict[str, dict] = {
     # ------------------------------------------------------------------
     # TYPHOID FEVER
     # Real: Salmonella typhi, faecal-oral route, contaminated food & water.
-    # Symptoms: sustained high fever, confusion (action randomisation),
+    # Indicators: sustained high fever, confusion (action randomisation),
     #           intestinal damage.
     # Historical cure: Willow bark (aspirin precursor) + clean water + rest.
-    # Biome: any with high disease cell value
+    # Biome: any with high fault cell value
     # ------------------------------------------------------------------
     "typhoid": {
         "name": "Typhoid Fever",
         "description": "Sustained fever and confusion from contaminated food or water.",
         "vector": "food_water",
-        "biome_amplify": [],  # amplified by cell disease level instead
+        "biome_amplify": [],  # amplified by cell fault level instead
         "biome_amplify_factor": 1.0,
         "ingredients": ["herb_willow", "water", "plant_food"],
         "window": 6,
@@ -134,19 +134,19 @@ REMEDY_REGISTRY: dict[str, dict] = {
         "cure_sick": 60.0,
         "spread_rate": 0.010,
         "initial_sick": 14.0,
-        "immunity_after": 500,  # typhoid gives long-term immunity historically
+        "immunity_after": 500,  # typhoid gives long-term resistance historically
         "symptom": {
             "energy_drain": 0.15,
             "hydration_drain": 0.25,
             "health_drain_per_sick": 0.009,
-            "confusion": True,  # flag: action values randomised when sick > 50
+            "confusion": True,  # flag: action values randomised when impaired > 50
         },
         "partial_ingredients": {"herb_willow": 10.0, "water": 6.0, "plant_food": 4.0},
     },
     # ------------------------------------------------------------------
     # SCURVY
-    # Real: Vitamin C deficiency. Not contagious — environmental/dietary.
-    # Symptoms: weakness, bleeding, slow wound healing (health regen disabled).
+    # Real: Vitamin C deficiency. Not spreading — environmental/dietary.
+    # Indicators: weakness, bleeding, slow damage recovery (health regen disabled).
     # Historical cure: Citrus / fresh plant food. Almost instant reversal.
     # Biome: desert, tundra-like cold regions (no fresh food)
     # ------------------------------------------------------------------
@@ -160,7 +160,7 @@ REMEDY_REGISTRY: dict[str, dict] = {
         "window": 4,
         "cure_health": 35.0,
         "cure_sick": 80.0,  # fast reversal with correct diet
-        "spread_rate": 0.0,  # non-contagious
+        "spread_rate": 0.0,  # non-spreading
         "initial_sick": 8.0,
         "immunity_after": 100,
         "symptom": {
@@ -174,7 +174,7 @@ REMEDY_REGISTRY: dict[str, dict] = {
     # ------------------------------------------------------------------
     # WOUND FEVER (Sepsis / Erysipelas)
     # Real: Streptococcus/Staph entering through wounds. Historically deadly.
-    # Symptoms: rapid health loss, energy crash, heat.
+    # Indicators: rapid health loss, energy crash, heat.
     # Historical cure: Honey (antibacterial), moss (wound dressing), willow.
     # Biome: any — triggered when agent health drops below threshold
     # ------------------------------------------------------------------
@@ -192,7 +192,7 @@ REMEDY_REGISTRY: dict[str, dict] = {
         "initial_sick": 18.0,  # fast and aggressive onset
         "immunity_after": 150,
         "symptom": {
-            "energy_drain": 0.18,  # most draining disease
+            "energy_drain": 0.18,  # most draining fault
             "hydration_drain": 0.15,
             "health_drain_per_sick": 0.014,  # most dangerous
         },
@@ -210,26 +210,26 @@ ALL_HERB_TAGS: list[str] = sorted(
     }
 )
 
-# Diseases that can spread person-to-person
+# Faults that can spread person-to-person
 CONTACT_FAULTS = {
     did
     for did, rec in REMEDY_REGISTRY.items()
     if rec["vector"] in ("contact", "airborne", "food_water", "wound") and rec["spread_rate"] > 0
 }
 
-# Non-contagious diseases (triggered by environment/diet)
+# Non-spreading faults (triggered by environment/diet)
 ENVIRONMENTAL_FAULTS = {
     did for did, rec in REMEDY_REGISTRY.items() if rec["vector"] in ("dietary", "wound")
 }
 
 
 # ---------------------------------------------------------------------------
-# Infection helper  (called from simulation.spread_diseases)
+# Propagation helper  (called from simulation.spread_faults)
 # ---------------------------------------------------------------------------
 
 
 def try_spread_agent(agent, fault_id: str, biome: str = "") -> bool:
-    """Attempt to infect agent with fault_id. Returns True if infection occurred."""
+    """Attempt to spread agent with fault_id. Returns True if propagation occurred."""
     rec = REMEDY_REGISTRY.get(fault_id)
     if rec is None:
         return False
@@ -248,9 +248,9 @@ def try_spread_agent(agent, fault_id: str, biome: str = "") -> bool:
 
 def try_environmental_propagation(agent, cell: dict) -> bool:
     """
-    Environmental/dietary infection trigger (called from agent.apply_disease).
+    Environmental/dietary propagation trigger (called from agent.apply_fault).
     Scurvy:      triggered in desert biomes when agent has eaten no plant food recently.
-    Wound Fever: triggered when health < 35 (open wounds).
+    Wound Fever: triggered when health < 35 (open wound).
     """
     if getattr(agent, "fault_id", None) is not None:
         return False
@@ -278,9 +278,9 @@ def try_environmental_propagation(agent, cell: dict) -> bool:
 
 def apply_fault_indicators(agent, cell: dict):
     """
-    Apply per-tick symptom effects for agent's current disease.
-    Called from agent.apply_disease() instead of the generic formula.
-    Returns True if symptoms were applied.
+    Apply per-tick indicator effects for agent's current fault.
+    Called from agent.apply_fault() instead of the generic formula.
+    Returns True if indicators were applied.
     """
     fault_id = getattr(agent, "fault_id", None)
     if fault_id is None:
@@ -293,12 +293,12 @@ def apply_fault_indicators(agent, cell: dict):
     sym = rec.get("symptom", {})
     impaired_ratio = agent.impaired / 100.0
 
-    # Core stat drains (scaled by how sick the agent is)
+    # Core stat drains (scaled by how impaired the agent is)
     agent.energy = max(0.0, agent.energy - sym.get("energy_drain", 0.08) * impaired_ratio)
     agent.hydration = max(0.0, agent.hydration - sym.get("hydration_drain", 0.10) * impaired_ratio)
     agent.health = max(0.0, agent.health - sym.get("health_drain_per_sick", 0.008) * agent.impaired)
 
-    # Special symptom flags
+    # Special indicator flags
     if sym.get("regen_block"):
         # Scurvy: prevent natural health regen (handled externally by flag check)
         agent._scurvy_active = True
@@ -315,7 +315,7 @@ def apply_fault_indicators(agent, cell: dict):
     base_recovery = 0.12 * (agent.health / 100.0) + 0.04 * (agent.hydration / 100.0)
     agent.impaired = max(0.0, agent.impaired - base_recovery)
 
-    # Warmth bonus (shelter / fire reduces sickness)
+    # Warmth bonus (shelter / fire reduces impairment)
     warmth = cell.get("warmth", 0.0)
     if warmth > 0.2:
         agent.impaired = max(0.0, agent.impaired - 0.12 * warmth)
@@ -334,8 +334,8 @@ def apply_fault_indicators(agent, cell: dict):
 def _item_potency(tag: str) -> float:
     """Medizinische Potenz eines konsumierten Items -- aus seinen EIGENSCHAFTEN abgeleitet.
 
-    Phase 5 de-scripting: kein disease->ingredient-Lookup. Heilwirkung emergiert aus dem,
-    WAS das Item ist -- aromatische (scent), essbare, ungiftige Stoffe lindern anhand ihres
+    Phase 5 de-scripting: kein fault->ingredient-Lookup. Heilwirkung emergiert aus dem,
+    WAS das Item ist -- aromatische (trail), essbare, ungiftige Stoffe lindern anhand ihres
     Materialvektors; Kraeuter (ohne Vektor) sind generisch medizinisch; Wasser/Nahrung
     unterstuetzen. So koennen Remedies aus Eigenschaften entdeckt werden statt fest
     verdrahtet zu sein.

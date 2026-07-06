@@ -11,7 +11,7 @@ Das System funktioniert vollstaendig ohne hardcodierte Rezepte:
      Temperatur, Krankheit, etc.) wird ein 12-dimensionaler Vektor
      berechnet, der beschreibt welche physikalischen Eigenschaften
      ein Material haben muesste um zu helfen.
-     z.B. bei Hunger:  edibility=1.0, heat=0.0
+     z.B. bei Energy_need:  edibility=1.0, heat=0.0
           bei Kaelte:  heat_emission=1.0, edibility=0.0
           bei Krankheit: toxicity=-1.0, edibility=0.3
 
@@ -137,7 +137,7 @@ def compute_need_vector(agent, cell: dict) -> np.ndarray:
         need[IDX["conductivity"]] += curiosity * 0.3
         need[IDX["light_emission"]] += curiosity * 0.2
 
-    # Endocrine-Modulation: Cortisol verstaerkt alle Beduerfte
+    # Modulation-Modulation: Stress verstaerkt alle Beduerfte
     if hasattr(agent, "modulation"):
         stress = getattr(agent.modulation, "h", [0] * 8)
         stress = stress[1] if len(stress) > 1 else 0.0

@@ -21,7 +21,7 @@ Integration points in agent.py
 -------------------------------
   1. _ensure_new_fields()  -> agent.tom = TheoryOfMind(agent.id)
   2. update_social()       -> agent.tom.observe_agent(other, tick)
-  3. spawn_agent()         -> child.tom.inherit_from(parent.tom)
+  3. spawn_agent()         -> spawn.tom.derive_from(parent.tom)
   4. KnowledgeGraph share  -> gated by tom.should_teach(other_id)
 """
 
@@ -130,7 +130,7 @@ class TheoryOfMind:
     should_teach()          -- decide whether to share knowledge with B
     should_deceive()        -- decide whether to suppress a signal toward B
     infer_knowledge_gap()   -- estimate what B doesn't know that we do
-    inherit_from()          -- cultural transmission at birth
+    derive_from()          -- cultural transmission at spawn
     """
 
     def __init__(self, owner_id: int):
@@ -158,7 +158,7 @@ class TheoryOfMind:
           - other.tribe_id
           - other.tool (visible if adjacent)
           - other.life_stage()    (age group roughly visible)
-          - other.sick > 50       (visibly ill)
+          - other.impaired > 50       (visibly ill)
         """
         oid = other.id
         if oid not in self.models:
@@ -169,7 +169,7 @@ class TheoryOfMind:
         m.last_seen_tick = tick
         m.last_seen_pos = other.pos
 
-        # Infer energy from action mode (sick/slow = low energy)
+        # Infer energy from action mode (impaired/slow = low energy)
         if other.last_action_mode == "sleep":
             m.inferred_energy = max(0.0, m.inferred_energy - 0.05)
         elif other.last_action_mode in ("gather", "hunt"):
@@ -224,7 +224,7 @@ class TheoryOfMind:
         Teaching is favoured when:
           - Other probably doesn't know it yet (knowledge gap)
           - We trust them (same tribe or high trust)
-          - We are not under survival pressure (checked externally via cortisol)
+          - We are not under survival pressure (checked externally via stress)
           - Knowledge is useful (not just noise)
 
         This is a probabilistic decision, not a deterministic rule.
@@ -267,7 +267,7 @@ class TheoryOfMind:
         Deception is favoured when:
           - Low trust of other
           - High resource competition
-          - High aggression gene
+          - High aggression trait
           - Other is not tribe member (checked externally)
 
         Biological analogue: signalling false resource locations to
@@ -301,7 +301,7 @@ class TheoryOfMind:
         return {k for k in own_kg_keys if k not in known_by_other}
 
     # ------------------------------------------------------------------
-    # Cultural transmission at birth
+    # Cultural transmission at spawn
     # ------------------------------------------------------------------
     def derive_from(
         self,
@@ -309,24 +309,24 @@ class TheoryOfMind:
         strength: float = 0.4,
     ) -> None:
         """
-        Child inherits a blurred copy of parent's agent models.
-        Child has never met these agents but has a prior disposition
+        Spawn derives a blurred copy of parent's agent models.
+        Spawn has never met these agents but has a prior disposition
         (prepared trust/distrust) based on parent's experience.
 
         Biological analogue: attachment theory, in-group familiarity bias.
         """
         for oid, parent_model in parent_tom.models.items():
             if parent_model.observation_count < 3:
-                continue  # don't inherit shallow observations
+                continue  # don't derive shallow observations
             spawn_model = AgentModel(agent_id=oid)
-            # Inherit trust estimate with noise
+            # Derive trust estimate with noise
             noise = random.gauss(0, 0.10)
             spawn_model.trust_estimate = max(
                 -1.0, min(1.0, strength * parent_model.trust_estimate + noise)
             )
-            # Inherit role belief
+            # Derive role belief
             spawn_model.role = parent_model.role
-            # Inherit partial knowledge inference (with forgetting)
+            # Derive partial knowledge inference (with forgetting)
             for k in parent_model.inferred_knowledge:
                 if random.random() < strength:
                     spawn_model.inferred_knowledge.add(k)

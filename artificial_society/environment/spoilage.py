@@ -54,9 +54,9 @@ STAGE_TICKS = {
 
 def _spoilage_rate(state: SpoilageState, env: dict) -> float:
     """
-    Rate [0..1] mit der Fermentation voranschreitet.
+    Rate [0..1] mit der Spoilage voranschreitet.
     Hohe Feuchtigkeit + moderate Wärme = schnell.
-    Versiegelt = langsam (kontrollierte Fermentation → Qualität).
+    Versiegelt = langsam (kontrollierte Spoilage → Qualität).
     """
     moisture = env.get("moisture", 0.5)
     temp = env.get("temperature", 20)
@@ -68,7 +68,7 @@ def _spoilage_rate(state: SpoilageState, env: dict) -> float:
 
     rate = moisture * 0.5 + (1.0 - dryness) * 0.3 + temp_factor * 0.2
 
-    # Versiegelt: viel langsamer aber nicht null (anaerobe Fermentation)
+    # Versiegelt: viel langsamer aber nicht null (anaerobe Spoilage)
     if state.sealed:
         rate *= 0.25
 

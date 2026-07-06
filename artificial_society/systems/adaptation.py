@@ -8,7 +8,7 @@ class AdaptationSystem:
         Erzeugt ein Kind mit korrekter Zwei-Eltern-Vererbung.
 
         NEU: Stamm-Zuweisung ist jetzt paritaetisch -- das Kind erbt den
-        Stamm des Elternteils mit hoeherem learning_score (Fitness-Proxy).
+        Stamm des Elternteils mit hoeherem learning_score (Score-Proxy).
         Biologisches Vorbild: In manchen Gesellschaften dominiert der
         Stamm des staerkeren Elternteils (gemischte Systeme).
         Verhindert dass immer nur der Mutter-Stamm weitergegeben wird.
@@ -19,7 +19,7 @@ class AdaptationSystem:
             else:
                 traits = derive_traits(parent)
 
-        # Stamm-Bestimmung: fitness-gewichtet statt immer Mutter
+        # Stamm-Bestimmung: score-gewichtet statt immer Mutter
         if other_parent is not None:
             score_a = max(0.01, getattr(parent, "learning_score", 1.0))
             score_b = max(0.01, getattr(other_parent, "learning_score", 1.0))
@@ -37,7 +37,7 @@ class AdaptationSystem:
         )
         if not getattr(parent, "physics_v2", False):
             # Plan 4: v2-Kinder erben keine gelernten Ressourcen-Erinnerungen.
-            # Gate auf parent.physics_v2 — child.physics_v2 wird erst durch das
+            # Gate auf parent.physics_v2 — spawn.physics_v2 wird erst durch das
             # nachgelagerte attach_body() in spawn_agent_from_parent True.
             if parent.memory.resource_memory:
                 spawn.memory.resource_memory = parent.memory.resource_memory[-3:]

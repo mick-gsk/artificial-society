@@ -1,7 +1,7 @@
 """Lane test: the need->action mapping is learned, not a hardcoded cluster.
 
 Phase 5 de-scripting (Task 4). ``_choose_action_by_need`` previously mapped each need to a
-fixed action cluster (e.g. hunger -> ["eat","place_on_heat","bundle"]). After de-scripting,
+fixed action cluster (e.g. energy_need -> ["eat","place_on_heat","bundle"]). After de-scripting,
 the agent learns from its own reward history which actions pay off under each need, so an
 action *outside* the old cluster can come to dominate once it proves rewarding.
 """

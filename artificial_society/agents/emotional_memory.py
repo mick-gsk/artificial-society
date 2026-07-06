@@ -20,9 +20,9 @@ with the following human-analogous properties:
    euphoric flashbulb memories in humans.
 
 3. TRAUMA THRESHOLD
-   If cortisol > 0.80 at encoding time, the trace is marked as
+   If stress > 0.80 at encoding time, the trace is marked as
    'traumatic'. Traumatic traces never fully decay (floor at 0.20)
-   and strongly bias future cortisol responses to similar stimuli.
+   and strongly bias future stress responses to similar stimuli.
    Analogous to PTSD-like re-experiencing.
 
 4. EXTINCTION LEARNING
@@ -35,13 +35,13 @@ with the following human-analogous properties:
 5. MOOD BASELINE
    A persistent mood float (-1..1) is computed as the EMA of recent
    trace valences, weighted by arousal. This mood:
-     - Biases serotonin and dopamine baseline
+     - Biases satisfaction and reward baseline
      - Colours new experience encoding (negative mood = more negative
        encoding of ambiguous events -- depressive realism)
    Analogous to affective priming and mood-congruent memory.
 
 6. CONTEXT-DEPENDENT RETRIEVAL
-   Traces stored with similar hormonal context (cortisol, serotonin
+   Traces stored with similar modulatory context (stress, satisfaction
    levels at encoding time) are more easily retrieved in matching
    states. Analogous to state-dependent memory in humans.
 
@@ -59,11 +59,11 @@ Integration
 -----------
 Called from agent.update() after each tick:
   emotional_memory.encode_experience(stimulus, valence, arousal,
-                                     context_hormones, tick)
+                                     context_modulators, tick)
 
-Endocrine modulation (applied each tick):
-  mods = emotional_memory.endocrine_modulations()
-  -> cortisol_delta, serotonin_delta, dopamine_delta, adrenaline_delta
+Modulation modulation (applied each tick):
+  mods = emotional_memory.modulation_modulations()
+  -> stress_delta, satisfaction_delta, reward_delta, arousal_delta
 
 Reward signal for brain:
   reward_delta = emotional_memory.reward_signal()
@@ -141,7 +141,7 @@ class EmotionalTrace:
     traumatic       : bool  -- never fully fades
     consolidation   : float -- 0..1, how well consolidated
     tick_encoded    : int
-    context_hormones: list  -- [cortisol, serotonin, dopamine, adrenaline] at encoding
+    context_modulators: list  -- [stress, satisfaction, reward, arousal] at encoding
     extinction_count: int   -- safe re-exposures so far
     category        : str
     last_retrieved  : int
@@ -155,7 +155,7 @@ class EmotionalTrace:
     traumatic: bool
     consolidation: float
     tick_encoded: int
-    context_modulators: list  # [cortisol, serotonin, dopamine, adrenaline]
+    context_modulators: list  # [stress, satisfaction, reward, arousal]
     extinction_count: int = 0
     category: str = "unknown"
     last_retrieved: int = 0
@@ -189,7 +189,7 @@ class EmotionalMemory:
         stimulus: str,
         valence: float,
         arousal: float,
-        context_modulators: list,  # [cortisol, serotonin, dopamine, adrenaline]
+        context_modulators: list,  # [stress, satisfaction, reward, arousal]
         tick: int,
         mood_bias: bool = True,
     ) -> EmotionalTrace:
@@ -197,7 +197,7 @@ class EmotionalMemory:
         Encode a new emotional experience.
 
         Flashbulb: high arousal -> slow decay, high consolidation.
-        Trauma:    cortisol > threshold -> traumatic flag.
+        Trauma:    stress > threshold -> traumatic flag.
         Mood bias: negative mood slightly darkens ambiguous valence.
         Generalisation: spread weak trace to category siblings.
 
@@ -283,7 +283,7 @@ class EmotionalMemory:
         Returns True if extinction reduced fear.
 
         Must be called when agent encounters stimulus without negative
-        outcome (e.g. approaches predator territory safely, eats herb
+        outcome (e.g. approaches attacker territory safely, eats herb
         without illness).
         """
         trace = self._find_trace(stimulus)
@@ -313,7 +313,7 @@ class EmotionalMemory:
         tick: int,
     ) -> Optional[EmotionalTrace]:
         """
-        Retrieve trace for stimulus, boosted if current hormonal context
+        Retrieve trace for stimulus, boosted if current modulatory context
         matches encoding context (state-dependent memory).
 
         Side-effect: retrieval strengthens the trace slightly
@@ -390,21 +390,21 @@ class EmotionalMemory:
         return max(desires, key=lambda x: x[1])[0]
 
     # ------------------------------------------------------------------
-    # Endocrine modulations
+    # Modulation modulations
     # ------------------------------------------------------------------
     def modulation_modulations(self) -> dict:
         """
-        Compute per-tick hormone deltas driven by emotional memory state.
+        Compute per-tick modulator deltas driven by emotional memory state.
 
-        Returns dict with small float deltas to add to hormone levels.
+        Returns dict with small float deltas to add to modulator levels.
         These are applied by agent.py each tick.
 
         Biological analogues:
-          Traumatic traces -> elevated cortisol baseline (PTSD-like)
-          Positive mood    -> serotonin + dopamine boost
-          Negative mood    -> cortisol elevation, serotonin suppression
-          High fear traces -> adrenaline priming near fear stimuli
-          Flashbulb traces -> contextual adrenaline when retrieved
+          Traumatic traces -> elevated stress baseline (PTSD-like)
+          Positive mood    -> satisfaction + reward boost
+          Negative mood    -> stress elevation, satisfaction suppression
+          High fear traces -> arousal priming near fear stimuli
+          Flashbulb traces -> contextual arousal when retrieved
         """
         stress_delta = 0.0
         satisfaction_delta = 0.0
@@ -416,16 +416,16 @@ class EmotionalMemory:
             ea = t.effective_arousal()
 
             if t.traumatic and t.strength > TRAUMA_FLOOR:
-                # Chronic low-level cortisol elevation from trauma
+                # Chronic low-level stress elevation from trauma
                 stress_delta += 0.004 * t.strength
                 arousal_delta += 0.002 * t.strength
 
             if ev < -0.2:
-                # Fear/pain memory -> cortisol up, serotonin down
+                # Fear/pain memory -> stress up, satisfaction down
                 stress_delta += 0.003 * abs(ev)
                 satisfaction_delta -= 0.002 * abs(ev)
             elif ev > 0.2:
-                # Positive memory -> serotonin + dopamine up
+                # Positive memory -> satisfaction + reward up
                 satisfaction_delta += 0.002 * ev
                 reward_delta += 0.001 * ev
 
@@ -489,7 +489,7 @@ class EmotionalMemory:
         self.mood *= 1.0 - 0.003
 
     # ------------------------------------------------------------------
-    # Inheritance (called at birth from parent)
+    # Derivation (called at spawn from parent)
     # ------------------------------------------------------------------
     def derive_from(
         self,
@@ -497,11 +497,11 @@ class EmotionalMemory:
         strength_factor: float = 0.30,
     ) -> None:
         """
-        Child inherits a blurred copy of parent's strongest emotional
+        Spawn derives a blurred copy of parent's strongest emotional
         traces. This implements:
-          - Epigenetic trauma transmission (parent's fear -> child's
-            elevated baseline cortisol for feared stimuli)
-          - Positive cultural priming (parent's joy -> child's affinity)
+          - Epigenetic trauma transmission (parent's fear -> spawn's
+            elevated baseline stress for feared stimuli)
+          - Positive cultural priming (parent's joy -> spawn's affinity)
 
         Only highly consolidated, strong parent traces are transmitted.
         Strength is multiplied by strength_factor (default 0.30).
@@ -514,15 +514,15 @@ class EmotionalMemory:
                 valence=t.valence * 0.6,  # muted but directional
                 arousal=t.arousal * 0.5,
                 strength=t.strength * strength_factor,
-                decay_rate=BASE_DECAY_RATE,  # not inherited as flashbulb
-                traumatic=False,  # trauma not directly inherited
+                decay_rate=BASE_DECAY_RATE,  # not derived as flashbulb
+                traumatic=False,  # trauma not directly derived
                 consolidation=t.consolidation * 0.5,
                 tick_encoded=self._tick,
                 context_modulators=[0.2, 0.45, 0.3, 0.05],  # default baseline
                 category=t.category,
             )
             self._add_trace(spawn_trace)
-        # Mood inheritance: very weak
+        # Mood derivation: very weak
         self.mood = parent_em.mood * 0.15
 
     # ------------------------------------------------------------------
@@ -603,8 +603,8 @@ class EmotionalMemory:
         h2: list,
     ) -> float:
         """
-        Cosine-like similarity between two hormone context vectors.
-        Both are [cortisol, serotonin, dopamine, adrenaline].
+        Cosine-like similarity between two modulator context vectors.
+        Both are [stress, satisfaction, reward, arousal].
         """
         if not h1 or not h2:
             return 0.0

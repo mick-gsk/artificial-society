@@ -6,7 +6,7 @@ EpisodicMemory  – NGU-style k-NN novelty score (state-space distance,
 KnowledgeGraph  – Persistent causal fact store.  Agents record which
                    (action, mat_a, mat_b) combinations succeeded or
                    failed, accumulate confidence, and share knowledge
-                   via inheritance and imitation.
+                   via derivation and imitation.
 
 Emergenz-Erweiterungen (v3):
   - CompositeAction: Erfolgreiche Aktionssequenzen werden als neue Makro-
@@ -43,7 +43,7 @@ class EpisodicMemory:
         self.epsilon = epsilon
         self.buffer: Deque[torch.Tensor] = deque(maxlen=capacity)
         # --- Tier-3 perf: cache the stacked buffer; rebuild only when it changes.
-        # `_version` bumps on every mutation; `stacked()` rebuilds lazily on a miss,
+        # `_version` bumps on every perturbation; `stacked()` rebuilds lazily on a miss,
         # so the per-rollout re-stack (and, on GPU, the host->device upload) happens
         # at most once per buffer change instead of on every read.
         self._version: int = 0
@@ -59,7 +59,7 @@ class EpisodicMemory:
         """Buffer stacked into one ``(N, D)`` tensor, cached across reads.
 
         Identical to ``torch.stack(list(self.buffer))`` (optionally moved to
-        ``device``); rebuilt only when the buffer mutates. Returns ``None`` for
+        ``device``); rebuilt only when the buffer perturbs. Returns ``None`` for
         an empty buffer. When the cache already lives on ``device`` the ``.to``
         is a no-op, which is what removes the repeated GPU re-upload.
         """
@@ -226,10 +226,10 @@ class KnowledgeGraph:
     best_macro = kg.best_macro_action(min_confidence=0.3)
     # -> CompositeAction or None
 
-    Inheritance / Imitation
+    Derivation / Imitation
     -----------------------
-    child_kg.inherit_from(parent_kg)  – copies high-confidence facts with noise
-    child_kg.imitate_from(other_kg)   – blends in another agent's knowledge
+    spawn_kg.derive_from(parent_kg)  – copies high-confidence facts with noise
+    spawn_kg.imitate_from(other_kg)   – blends in another agent's knowledge
     """
 
     ACTIONS = ("rub", "strike", "bind", "bundle", "place_on_heat", "blow", "eat")
@@ -382,7 +382,7 @@ class KnowledgeGraph:
     ) -> None:
         """
         Blend in another agent's knowledge during social observation.
-        Weaker than inheritance – cultural learning is noisier.
+        Weaker than derivation – cultural learning is noisier.
         Überträgt jetzt auch Makro-Aktionen (NEU).
         """
         for key, fact in other.facts.items():

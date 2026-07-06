@@ -67,7 +67,7 @@ PLANT_TEMP_OPTIMUM = 18.0
 PLANT_TEMP_TOLERANCE = 60.0
 PLANT_TEMP_FLOOR = 0.5
 
-# Cold cells read as more dangerous (exposure + scarce forage), so agents learn
+# Cold cells read as more dangerous (exposure + scarce gather), so agents learn
 # to avoid and migrate out of winter zones. This is perceptual -- danger is not
 # directly lethal -- but it drives the migration that turns winter into a
 # selection event.
@@ -148,7 +148,7 @@ def apply_consumption(world, x, y, plant=0.0, meat=0.0, water=0.0):
 def add_carcass(world, x, y, energy_value):
     cell = world.get_cell(x, y)
     # Energy conservation (Phase 4): a corpse is worth exactly `energy_value` of
-    # harvestable food, split across the two consumable pools a forager can reach
+    # harvestable food, split across the two consumable pools a gatherer can reach
     # (carcasses + meat_food). They must SUM to energy_value, not each receive it
     # -- otherwise a death mints ~1.45x energy now that the carcass-field bug is
     # fixed and the carcasses pool is actually edible. The meat_food share keeps a

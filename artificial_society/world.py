@@ -122,14 +122,14 @@ class World:
         y = clamp(y, 0, self.height - 1)
         return CellView(self, int(x), int(y))
 
-    # -- Authoritative cell-mutation API ------------------------------------
-    # External systems should mutate cells through these instead of writing
+    # -- Authoritative cell-perturbation API ------------------------------------
+    # External systems should perturb cells through these instead of writing
     # `world.cells[y][x][...]` directly, so World stays the single source of
     # truth for cell state. Behaviour is identical to the in-place writes they
     # replace (no implicit clamping — callers that need bounds compute them and
     # call set_cell). World-material seeding (systems/invention.py) routes through
     # this API. Remaining direct mutators are deferred follow-ups: agent
-    # foraging/consumption in agents/agent.py (migrated with the Phase 1b
+    # gathering/consumption in agents/agent.py (migrated with the Phase 1b
     # un-patching), the territory/growth/herbs writes (environment lane), and the
     # resources.py regrowth math (the privileged intrinsic cell-update model).
 
@@ -185,7 +185,7 @@ class World:
 
         Delegates to the ``events`` module: storms/droughts/fires/blight emerge
         from the world state (storm_risk, dryness+heat, fuel+ignition, moist
-        dense vegetation) instead of the old ``tick % 55`` timer + flat dice at
+        dense resource_cover) instead of the old ``tick % 55`` timer + flat dice at
         a uniform-random position, and the warm-up gate is enforced again.
         """
         update_world_events(self, tick, season_state, weather_state)

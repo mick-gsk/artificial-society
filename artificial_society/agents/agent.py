@@ -68,16 +68,16 @@ from artificial_society.systems.social_learning import social_learning_step
 MAX_ENERGY = 240.0
 INITIAL_ENERGY = 120.0
 SPAWN_START_ENERGY = 100.0
-# A newborn's start energy is TRANSFERRED from the mother at birth (capped so she
-# keeps this floor), not minted: the old net mint per birth (100 start vs the
+# A newborn's start energy is TRANSFERRED from the mother at spawn (capped so she
+# keeps this floor), not minted: the old net mint per spawn (100 start vs the
 # smaller parental conception cost) subsidised population overshoot past the
-# world's food carrying capacity, ending in mass starvation.
+# world's food carrying capacity, ending in mass depletion.
 SPAWN_ENERGY_FLOOR = 10.0
 REPLICATION_ENERGY = 60.0
 REPLICATION_COST = 20.0
 REPLICATION_COOLDOWN = 100
-# Density-dependent fertility. Personal energy alone (>= REPRODUCTION_ENERGY) is a
-# poor breeding cue: agents hoard up to MAX_ENERGY (240) and so breed off fat
+# Density-dependent fertility. Personal energy alone (>= REPLICATION_ENERGY) is a
+# poor replication cue: agents hoard up to MAX_ENERGY (240) and so replicate off fat
 # reserves banked when food was plentiful, blind to how crowded the ground has
 # become. A mother now also requires the local food standing stock, shared across
 # the mouths already nearby, to clear a floor — the logistic negative feedback of a
@@ -85,7 +85,7 @@ REPLICATION_COOLDOWN = 100
 REPLICATION_SENSE_RADIUS = 2
 REPLICATION_MIN_FOOD_PER_CAPITA = 6.0
 # Tuned values previously applied at import by emergence_runtime; now the source of truth.
-MIN_REPLICATION_AGE = 60  # int(life_stage.CHILD_MAX * 0.5)
+MIN_REPLICATION_AGE = 60  # int(life_stage.SPAWN_MAX * 0.5)
 SPAWN_DELAY_TIME = 40
 AGE_LIMIT = 5000
 ELDER_AGE = 3500  # life_stage.ADULT_MAX
@@ -102,7 +102,7 @@ SLEEP_DRIVE_THRESHOLD = 0.45
 SLEEP_ENERGY_REGEN = 0.40
 SLEEP_HEALTH_REGEN = 0.25
 
-STAGE_SPAWN = 120  # life_stage.CHILD_MAX
+STAGE_SPAWN = 120  # life_stage.SPAWN_MAX
 STAGE_ELDER = ELDER_AGE  # life_stage.ADULT_MAX (3500)
 
 COOP_GATHER_BONUS_PER_MEMBER = 0.14
@@ -239,7 +239,7 @@ def attach_body(agent) -> None:
     """Physik-v2-Embodiment: Body + Hände aus dem strength-Gen, v2-Brain,
     Causal Model und Novelty-Buckets (Plan 3b). Zieht RNG nur im v2-Pfad.
 
-    Das v2-Brain wird VOR inherit_weights_from gebaut (spawn_child_from_parent
+    Das v2-Brain wird VOR derive_weights_from gebaut (spawn_agent_from_parent
     ruft attach_body zuerst) — Eltern- und Kind-Brain sind dann form-gleich.
     """
     agent.physics_v2 = True
@@ -607,7 +607,7 @@ class Agent:
         # wiped out next tick and effectively minted energy. The energy gained now
         # equals the food removed (1:1), a genuine transfer from the world.
         if diet < 0 or self.physics_v2:
-            # Herbivore (v1) bzw. Physik-v2-Modus: nur Pflanzen-Zell-Foraging.
+            # Herbivore (v1) bzw. Physik-v2-Modus: nur Pflanzen-Zell-Gathering.
             # v2 (B6): Zell-Fleisch/Aas-Pools sind AUS — Fleisch existiert nur
             # noch als Kadaver-OBJEKT (B3); ein einziger Pfad je Kalorienquelle.
             # Herbivore: plant-food only.
@@ -746,8 +746,8 @@ class Agent:
             a for a in nearby if a.tribe_id == self.tribe_id and self.tribe_id is not None
         ]
         self.modulation.apply_social_signal(len(nearby), bool(same_tribe))
-        # Redistributive group-foraging bonus (Phase 4): instead of minting
-        # `forage_bonus` energy from nothing, the better-off nearby members pool a
+        # Redistributive group-gathering bonus (Phase 4): instead of minting
+        # `gather_bonus` energy from nothing, the better-off nearby members pool a
         # little energy for the active cooperator. Zero-sum: self gains exactly what
         # the donors actually give (the MAX_ENERGY clamp can only lose energy, never
         # create it).
@@ -1530,7 +1530,7 @@ class Agent:
         cognition_mult = mods.get("cognition", 1.0)
         if self.physics_v2:
             # C3: nur Überleben + Neugier. Der bis hier akkumulierte v1-Reward
-            # (Forage-Event, Koop, Attack, Territorium, Sprache, Social
+            # (Gather-Event, Koop, Attack, Territorium, Sprache, Social
             # Learning, Trade) wird bewusst VERWORFEN — die Mechanik lief, sie
             # zahlt nur nicht (B6). Keine cognition-Skalierung: C3 exakt.
             # r_death (−3.0) kommt NICHT hier, sondern genau einmal in

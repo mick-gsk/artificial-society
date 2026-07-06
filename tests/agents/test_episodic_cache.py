@@ -45,9 +45,9 @@ def test_stacked_cache_reused_until_perturbation():
     em = EpisodicMemory(capacity=32, k=4)
     _fill(em, 10)
     first = em.stacked()
-    # no mutation -> same cached object returned (the whole point of the cache)
+    # no perturbation -> same cached object returned (the whole point of the cache)
     assert em.stacked() is first
-    em.novelty(torch.zeros(DIM))  # mutation bumps _version
+    em.novelty(torch.zeros(DIM))  # perturbation bumps _version
     rebuilt = em.stacked()
     assert rebuilt is not first
     assert torch.equal(rebuilt, torch.stack(list(em.buffer)))

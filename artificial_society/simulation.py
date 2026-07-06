@@ -143,7 +143,7 @@ class Simulation:
         self.physics_v2 = bool(physics_v2)
         if seed is not None:
             seed_all(seed)
-            # Reset the agent id sequence so a seed reproduces the same ids too.
+            # Reset the agent id sequence so a seed replicates the same ids too.
             Agent.id_counter = 0
         # Each simulation starts with fresh emergent-discovery / language / sequence
         # state, so a run is reproducible and independent of any prior simulation in
@@ -207,24 +207,24 @@ class Simulation:
         spawn = self.adaptation.make_spawn(parent, x, y, traits=traits, other_parent=other_parent)
         spawn.hidden_state = spawn.brain.initial_hidden()
         spawn.spawn_tick = self.tick
-        # Birth is an energy TRANSFER from the mother, not minting: the child
+        # Spawn is an energy TRANSFER from the mother, not minting: the spawn
         # keeps at most its default start energy, the mother keeps at least
-        # BIRTH_ENERGY_FLOOR — a starving mother bears a weak child. (Energy only;
-        # the v2 path deliberately inherits no learned state — Plan 4.)
+        # SPAWN_ENERGY_FLOOR — a depleting mother bears a weak spawn. (Energy only;
+        # the v2 path deliberately derives no learned state — Plan 4.)
         transfer = min(spawn.energy, max(0.0, parent.energy - SPAWN_ENERGY_FLOOR))
         spawn.energy = transfer
         parent.energy -= transfer
         if self.physics_v2:
-            # strength wird über den eigenen v2-Pfad vererbt (inherit_genes
+            # strength wird über den eigenen v2-Pfad vererbt (derive_traits
             # überspringt es — Golden), DANN baut attach_body den Body daraus.
-            # ALIAS beachten: `inherit_strength` ist in dieser Funktion bereits
-            # die lokale Gewichts-Vererbungsstärke — daher inherit_strength_gene.
+            # ALIAS beachten: `derive_strength` ist in dieser Funktion bereits
+            # die lokale Gewichts-Vererbungsstärke — daher derive_strength_trait.
             derive_strength_trait(spawn.traits, parent, other_parent)
             attach_body(spawn)
         if not self.physics_v2:
             # Plan 4 (Kultur-Korrektur): im v2-Pfad wird KEIN Gelerntes vererbt —
             # Kind startet mit frischem Netz (attach_body) + leeren Lern-Stores.
-            # Nur Gene (inkl. strength) gehen ans Kind. Kultur überlebt allein
+            # Nur Trait (inkl. strength) gehen ans Kind. Kultur überlebt allein
             # über soziales Lernen zu Lebzeiten.
             derive_strength = max(
                 0.20, min(0.75, 0.75 - (spawn.traits["plasticity"] - 0.3) / (1.8 - 0.3) * 0.55)
@@ -391,7 +391,7 @@ class Simulation:
         # Kin selection, made energy-conservative (Phase 4): instead of minting a
         # per-agent reward from nothing, each tribe taxes a small fraction of every
         # member's energy into a pool and redistributes it weighted by kin
-        # investment (tribe ties + number of children). Energy only ever moves
+        # investment (tribe ties + number of spawn_count). Energy only ever moves
         # *within* a tribe, so total energy is conserved (the MAX_ENERGY clamp can
         # only sink energy, never create it).
         if self.physics_v2:
@@ -580,10 +580,10 @@ class Simulation:
     def step(self):
         """Advance the simulation by exactly one tick.
 
-        Single, explicit per-tick pipeline. It reproduces only the operations
+        Single, explicit per-tick pipeline. It replicates only the operations
         that are *effective* in today's live loop, so moving off the
         bootstrap/monkeypatch loop is behaviour-preserving. Operations the old
-        live loop silently dropped — world regrowth, births, disease spread,
+        live loop silently dropped — world regrowth, births, fault spread,
         society systems, statistics — are re-wired in Phase 2 and marked
         TODO(phase2) below.
         """
@@ -595,8 +595,8 @@ class Simulation:
         # TODO(phase2): self.world.update_environment(season_state, weather_state, tick)
 
         # --- per-agent update ---
-        # A non-None return from Agent.update is a completed pregnancy: spawn the
-        # child with full genetic / brain / knowledge inheritance (spawn_agent_from_parent).
+        # A non-None return from Agent.update is a completed pending_spawn: spawn the
+        # spawn with full trait_based / brain / knowledge derivation (spawn_agent_from_parent).
         new_spawns = []
         for agent in list(self.agents):
             if not agent.alive:
@@ -630,7 +630,7 @@ class Simulation:
         # Registered systems with a tick hook run here in ascending `order`. The
         # built-ins are dormant (tick=None) so this is a no-op today — it is the
         # seam a newly-added system ticks through without editing step(). Re-wiring
-        # the dormant built-ins (disease spread, society systems, stats) is the
+        # the dormant built-ins (fault spread, society systems, stats) is the
         # separate, intentional Phase 2 work.
         registry.tick_systems(self, tick)
 

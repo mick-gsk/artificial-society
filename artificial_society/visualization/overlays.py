@@ -261,7 +261,7 @@ def draw_dashboard(screen, x, y, w, h, stats, tribes, technology, font, font_bol
     pygame.draw.line(screen, SEP, (x + 6, yy), (x + w - 6, yy), 1)
     yy += 6
 
-    # Disease legend
+    # Fault legend
     _label(screen, small, "Disease ring colors", pad, yy, TEXT_DIM)
     yy += 15
     for _, dname, dcol in FAULT_ICONS:

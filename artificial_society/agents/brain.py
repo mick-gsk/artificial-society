@@ -23,21 +23,21 @@ USE_FP16 = device.type == "cuda"  # FP16 autocast nur auf GPU aktivieren
 
 # Feature layout (57 total):
 #   0..3   body state (energy, health, hydration, age)
-#   4..14  cell percepts (food, water, temp, danger, disease, soil, pollution,
+#   4..14  cell percepts (food, water, temp, danger, fault, soil, pollution,
 #          carrying_capacity, moisture, ash, disturbance)
 #   15..16 social (nearby count, friends count)
-#   17..20 genes (curiosity, aggression, cooperation, sociality)
+#   17..20 traits (curiosity, aggression, cooperation, sociality)
 #   21..30 equipment + episodic extras (tool, trust, resources x3, last_reward,
 #          herb_presence, warmth, mat_count, inv_size)
 #   31..33 structure features (camp_level, well_level, farm_level)
 #   34..36 causal memory features (3)
 #   37..48 episodic memory retrieval (12)
-#   49..56 endocrine hormones: cortisol, adrenaline, melatonin, serotonin,
-#          dopamine, oxytocin, inflammation, metabolism
+#   49..56 modulation modulators: stress, arousal, rest, satisfaction,
+#          reward, affiliation, irritation, upkeep
 #
 # IMPORTANT: The brain never receives raw world labels like 'light',
-# 'is_night', 'sleep_pressure', or 'disease_level'.  All such information
-# reaches the brain ONLY through its hormonal consequences.  The agent
+# 'is_night', 'sleep_pressure', or 'fault_level'.  All such information
+# reaches the brain ONLY through its modulatory consequences.  The agent
 # must learn the correlations on its own.
 INPUT_SIZE = 57
 HIDDEN_SIZE = 96
@@ -122,7 +122,7 @@ LOGSTD_FLOOR_NEW = -0.8  # log_std-Floor der neuen Köpfe
 DEATH_REWARD_V2 = -3.0  # Terminal-Malus (C3), gemünzt in finalize_terminal
 
 # Neugier-Target (C4.1): selbstbezügliche/nichtstationäre Obs-Dims raus —
-# last_reward (26), Causal-Memory (34–36), Episodic-Retrieval (37–48), Hormone (49–56).
+# last_reward (26), Causal-Memory (34–36), Episodic-Retrieval (37–48), Modulator (49–56).
 OBS_TARGET_EXCLUDED = frozenset({26} | set(range(34, 57)))
 OBS_TARGET_INCLUDED_IDX = tuple(i for i in range(INPUT_SIZE) if i not in OBS_TARGET_EXCLUDED)
 CURIO_TARGET_DIM = len(OBS_TARGET_INCLUDED_IDX) + OBJ_SLOTS * SLOT_FEATS_V2  # 33 + 170 = 203
@@ -164,7 +164,7 @@ class Brain(nn.Module):
         action_size = 7 (Emergenz v3):
           0: move_x
           1: move_y
-          2: forage
+          2: gather
           3: cooperate
           4: attack
           5: build

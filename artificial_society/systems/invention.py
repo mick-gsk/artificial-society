@@ -18,7 +18,7 @@ EMERGENZ-ERWEITERUNGEN (v2):
     können also aus bereits verarbeiteten Materialien weitere neue Dinge
     erfinden (Parfüm-Prinzip: erst Öl, dann Öl+Blüten → Parfüm).
   - Bedürfnisgetriebene Aktionswahl: Je nach aktuellem Zustand des Agenten
-    (Hunger, Kälte, Krankheit, Neugier) werden passende Actions priorisiert.
+    (Energy_need, Kälte, Krankheit, Neugier) werden passende Actions priorisiert.
     Erfindungen entstehen aus Not, nicht aus Zufall.
 
 FIX (v3):
@@ -305,7 +305,7 @@ def tick_materials(world):
 def seed_world_materials(world):
     """
     Platziert Seed-Materialien in der Welt nach Biom.
-    Neue scent/solubility-Materialien werden in passenden Biomen geseeded:
+    Neue trail/solubility-Materialien werden in passenden Biomen geseeded:
       flower_petals  → grassland, forest, swamp
       tree_resin     → forest
       crushed_herb   → grassland, swamp  (als rohe herb-Pflanze)
@@ -436,7 +436,7 @@ def _choose_action_by_need(agent, causal_mem, mat_a: str, mat_b, cell: dict) -> 
     SCHICHT 2: Bedürfnisgetriebene Aktionswahl — gelernt statt hartkodiert (Phase 5).
 
     Statt fester ACTIONS_FOR_*-Cluster lernt der Agent pro Bedarf
-    (Hunger/Kälte/Krankheit/Neugier), welche Aktionen sich auszahlen — aus dem eigenen
+    (Energy_need/Kälte/Krankheit/Neugier), welche Aktionen sich auszahlen — aus dem eigenen
     Reward-Verlauf (_record_need_action). Exploration bleibt erhalten, damit neue
     Zuordnungen überhaupt entdeckt werden.
     """

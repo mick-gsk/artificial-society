@@ -71,7 +71,7 @@ def _tick_stats(sim, tick: int) -> None:
 # `order` preserves the original __init__ construction sequence and the
 # seasons -> weather -> world_regrowth dependency chain (world_regrowth is order 25).
 # fault (order 35) is a new self-registering module (systems/fault.py), sitting between
-# tribes and economy so the same tick's stats/prices reflect new infections.
+# tribes and economy so the same tick's stats/prices reflect new propagation.
 register_system("seasons", lambda sim: SeasonCycle(), order=10, tick=_tick_seasons)
 register_system("weather", lambda sim: WeatherSystem(), order=20, tick=_tick_weather)
 register_system("tribes", lambda sim: TribeSystem(), order=30, tick=_tick_tribes)

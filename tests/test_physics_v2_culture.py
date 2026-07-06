@@ -1,4 +1,4 @@
-"""Plan 4: v2 vererbt kein Gelerntes bei Geburt — nur Gene. v1 byte-identisch (Golden)."""
+"""Plan 4: v2 vererbt kein Gelerntes bei Geburt — nur Trait. v1 byte-identisch (Golden)."""
 
 from __future__ import annotations
 
@@ -97,7 +97,7 @@ def test_spawn_agent_wird_nie_mit_parent_aufgerufen():
 
 
 def test_latente_derive_from_methoden_feuern_nicht_bei_geburt():
-    """StrategySystem.inherit_from / EpisodicStrategyMemory.inherit_from sind
+    """StrategySystem.derive_from / EpisodicStrategyMemory.derive_from sind
     uncalled — Agenten tragen die Attribute nicht. Wächter gegen versehentliches
     Verdrahten."""
     sim = _v2_sim()
@@ -112,7 +112,7 @@ def test_v2_kind_erbt_weiter_trait_und_trust_prior():
     parent = sim.agents[0]
     parent.tribe_id = 1  # frisches Sim hat tribe_id=None → trust-Zweig feuerte nie
     # strength aus den übergebenen Genen entfernen → prüft den v2-Pfad
-    # (inherit_strength_gene) echt, statt tautologisch die Dict-Kopie
+    # (derive_strength_trait) echt, statt tautologisch die Dict-Kopie
     traits = dict(parent.traits)
     traits.pop("strength", None)
     spawn = sim.spawn_agent_from_parent(parent, traits)

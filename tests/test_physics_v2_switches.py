@@ -26,7 +26,7 @@ def test_v2_gather_laesst_fleisch_zellpools_unangetastet():
     cell = sim.world.get_cell(x, y)
     assert cell["carcasses"] == pytest.approx(50.0)
     assert cell["meat_food"] == pytest.approx(50.0)
-    assert cell["plant_food"] < 20.0  # Pflanzen-Zell-Foraging bleibt AN
+    assert cell["plant_food"] < 20.0  # Pflanzen-Zell-Gathering bleibt AN
 
 
 def test_v1_gather_unveraendert():

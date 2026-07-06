@@ -25,7 +25,7 @@ class StatisticsTracker:
         avg_reward = sum(a.last_reward for a in live) / pop if pop else 0
         avg_loss = sum(a.last_loss for a in live) / pop if pop else 0
         # Life-stage counts. ``life_stage`` is a *method* on the agent returning
-        # 'child'/'adult'/'elder' (== the STAGE_* constants); calling it is required —
+        # 'spawn'/'adult'/'elder' (== the STAGE_* constants); calling it is required —
         # ``getattr(a, "life_stage", ...)`` returned the bound method, so every count was 0.
         n_spawn = sum(1 for a in live if a.life_stage() == STAGE_SPAWN)
         n_adult = sum(1 for a in live if a.life_stage() == STAGE_ADULT)

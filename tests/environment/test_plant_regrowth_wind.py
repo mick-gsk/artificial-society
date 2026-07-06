@@ -3,9 +3,9 @@
 The plant update used to subtract a *flat* ``0.012 * wind`` every tick. Wind
 swings 0..8 (mean ~5), so that term stripped ~0.06 plant/cell/tick — 6-9x the
 ~0.01/tick regrowth — from *every* cell regardless of how much was standing.
-Vegetation therefore collapsed to zero within a few hundred ticks and never
+Resource_cover therefore collapsed to zero within a few hundred ticks and never
 recovered, even with nobody eating it (verified by a no-consumption run), which
-capped the whole world at a starvation carrying capacity.
+capped the whole world at a depletion carrying capacity.
 
 Wind damage is now proportional to the standing biomass it acts on
 (``WIND_PLANT_LOSS * wind * plant_food``): it still trims lush cells but cannot

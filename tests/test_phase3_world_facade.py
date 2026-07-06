@@ -1,4 +1,4 @@
-"""Phase 3: World exposes a small authoritative cell-mutation API.
+"""Phase 3: World exposes a small authoritative cell-perturbation API.
 
 External systems should route cell writes through World instead of reaching into
 `world.cells[y][x]` directly. The façade must be behaviour-identical to the in-place
@@ -55,7 +55,7 @@ _DIRECT_CELL_WRITE = re.compile(r"""\b(?:cell|ncell)\[['"][a-z_]+['"]\]\s*(?:[-+
 
 
 def test_facade_completeness_no_direct_cell_writes_outside_world():
-    """SSOT regression guard: every module except world.py routes cell mutation through
+    """SSOT regression guard: every module except world.py routes cell perturbation through
     the World façade. A new direct `cell["x"] = ...` anywhere else re-fragments the state
     ownership Phase 3 consolidated — this test fails until it goes through set_cell/adjust_cell."""
     pkg = pathlib.Path(__file__).resolve().parent.parent / "artificial_society"

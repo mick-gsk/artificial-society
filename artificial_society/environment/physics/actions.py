@@ -2,7 +2,7 @@
 
 Dieses Modul bindet Body/Hands/Prozesse/ObjectLayer — es kennt weder Gehirn
 noch Belohnung. Alle Konstanten sind real geankert (cal-Einträge unten,
-Gate-pflichtig über CALIBRATED_ACTION_PARAMS). Energie-Konvention: nutrition
+Gate-pflichtig über CALIBRATED_ACTION_PARAMS). Energie-Konvention: resource_value
 ist kcal/100 g ÷ 400 (raw_meat 0.35 ≙ 140 kcal/100 g), gekoppelt an die
 v1-Energieskala über SIM_ENERGY_PER_KCAL (1-kg-Fleischmahlzeit ≙ MEAT_ENERGY 45).
 """
@@ -347,8 +347,8 @@ def do_cut(
 
 def do_eat(body: Body, hands: Hands, layer, pos, target: PhysObject) -> ActionResult:
     """Ein Biss pro Tick: bite = min(BITE_MASS_KG, Restmasse). Energie-Kopplung
-    (B5): energy += nutrition·4000·bite·SIM_ENERGY_PER_KCAL; Toxin-Schaden:
-    health −= toxicity·bite·TOX_DAMAGE_PER_KG. Objekte mit nutrition ≤ 0.02
+    (B5): energy += resource_value·4000·bite·SIM_ENERGY_PER_KCAL; Toxin-Schaden:
+    health −= toxicity·bite·TOX_DAMAGE_PER_KG. Objekte mit resource_value ≤ 0.02
     sind wirkungslos (Steinbeißen = No-op). Gegessene Masse fließt bilanziert
     in ledger['eaten']; vollständig verzehrte Objekte verschwinden."""
     pos = (int(pos[0]), int(pos[1]))

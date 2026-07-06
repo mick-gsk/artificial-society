@@ -240,7 +240,7 @@ class Renderer:
 
             # Life-stage glyph
             if stage == STAGE_SPAWN:
-                # Small dot on top = child marker
+                # Small dot on top = spawn marker
                 pygame.draw.circle(screen, (255, 230, 180), (px, py - radius - 3), 2)
             elif stage == STAGE_ELDER:
                 # Crown: three small upward ticks
@@ -256,14 +256,14 @@ class Renderer:
                     screen, (240, 210, 100), (px - 4, py - radius - 2), (px + 4, py - radius - 2), 1
                 )
 
-            # Disease ring
+            # Fault ring
             impaired = getattr(agent, "impaired", 0.0)
             fault_id = getattr(agent, "fault_id", None)
             if impaired > 8 or fault_id:
                 ring_col = FAULT_COLORS.get(fault_id, DEFAULT_IMPAIRED_COLOR)
                 pygame.draw.circle(screen, ring_col, (px, py), radius + 3, 2)
 
-            # Pregnancy ring
+            # Pending_spawn ring
             if agent.pending_spawn:
                 pygame.draw.circle(screen, (255, 110, 170), (px, py), radius + 5, 1)
 

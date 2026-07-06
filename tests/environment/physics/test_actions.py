@@ -35,7 +35,7 @@ from artificial_society.environment.physics.props import IDX2, pv
 
 
 def test_energie_kopplung_produkt_anker():
-    """B5: nutrition-Konvention × SIM_ENERGY_PER_KCAL ≙ MEAT_ENERGY ± 1 (Produkt-Test —
+    """B5: resource_value-Konvention × SIM_ENERGY_PER_KCAL ≙ MEAT_ENERGY ± 1 (Produkt-Test —
     zwei Konstanten, eine Bilanz, kein stilles Driften)."""
     resource_value_raw_meat = float(MATERIALS_V2["raw_meat"][IDX2["resource_value"]])
     sim_energy_pro_kg = (

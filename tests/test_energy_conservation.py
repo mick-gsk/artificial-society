@@ -1,14 +1,14 @@
 """Energy conservation (Phase 4) — the core physics invariant.
 
 The simulation is meant to run on genuine scarcity + selection. That only works
-if energy is *conserved*: foraging must be a transfer from the finite world, and
+if energy is *conserved*: gathering must be a transfer from the finite world, and
 social bonuses must move energy around rather than mint it.
 
 These tests lock the invariant at the unit level — the only legitimate energy
-*sources* (regrowth, sleep) and *sinks* (metabolism, death) are deliberately
+*sources* (regrowth, sleep) and *sinks* (upkeep, death) are deliberately
 excluded so a single operation can be checked in isolation:
 
-- foraging transfers exactly the food it removes (plant / carcass / meat paths),
+- gathering transfers exactly the food it removes (plant / carcass / meat paths),
 - the carcass meat is actually reachable (regression for the `carcass`/`carcasses`
   field-name bug — carnivores used to read a key the world never wrote),
 - a corpse is worth exactly CORPSE_ENERGY of harvestable food (not double-counted
@@ -79,7 +79,7 @@ def _put_agent_on_land(sim, agent):
 
 
 # ---------------------------------------------------------------------------
-# Foraging is a conservative transfer
+# Gathering is a conservative transfer
 # ---------------------------------------------------------------------------
 
 
@@ -160,7 +160,7 @@ def test_carnivore_meat_pool_gather_is_conservative():
 
 def test_corpse_total_harvestable_energy_equals_corpse_value():
     """A death deposits exactly CORPSE_ENERGY of harvestable food, split across
-    the two consumable pools a forager can reach (carcasses + meat_food). They
+    the two consumable pools a gatherer can reach (carcasses + meat_food). They
     must SUM to the corpse value -- not each receive it -- or every death mints
     ~1.45x energy now that the carcasses pool is actually edible."""
     world = _OneCellWorld(initial_cell_state("grassland"))
@@ -259,8 +259,8 @@ def test_hamilton_redistributes_toward_kin_with_spawn_count():
 
 
 def test_hamilton_does_not_mint_from_a_negative_energy_member():
-    """A member that has gone negative (reachable via the unguarded pregnancy
-    metabolism tick) must contribute 0 to the pool and must NOT be silently lifted
+    """A member that has gone negative (reachable via the unguarded pending_spawn
+    upkeep tick) must contribute 0 to the pool and must NOT be silently lifted
     toward 0 -- the old min()-based tax did exactly that, and when the resulting
     pool went non-positive the lift was no longer offset, minting energy. Stressed
     with a strongly-negative member so the pool flips sign and the bug would show."""
@@ -305,7 +305,7 @@ def test_consumption_persists_against_regrowth():
         regrow_cell(consumed, 0, 0, "forest", season, weather, tick, {})
         regrow_cell(untouched, 0, 0, "forest", season, weather, tick, {})
 
-    # Now forage one of them every tick for a window.
+    # Now gather one of them every tick for a window.
     for tick in range(400, 460):
         apply_consumption(consumed, 0, 0, plant=6.0)
         regrow_cell(consumed, 0, 0, "forest", season, weather, tick, {})

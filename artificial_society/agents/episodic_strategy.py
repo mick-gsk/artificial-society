@@ -9,7 +9,7 @@ Sondern:   'Welche Sequenz hat zum Erfolg geführt?'
 Format:
   Episode = {
       'goal':    str,          # z.B. 'EAT'
-      'actions': list[str],    # ['forage', 'forage', 'cooperate']
+      'actions': list[str],    # ['gather', 'gather', 'cooperate']
       'outcome': str,          # 'success' | 'partial' | 'failure'
       'reward':  float,
       'tick':    int,
@@ -99,7 +99,7 @@ class EpisodicStrategyMemory:
         self, parent: EpisodicStrategyMemory, strength: float = 0.4, n: int = 16
     ) -> None:
         """
-        Child inherits some successful episodes from parent.
+        Spawn derives some successful episodes from parent.
         Biological analogue: learned behavioral templates passed down.
         """
         successes = [ep for ep in parent.buffer if ep.is_success]

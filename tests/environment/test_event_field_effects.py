@@ -117,7 +117,7 @@ def test_storm_raises_moisture_and_water():
 
 
 def test_fire_burns_plants_and_creates_ash():
-    """Fire destroys vegetation/meat, dries the cell, and produces ash + smoke."""
+    """Fire destroys resource_cover/meat, dries the cell, and produces ash + smoke."""
     assert _event_delta("fire", "plant_food") == pytest.approx(-5.8, abs=0.6)
     assert _event_delta("fire", "meat_food") == pytest.approx(-1.8, abs=0.5)
     assert _event_delta("fire", "ash") == pytest.approx(7.0, abs=0.5)

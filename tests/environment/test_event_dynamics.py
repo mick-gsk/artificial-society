@@ -1,7 +1,7 @@
 """Audit group 8: disturbance events must follow world physics.
 
 Genesis is state-driven (storm_risk, dryness+heat, fuel+ignition, moist dense
-vegetation) instead of the old `tick % 55` timer + flat dice at a uniformly
+resource_cover) instead of the old `tick % 55` timer + flat dice at a uniformly
 random position; the warm-up from the pre-rewrite loop is enforced again; and
 events have direct physical consequences for agents (fire burns, storms
 exhaust, camps shelter).

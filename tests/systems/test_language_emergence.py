@@ -1,7 +1,7 @@
 """Lane test: token creation is open to any usable marker, not gated on pigment props.
 
 Phase 5 de-scripting (Task 2). ``agent_mark`` previously required a pigment-like material
-(``solubility > 0.3 AND (conductivity > 0.2 OR scent > 0.3)``). After de-scripting,
+(``solubility > 0.3 AND (conductivity > 0.2 OR trail > 0.3)``). After de-scripting,
 signalling can emerge from ANY usable marker the agent holds, provided a markable surface
 is present — so symbols aren't capped at the handful of "pigment" materials.
 """

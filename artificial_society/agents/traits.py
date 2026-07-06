@@ -17,17 +17,17 @@ TRAIT_RANGES = {
     "diet_preference": (-1.0, 1.0),
     "social_bandwidth": (0.0, 1.0),
     # 16. Gen (Plan 3b, Spec C5): relative Körperkraft, speist Body(strength=...).
-    # ACHTUNG Golden: Draw/Vererbung laufen NUR über ensure_strength_gene /
-    # inherit_strength (v2-Pfad) — random_genes und der inherit_genes-Loop
+    # ACHTUNG Golden: Draw/Vererbung laufen NUR über ensure_strength_trait /
+    # derive_strength (v2-Pfad) — random_traits und der derive_traits-Loop
     # lassen strength aus, sonst verschöbe ein zusätzlicher RNG-Draw den
     # v1-Strom und damit die Golden-Trajectory.
     "strength": (0.1, 0.9),
 }
 
-# Selektionsdruck: Gene naeher am Eltern-Wert mutieren mit kleinerem Sigma,
-# aber die Richtung der Mutation ist leicht zum fitness-staerken Elternteil gezogen.
+# Selektionsdruck: Trait naeher am Eltern-Wert mutieren mit kleinerem Sigma,
+# aber die Richtung der Perturbation ist leicht zum score-staerken Elternteil gezogen.
 # Biologisches Vorbild: Mendel'sche Segregation + natuerliche Selektion
-# -- erfolgreiche Allele setzen sich durch, rein zufaellige Drift ist sekundaer.
+# -- erfolgreiche Varianten setzen sich durch, rein zufaellige Drift ist sekundaer.
 PERTURBATION_BASE = 0.06  # Grundrauschen
 PERTURBATION_SCORE_BIAS = 0.55  # Wie stark das bessere Elternteil das Kind dominiert
 STRENGTH_PERTURBATION_SIGMA = (
@@ -62,16 +62,16 @@ def random_traits():
 def derive_traits(parent_a, parent_b=None, perturbation=PERTURBATION_BASE):
     """
     Vererbung mit Selektionsdruck:
-    - Das Elternteil mit hoeherem learning_score (Proxy fuer Fitness) dominiert
-      das Kind leicht (MUTATION_FITNESS_BIAS).
-    - Mutation ist gaussisch (nicht uniform) -> seltene grosse Spruenge,
+    - Das Elternteil mit hoeherem learning_score (Proxy fuer Score) dominiert
+      das Kind leicht (PERTURBATION_SCORE_BIAS).
+    - Perturbation ist gaussisch (nicht uniform) -> seltene grosse Spruenge,
       haeufige kleine Anpassungen (realistischer als uniform).
     - Gauss-Rauschen statt uniform verhindert dass Extreme (0.0, 1.0) uebermaessig
       oft per Zufall produziert werden.
     """
     parent_b = parent_b or parent_a
 
-    # Fitness-gewichtetes Mischen: besserer Elternteil hat mehr Einfluss
+    # Score-gewichtetes Mischen: besserer Elternteil hat mehr Einfluss
     score_a = max(0.01, getattr(parent_a, "learning_score", 1.0))
     score_b = max(0.01, getattr(parent_b, "learning_score", 1.0))
     w_a = score_a / (score_a + score_b)
@@ -80,10 +80,10 @@ def derive_traits(parent_a, parent_b=None, perturbation=PERTURBATION_BASE):
     traits = {}
     for k, (lo, hi) in TRAIT_RANGES.items():
         if k == "strength":
-            continue  # v2-only (inherit_strength); ein gauss-Draw hier würde den v1-RNG-Strom verschieben
+            continue  # v2-only (derive_strength); ein gauss-Draw hier würde den v1-RNG-Strom verschieben
         val_a = parent_a.traits[k]
         val_b = parent_b.traits[k]
-        # Fitness-gewichteter Mittelwert als Basis
+        # Score-gewichteter Mittelwert als Basis
         base = w_a * val_a + w_b * val_b
         # Gaussisches Rauschen: Sigma skaliert mit Differenz der Eltern (heterozygot -> mehr Variation)
         sigma = perturbation + 0.15 * abs(val_a - val_b)
@@ -105,7 +105,7 @@ def derive_traits(parent_a, parent_b=None, perturbation=PERTURBATION_BASE):
 def ensure_strength_trait(traits: dict) -> None:
     """Zieht das strength-Gen (NUR im v2-Pfad aufrufen: attach_body).
 
-    random_genes lässt strength bewusst aus — ein zusätzlicher Draw dort würde
+    random_traits lässt strength bewusst aus — ein zusätzlicher Draw dort würde
     den v1-RNG-Strom und damit die Golden-Trajectory verschieben. Idempotent.
     """
     if "strength" not in traits:
@@ -115,7 +115,7 @@ def ensure_strength_trait(traits: dict) -> None:
 def derive_strength(spawn_traits: dict, parent_a, parent_b=None) -> None:
     """Vererbung des strength-Gens (NUR im v2-Kind-Pfad aufrufen).
 
-    Fitness-gewichtetes Mittel wie inherit_genes, Mutations-σ 0.012-Klasse
+    Score-gewichtetes Mittel wie derive_traits, Perturbations-σ 0.012-Klasse
     (Spec C5). Eltern ohne Gen (Alt-Checkpoints) zählen als 0.5 (3a-Default).
     """
     parent_b = parent_b or parent_a

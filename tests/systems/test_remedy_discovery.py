@@ -1,10 +1,10 @@
 """Lane test: remedies are discovered from material properties, not a hardcoded lookup.
 
 Phase 5 de-scripting (Task 5). ``evaluate_remedy`` previously matched consumed tags against
-a disease's hardcoded ingredient list (``REMEDY_REGISTRY[...]['ingredients']``). After
+a fault's hardcoded ingredient list (``REMEDY_REGISTRY[...]['ingredients']``). After
 de-scripting, cure efficacy emerges from the medicinal PROPERTIES of whatever is consumed --
-aromatic, edible, low-toxicity materials heal (by their vector); herbs are generically
-medicinal -- so a material that is NOT the disease's authored ingredient can still relieve
+aromatic, edible, low-toxicity materials recover (by their vector); herbs are generically
+medicinal -- so a material that is NOT the fault's authored ingredient can still relieve
 it, while a property-irrelevant material cannot.
 """
 

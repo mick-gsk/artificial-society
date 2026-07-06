@@ -17,7 +17,7 @@ world state, so disturbances behave as physically as the field model allows:
           creeps toward the most fuel-rich dry neighbor, and collapses when
           fuel runs out or rain arrives. The field application burning
           plant_food makes every fire self-limiting.
-- BLIGHT  (fungal) forms only on dense, moist vegetation and collapses in dry
+- BLIGHT  (fungal) forms only on dense, moist resource_cover and collapses in dry
           conditions or once it has eaten the local plant food.
 
 Only genesis and lifecycle are new: the *application* of events to cells
@@ -59,7 +59,7 @@ DROUGHT_SELF_IGNITE_P = 0.004  # per active drought per tick
 
 # --- fire --------------------------------------------------------------------
 FIRE_FUEL_IGNITE = 20.0  # smoothed plant_food needed to catch
-FIRE_FUEL_SUSTAIN = 8.0  # below this the fire starves
+FIRE_FUEL_SUSTAIN = 8.0  # below this the fire depletes
 FIRE_DRY_MOISTURE = 45.0  # ignition only below this smoothed moisture
 FIRE_WET_MOISTURE = 60.0  # above this (rain) the fire collapses
 FIRE_TTL = 150
@@ -164,7 +164,7 @@ def _creep_to_fuel(world, event: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# lifecycle: evolve existing events against the current world state
+# lifecycle: adapt existing events against the current world state
 # ---------------------------------------------------------------------------
 def _adapt(world, tick: int) -> None:
     kept = []
@@ -282,14 +282,14 @@ def _genesis(world, tick: int, weather_state: dict) -> None:
                 }
             )
 
-    # Self-ignition inside droughts (heat + dead-dry vegetation), rare.
+    # Self-ignition inside droughts (heat + dead-dry resource_cover), rare.
     for drought in [e for e in events if e["kind"] == "drought"]:
         if random.random() < DROUGHT_SELF_IGNITE_P * drought["intensity"]:
             fx = drought["x"] + random.randint(-drought["radius"], drought["radius"])
             fy = drought["y"] + random.randint(-drought["radius"], drought["radius"])
             _maybe_ignite(world, events, fx, fy)
 
-    # Blight: fungal — only on dense, moist vegetation.
+    # Blight: fungal — only on dense, moist resource_cover.
     if tick % BLIGHT_CHECK_EVERY == 0 and len(events) < MAX_ACTIVE_EVENTS:
         plant = _smoothed(world, "plant_food")
         moist = _smoothed(world, "moisture")
@@ -315,7 +315,7 @@ def _genesis(world, tick: int, weather_state: dict) -> None:
 # public API
 # ---------------------------------------------------------------------------
 def update_events(world, tick: int, season_state: dict, weather_state: dict) -> None:
-    """One event tick: evolve active events, then let new ones emerge.
+    """One event tick: adapt active events, then let new ones emerge.
 
     ``season_state`` is accepted for API stability but unused: seasonality
     reaches the model through the season-coupled temperature/moisture fields,
@@ -332,7 +332,7 @@ def apply_event_agent_effects(world, agents) -> None:
     Fire burns (learnable flee pressure), storms cost energy (exposure) and
     cause light debris damage at high strength; a camp on the cell dampens
     storm exposure (shelter matters). Drought/blight stay indirect (food,
-    disease) — matching their physical nature.
+    fault) — matching their physical nature.
     """
     if not world.active_events:
         return

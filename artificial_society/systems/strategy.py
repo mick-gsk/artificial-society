@@ -112,7 +112,7 @@ class StrategySystem:
 
         if best_name != self.current:
             self.current = best_name
-            # Cooldown depends on plasticity gene
+            # Cooldown depends on plasticity trait
             plasticity = traits.get("plasticity", 1.0)
             self._switch_cooldown = max(20, int(60 / plasticity))
             self._ticks_on_current = 0
@@ -130,7 +130,7 @@ class StrategySystem:
         return STRATEGY_GOAL_BIAS.get(self.current, {})
 
     def derive_from(self, parent_strategy: StrategySystem, strength: float = 0.4):
-        """Child inherits strategy preferences with noise."""
+        """Spawn derives strategy preferences with noise."""
         for name, rec in parent_strategy.records.items():
             self.records[name].score = strength * rec.score + (1.0 - strength) * 0.5
         # Start with parent's best strategy
