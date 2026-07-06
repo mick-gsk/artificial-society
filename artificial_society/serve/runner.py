@@ -137,6 +137,9 @@ class SimulationRunner:
                 grid_h=int(params["grid_h"]),
                 initial_population=int(params["pop"]),
                 load_checkpoint=False,
+                # Pin explicitly so a dashboard sim can never be silently flipped by
+                # the AS_BRAIN_ARCH env var on the host (Task 8).
+                brain_arch=params.get("brain_arch", "v1"),
             )
             with self._lock:
                 self._sim = sim

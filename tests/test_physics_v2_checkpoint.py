@@ -69,12 +69,20 @@ def test_kaputter_checkpoint_v2_seedet_objekt_schicht_frisch(checkpoint_path):
 
 
 def test_unbekannte_format_version_wird_hart_abgewiesen(checkpoint_path):
-    """C5 (3b): Version ∉ {1, 2} ⇒ harter Fehler VOR dem broad-except, bei
+    """C5 (3b): Version ∉ {1, aktuell} ⇒ harter Fehler VOR dem broad-except, bei
     beiden Flag-Stellungen — kein stiller Frisch-Start (Datenverlust).
     Version 1 (Legacy, auch ohne Key) lädt dagegen weiter mit Flag aus —
-    das pinnt der unveränderte 3a-Test test_alt_checkpoint_ohne_key_...."""
+    das pinnt der unveränderte 3a-Test test_alt_checkpoint_ohne_key_....
+    Version = aktuell + 1 ist per Konstruktion nie eine gültige Version."""
     with open(checkpoint_path, "wb") as f:
-        pickle.dump({"format_version": 3, "agents": [], "tick": 5}, f)
+        pickle.dump(
+            {
+                "format_version": sim_mod.CHECKPOINT_FORMAT_VERSION + 1,
+                "agents": [],
+                "tick": 5,
+            },
+            f,
+        )
     with pytest.raises(CheckpointIncompatibleError, match="format_version"):
         Simulation(seed=3, physics_v2=False, load_checkpoint=True, **_PARAMS)
     with pytest.raises(CheckpointIncompatibleError, match="format_version"):
@@ -101,7 +109,7 @@ def test_payload_traegt_format_version_2(checkpoint_path):
     sim._save_checkpoint()
     with open(checkpoint_path, "rb") as f:
         data = pickle.load(f)
-    assert data["format_version"] == 2
+    assert data["format_version"] == sim_mod.CHECKPOINT_FORMAT_VERSION
     assert data["physics_v2"] is True
 
 

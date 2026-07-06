@@ -140,19 +140,28 @@ def ensure_fields(agent) -> None:
     fields — is fully reinstated.
     """
     # --- brain + per-agent core objects ---
-    if not hasattr(agent, "brain") or agent.brain is None:
-        agent.brain = Brain()
-        agent.hidden_state = agent.brain.initial_hidden()
-    elif agent.brain.input_size != INPUT_SIZE:
-        print(
-            f"[compat] Agent {agent.id}: brain input_size={agent.brain.input_size} != {INPUT_SIZE}, rebuilding."
-        )
-        agent.brain = Brain()
-        agent.hidden_state = agent.brain.initial_hidden()
-    if not hasattr(agent, "hidden_state") or agent.hidden_state is None:
-        agent.hidden_state = agent.brain.initial_hidden()
-    if not hasattr(agent, "_brain_device"):
-        agent._brain_device = next(agent.brain.parameters()).device
+    if getattr(agent, "brain_arch", "v1") != "rssm":
+        if not hasattr(agent, "brain") or agent.brain is None:
+            agent.brain = Brain()
+            agent.hidden_state = agent.brain.initial_hidden()
+        elif agent.brain.input_size != INPUT_SIZE:
+            print(
+                f"[compat] Agent {agent.id}: brain input_size={agent.brain.input_size} != {INPUT_SIZE}, rebuilding."
+            )
+            agent.brain = Brain()
+            agent.hidden_state = agent.brain.initial_hidden()
+        if not hasattr(agent, "hidden_state") or agent.hidden_state is None:
+            agent.hidden_state = agent.brain.initial_hidden()
+        if not hasattr(agent, "_brain_device"):
+            agent._brain_device = next(agent.brain.parameters()).device
+    else:
+        # rssm (Task 8): no v1 Brain at all — SharedLearner.on_spawn owns
+        # rssm_slot/hidden_state; this only reinstates a checkpoint-loaded rssm
+        # agent that predates these fields (idempotent, no-op otherwise).
+        if not hasattr(agent, "brain"):
+            agent.brain = None
+        if not hasattr(agent, "hidden_state"):
+            agent.hidden_state = None
     if not hasattr(agent, "causal_memory") or agent.causal_memory is None:
         agent.causal_memory = CausalMemory(capacity=32)
     if not hasattr(agent, "material_inventory") or agent.material_inventory is None:
@@ -1279,6 +1288,7 @@ class Agent:
         tribes=None,
         economy=None,
         technology=None,
+        learner=None,
     ):
         if not self.alive:
             return None
@@ -1343,10 +1353,15 @@ class Agent:
 
         nearby_agents = self._nearby_cached(agents, 2)
         features = self.local_features(world, agents)
-        if self.hidden_state is None:
+        if learner is None and self.hidden_state is None:
             self.hidden_state = self.brain.initial_hidden()
 
-        if self.physics_v2:
+        if learner is not None:
+            # rssm (Task 8): SharedLearner owns the world-model rollout + slab
+            # act path; agent.hidden_state is the opaque (h, z) tuple it returns
+            # (None on the agent's very first tick — learner.act handles that).
+            brain_step = learner.act(self, features)
+        elif self.physics_v2:
             # v2 (C1/C2/C5): Objekt-Slots wahrnehmen, Causal-Pending des
             # Vortricks auflösen, dann Policy-Sampling OHNE Planner —
             # plan_action/imagine_rollout sind mit der v2-Architektur
@@ -1499,10 +1514,11 @@ class Agent:
             economy.maybe_trade(self, agents)
 
         next_features_raw = self.local_features(world, agents)
-        if not self.physics_v2:
+        if learner is None and not self.physics_v2:
             # v1-Intrinsic (inkl. rew_err-Mechanik) und NGU-Episodic laufen NUR
             # im v1 — der v2 ersetzt beides durch die C4-Neugier (rew_err ist
-            # ersatzlos gestrichen; Planner/NGU sind im v2 aus).
+            # ersatzlos gestrichen; Planner/NGU sind im v2 aus). rssm (Task 8)
+            # has neither a v1 Brain nor brain_step["hidden_in"] — skip too.
             intrinsic = self.brain.intrinsic_reward(
                 brain_step["hidden_in"],
                 brain_step["action_tensor"],
@@ -1542,7 +1558,12 @@ class Agent:
             effective_reward = reward
         else:
             effective_reward = reward * cognition_mult
-        if self.physics_v2:
+        if learner is not None:
+            # rssm (spec §2.6): the existing v1/v2 scalar reward computed above
+            # (effective_reward) is reused as-is as the RSSM's reward target —
+            # store into the shared replay, keyed by episode (agent.id).
+            learner.store_transition(self, brain_step, effective_reward, not self.alive)
+        elif self.physics_v2:
             self.brain.store_transition_v2(
                 brain_step,
                 effective_reward,
@@ -1570,7 +1591,13 @@ class Agent:
         # und verfiele still. finalize_terminal (via remove_dead) übernimmt
         # Flush + Malus + Training für gestorbene v2-Agenten selbst. Der
         # v1-Pfad bleibt unveraendert (kein finalize_terminal-Aequivalent).
-        loss = None if self.physics_v2 and not self.alive else self.brain.maybe_train()
+        # rssm (Task 8, spec §4.5): training is centralized in the registered
+        # rssm_learning system (every-K-ticks over the whole population), not
+        # per-agent — never call the (nonexistent) v1 brain here.
+        if learner is not None:
+            loss = None
+        else:
+            loss = None if self.physics_v2 and not self.alive else self.brain.maybe_train()
         if loss is not None:
             self.last_loss = loss
 

@@ -44,7 +44,7 @@ CHECKPOINT_PATH = "checkpoint.pkl"
 # Fehlender Key ⇒ Version 1 (Legacy bis 3a): lädt WEITERHIN mit physics_v2=False
 # (3a-Garantie — v1-Bestand bleibt resumierbar); unbekannte Versionen re-raisen
 # hart statt still frisch zu starten.
-CHECKPOINT_FORMAT_VERSION = 2
+CHECKPOINT_FORMAT_VERSION = 3
 
 IMMUNITY_WINDOW_DEFAULT = 200
 
@@ -135,12 +135,28 @@ class Simulation:
         seed=None,
         load_checkpoint=True,
         physics_v2=False,
+        brain_arch=None,
+        rssm_config=None,
     ):
         # Seed first, before anything stochastic (biome grid, population) is built.
         self.headless = headless
         self.seed = seed
         # Physik v2 (Plan 3a): additive Objekt-Schicht. Default False = v1 byte-gleich.
         self.physics_v2 = bool(physics_v2)
+        # RSSM-Dreamer-Brain (Task 8): explicit arg > AS_BRAIN_ARCH env > "v1". Lazy
+        # import + is-None default means an off-arm ("v1") run never imports the rssm
+        # package and performs zero extra torch RNG draws (Invariant 1).
+        import os as _os
+
+        self.brain_arch = brain_arch or _os.environ.get("AS_BRAIN_ARCH", "v1")
+        self.rssm_learner = None
+        if self.brain_arch == "rssm":
+            from artificial_society.agents.rssm.config import RSSMConfig
+            from artificial_society.agents.rssm.learner import SharedLearner
+
+            self.rssm_learner = SharedLearner(
+                rssm_config or RSSMConfig(), seed if seed is not None else 0
+            )
         if seed is not None:
             seed_all(seed)
             # Reset the agent id sequence so a seed reproduces the same ids too.
@@ -194,6 +210,13 @@ class Simulation:
             if self.physics_v2:
                 attach_body(agent)
             self.agents.append(agent)
+            if self.rssm_learner is not None:
+                self.rssm_learner.on_spawn(agent, "initial", self.tick)
+                # on_spawn does not touch agent.brain (learner is arch-agnostic about
+                # the discarded v1 field) — null it here so a founder never carries a
+                # live v1 Brain alongside its rssm_slot (Agent dataclass always builds
+                # one via spawn_random's default_factory before we get a say).
+                agent.brain = None
 
     def spawn_child_from_parent(self, parent, genes):
         x, y = self.world.find_free_neighbor(parent.pos)
@@ -205,7 +228,6 @@ class Simulation:
         if mate_id is not None:
             other_parent = agent_by_id.get(mate_id)
         child = self.evolution.make_child(parent, x, y, genes=genes, other_parent=other_parent)
-        child.hidden_state = child.brain.initial_hidden()
         child.birth_tick = self.tick
         # Birth is an energy TRANSFER from the mother, not minting: the child
         # keeps at most its default start energy, the mother keeps at least
@@ -214,18 +236,27 @@ class Simulation:
         transfer = min(child.energy, max(0.0, parent.energy - BIRTH_ENERGY_FLOOR))
         child.energy = transfer
         parent.energy -= transfer
-        if self.physics_v2:
+        if self.rssm_learner is not None:
+            # rssm (spec §4.3): no v1 weight copy, cultural warm-start instead —
+            # on_spawn acquires a slot from the shared prototype and clears
+            # hidden_state; the v1 Brain a fresh child always gets built by
+            # Agent.spawn_child's default_factory is discarded, never inherited.
+            self.rssm_learner.on_spawn(child, "birth", self.tick)
+            child.brain = None
+        elif self.physics_v2:
             # strength wird über den eigenen v2-Pfad vererbt (inherit_genes
             # überspringt es — Golden), DANN baut attach_body den Body daraus.
             # ALIAS beachten: `inherit_strength` ist in dieser Funktion bereits
             # die lokale Gewichts-Vererbungsstärke — daher inherit_strength_gene.
             inherit_strength_gene(child.genes, parent, other_parent)
             attach_body(child)
-        if not self.physics_v2:
+            child.hidden_state = child.brain.initial_hidden()
+        else:
             # Plan 4 (Kultur-Korrektur): im v2-Pfad wird KEIN Gelerntes vererbt —
             # Kind startet mit frischem Netz (attach_body) + leeren Lern-Stores.
             # Nur Gene (inkl. strength) gehen ans Kind. Kultur überlebt allein
             # über soziales Lernen zu Lebzeiten.
+            child.hidden_state = child.brain.initial_hidden()
             inherit_strength = max(
                 0.20, min(0.75, 0.75 - (child.genes["plasticity"] - 0.3) / (1.8 - 0.3) * 0.55)
             )
@@ -310,6 +341,9 @@ class Simulation:
             if self.physics_v2:
                 attach_body(a)
             self.agents.append(a)
+            if self.rssm_learner is not None:
+                self.rssm_learner.on_spawn(a, "respawn", self.tick)
+                a.brain = None
 
     def remove_dead(self):
         survivors = []
@@ -318,6 +352,12 @@ class Simulation:
                 survivors.append(agent)
                 continue
             self._broadcast_death_knowledge(agent)
+            # Known approximation (accepted): an agent that dies outside its own
+            # update() (e.g. attacked later in the tick) has its last stored
+            # transition at done=False — the continue head still learns deaths
+            # from the majority in-update deaths + stratified sampling (spec §4.4).
+            if self.rssm_learner is not None and getattr(agent, "rssm_slot", None) is not None:
+                self.rssm_learner.on_death(agent)
             if self.physics_v2:
                 # v2 (C2/C3): echte Terminal-Transition — done=True erreicht den
                 # Buffer, r_death (−3.0) wird GENAU EINMAL gemünzt, der
@@ -449,6 +489,12 @@ class Simulation:
                         "technology": self.technology,
                         # Full emergent state so a save->load is reproducible.
                         "registries": _capture_singletons(),
+                        "brain_arch": self.brain_arch,
+                        "rssm": (
+                            self.rssm_learner.checkpoint_payload()
+                            if self.rssm_learner is not None
+                            else None
+                        ),
                     },
                     f,
                 )
@@ -471,6 +517,12 @@ class Simulation:
                 raise CheckpointIncompatibleError(
                     f"checkpoint physics_v2={saved_flag} != Simulation physics_v2="
                     f"{self.physics_v2} — Checkpoint löschen oder Flag angleichen"
+                )
+            saved_arch = data.get("brain_arch", "v1")
+            if saved_arch != self.brain_arch:
+                raise CheckpointIncompatibleError(
+                    f"checkpoint brain_arch={saved_arch} != Simulation brain_arch="
+                    f"{self.brain_arch} — Checkpoint löschen oder Flag angleichen"
                 )
             self.agents = data.get("agents", [])
             if self.physics_v2:
@@ -507,6 +559,10 @@ class Simulation:
             _restore_singletons(data.get("registries", {}))
             for agent in self.agents:
                 ensure_fields(agent)
+            # Placed AFTER agents are restored: slot-map validity comes from
+            # agent.rssm_slot pickled with each agent.
+            if self.rssm_learner is not None and data.get("rssm") is not None:
+                self.rssm_learner.load_checkpoint_payload(data["rssm"], self.agents)
             print(f"[checkpoint] loaded tick={self.tick}, agents={len(self.agents)}")
         except CheckpointIncompatibleError:
             raise  # harte Schranke — NICHT vom broad-except verschlucken lassen
@@ -613,6 +669,7 @@ class Simulation:
                 tribes=self.tribes,
                 economy=self.economy,
                 technology=self.technology,
+                learner=self.rssm_learner,
             )
             if child_genes is not None:
                 new_children.append(self.spawn_child_from_parent(agent, child_genes))
