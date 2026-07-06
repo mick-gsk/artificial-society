@@ -210,3 +210,34 @@ def test_prototype_snapshot_roundtrip():
     snap = slab.snapshot_slot(s)
     s2 = slab.acquire_slot(snap)
     assert torch.equal(slab.params["a_w1"][s], slab.params["a_w1"][s2])
+
+
+def test_act_single_params_override_matches_self_params():
+    """GPU-pilot blocker regression: SharedLearner.act() must be able to draw an
+    identical action whether it reads self.params directly (train_device == cpu)
+    or an equivalent CPU actor-mirror dict (train_device != cpu)."""
+    slab = _slab()
+    s0 = slab.acquire_slot(None)
+    s_g = torch.randn(1, 256 + 1024 + 4, generator=make_generator(2, "x"))
+    a_direct, _ = slab.act_single(s0, s_g, make_generator(3, ("a", 1)))
+    override = slab.actor_snapshot_cpu()
+    a_override, _ = slab.act_single(s0, s_g, make_generator(3, ("a", 1)), params_override=override)
+    assert torch.equal(a_direct, a_override)
+
+
+def test_actor_mirror_slot_refresh_plumbing():
+    """GPU-pilot blocker regression: actor_snapshot_cpu()/refresh_actor_mirror_slot
+    are the mechanism SharedLearner uses to keep a CPU act-path mirror of a
+    train_device slab in sync — verify the mirror starts stale for a newly
+    acquired slot and becomes exact after a per-slot refresh, without disturbing
+    other slots' mirrored rows."""
+    slab = _slab()
+    s0 = slab.acquire_slot(None)
+    mirror = slab.actor_snapshot_cpu()
+    before_s0 = mirror["a_w1"][s0].clone()
+    s1 = slab.acquire_slot(None)  # acquired after the snapshot — mirror row stale
+    assert not torch.equal(mirror["a_w1"][s1], slab.params["a_w1"][s1].cpu())
+    slab.refresh_actor_mirror_slot(mirror, s1)
+    for k in ActorCriticSlab.ACTOR_KEYS:
+        assert torch.equal(mirror[k][s1], slab.params[k][s1].cpu())
+    assert torch.equal(mirror["a_w1"][s0], before_s0)  # untouched slot unaffected

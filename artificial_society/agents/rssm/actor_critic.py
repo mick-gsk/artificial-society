@@ -38,9 +38,10 @@ class ActorCriticSlab:
     ACTOR_KEYS = ("a_w1", "a_b1", "a_w2", "a_b2", "a_mu_w", "a_mu_b", "a_std_w", "a_std_b")
     CRITIC_KEYS = ("c_w1", "c_b1", "c_w2", "c_b2", "c_out_w", "c_out_b")
 
-    def __init__(self, cfg, gen):
+    def __init__(self, cfg, gen, device="cpu"):
         self.cfg = cfg
         self.gen = gen
+        self.device = torch.device(device)
         d_in = cfg.deter + cfg.stoch * cfg.classes + (cfg.gene_slice[1] - cfg.gene_slice[0])
         h, N = cfg.ac_hidden, cfg.max_slots
         shapes = {
@@ -59,23 +60,29 @@ class ActorCriticSlab:
             "c_out_w": (N, cfg.num_bins, h),
             "c_out_b": (N, cfg.num_bins),
         }
-        self.params = {k: torch.zeros(*s) for k, s in shapes.items()}
+        # params/adam moments live on `device` (train_device, may be cuda) — the act
+        # path never touches these directly when train_device != cpu, see
+        # SharedLearner._act_actor. step_count/alive are pure bookkeeping (small,
+        # scalar-ish, indexed from many call sites) and stay on CPU regardless.
+        self.params = {k: torch.zeros(*s, device=self.device) for k, s in shapes.items()}
         self.slow = {k: torch.zeros_like(self.params[k]) for k in self.CRITIC_KEYS}
         self.adam_m = {k: torch.zeros_like(v) for k, v in self.params.items()}
         self.adam_v = {k: torch.zeros_like(v) for k, v in self.params.items()}
         self.step_count = torch.zeros(N, dtype=torch.long)
         self.alive = torch.zeros(N, dtype=torch.bool)
         self.ret_scale = 1.0  # EMA(p95-p5) of λ-returns
-        self.bins = make_bins(cfg)
+        self.bins = make_bins(cfg).to(self.device)
 
     # --- slots --------------------------------------------------------------
     def _fresh_init(self, slot):
         for _k, p in self.params.items():
             if p.dim() == 3:  # weights: truncated-normal-ish fan-in init
                 fan_in = p.shape[2]
-                p[slot] = torch.randn(p.shape[1], p.shape[2], generator=self.gen) / math.sqrt(
-                    fan_in
-                )
+                # self.gen is always CPU (SharedLearner constructs it via
+                # make_generator with no device kwarg); draw on CPU, then move onto
+                # p's device (a no-op when p is itself CPU).
+                draw = torch.randn(p.shape[1], p.shape[2], generator=self.gen) / math.sqrt(fan_in)
+                p[slot] = draw.to(p.device)
             else:
                 p[slot] = 0.0
         self.params["c_out_w"][slot] = 0.0  # zero-init critic head (spec §4.2)
@@ -95,8 +102,13 @@ class ActorCriticSlab:
         if init_params is None:
             self._fresh_init(slot)
         else:
+            # init_params comes from PrototypeActor.template(), always CPU (spec
+            # §GPU-pilot); explicit .to(device) makes the cross-device copy into a
+            # cuda-resident slab an intentional, documented transfer rather than
+            # relying on an implicit copy inside indexed tensor assignment.
             for k, v in init_params.items():
-                (self.params if k in self.params else self.slow)[k][slot] = v
+                target = self.params if k in self.params else self.slow
+                target[k][slot] = v.to(target[k].device)
             for k in self.CRITIC_KEYS:
                 self.slow[k][slot] = self.params[k][slot]
         self.alive[slot] = True
@@ -123,7 +135,12 @@ class ActorCriticSlab:
 
     @staticmethod
     def _tanh_normal_sample(mu, logstd, gen):
-        eps = torch.randn(mu.shape, generator=gen, device=mu.device)
+        # Draw on the GENERATOR's device, not mu's: a CPU generator cannot fill a
+        # CUDA tensor directly (and vice versa). The act path deliberately pairs a
+        # CPU generator with CPU mu (via the CPU actor mirror), so this `.to()` is a
+        # no-op there; it only does real work for train/imagination calls where
+        # mu and gen already agree on train_device anyway.
+        eps = torch.randn(mu.shape, generator=gen, device=gen.device).to(mu.device)
         pre = mu + eps * logstd.exp()
         return torch.tanh(pre), pre
 
@@ -134,12 +151,25 @@ class ActorCriticSlab:
         jac = 2.0 * (math.log(2.0) - pre - F.softplus(-2.0 * pre))
         return (base + jac).sum(-1)
 
-    def act_single(self, slot, s_g, gen):
+    def act_single(self, slot, s_g, gen, params_override=None):
+        """params_override: optional CPU actor-param mirror (see actor_snapshot_cpu)
+        used by SharedLearner.act() so the act path stays fully CPU even when this
+        slab's own params live on train_device."""
+        P = params_override if params_override is not None else self.params
         with torch.no_grad():
-            idx = torch.tensor([slot])
-            mu, logstd = self._actor_dist(self.params, idx, s_g)
+            idx = torch.tensor([slot], device=P["a_w1"].device)
+            mu, logstd = self._actor_dist(P, idx, s_g)
             a, _ = self._tanh_normal_sample(mu, logstd, gen)
         return a.squeeze(0), None
+
+    def actor_snapshot_cpu(self) -> dict:
+        """CPU clones of the actor (not critic) params, for the CPU act-path mirror."""
+        return {k: self.params[k].detach().to("cpu").clone() for k in self.ACTOR_KEYS}
+
+    def refresh_actor_mirror_slot(self, mirror: dict, slot: int) -> None:
+        """Copy one slot's current actor params into an existing CPU mirror dict."""
+        for k in self.ACTOR_KEYS:
+            mirror[k][slot] = self.params[k][slot].detach().to("cpu")
 
     # --- training -----------------------------------------------------------
     def _losses(self, wm, h0, z0, genes, slots, gen, replay_batch):
@@ -183,7 +213,8 @@ class ActorCriticSlab:
         val_ext = torch.cat([values.detach() if reinforce else values, v_last.unsqueeze(1)], 1)
 
         R = lambda_returns(reward, cont, val_ext, cfg.gamma, cfg.lam)  # (N,H)
-        w = torch.cumprod(torch.cat([torch.ones(N, 1), (cfg.gamma * cont)[:, :-1]], 1), 1).detach()
+        ones = torch.ones(N, 1, device=reward.device)
+        w = torch.cumprod(torch.cat([ones, (cfg.gamma * cont)[:, :-1]], 1), 1).detach()
 
         # return normalization S = EMA(p95-p5), divide by max(1,S)
         with torch.no_grad():
@@ -270,7 +301,13 @@ class ActorCriticSlab:
 
     def _adam_step(self, grads, slots):
         cfg = self.cfg
-        self.step_count[slots] += 1
+        # `slots` indexes self.params/adam_m/adam_v (train_device) but step_count is
+        # always CPU (bookkeeping) — fancy-indexing requires the index tensor's
+        # device to match the indexed tensor's, so keep a CPU copy for step_count
+        # and bring the derived bias-correction term `t` back to train_device.
+        device = self.params["a_w1"].device
+        slots_cpu = slots.cpu()
+        self.step_count[slots_cpu] += 1
         with torch.no_grad():
             # global-norm clip over the touched slots' grads. `slots` legitimately
             # contains duplicates (a young agent can get multiple imagination starts
@@ -278,6 +315,7 @@ class ActorCriticSlab:
             uniq = slots.unique()
             total = torch.sqrt(sum((g[uniq] ** 2).sum() for g in grads.values() if g is not None))
             clip = min(1.0, cfg.ac_clip / (float(total) + 1e-8))
+            t = self.step_count[slots_cpu].float().clamp(min=1).to(device)
             for k, g in grads.items():
                 if g is None:
                     continue
@@ -285,7 +323,6 @@ class ActorCriticSlab:
                 m, v = self.adam_m[k], self.adam_v[k]
                 m[slots] = cfg.adam_beta1 * m[slots] + (1 - cfg.adam_beta1) * g[slots]
                 v[slots] = cfg.adam_beta2 * v[slots] + (1 - cfg.adam_beta2) * g[slots] ** 2
-                t = self.step_count[slots].float().clamp(min=1)
                 shape = [-1] + [1] * (m.dim() - 1)
                 mhat = m[slots] / (1 - cfg.adam_beta1**t).reshape(*shape)
                 vhat = v[slots] / (1 - cfg.adam_beta2**t).reshape(*shape)
@@ -299,11 +336,18 @@ class ActorCriticSlab:
 
     # --- persistence ----------------------------------------------------------
     def state_dict_all(self):
+        # Checkpoint payload must be device-independent (spec §GPU-pilot): a
+        # checkpoint saved on a cuda-trained run must load on a CPU-only box and
+        # vice versa. `.detach().to("cpu")` is a no-op (same object, no clone) when
+        # a tensor is already on CPU and not requiring grad — which is always true
+        # here outside of imagination_update's transient window — so this preserves
+        # the CPU-slab "live reference" behavior tests rely on while adding a real
+        # CPU copy for cuda-device slabs.
         return {
-            "params": self.params,
-            "slow": self.slow,
-            "adam_m": self.adam_m,
-            "adam_v": self.adam_v,
+            "params": {k: v.detach().to("cpu") for k, v in self.params.items()},
+            "slow": {k: v.detach().to("cpu") for k, v in self.slow.items()},
+            "adam_m": {k: v.detach().to("cpu") for k, v in self.adam_m.items()},
+            "adam_v": {k: v.detach().to("cpu") for k, v in self.adam_v.items()},
             "step_count": self.step_count,
             "alive": self.alive,
             "ret_scale": self.ret_scale,

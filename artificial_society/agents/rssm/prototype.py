@@ -17,7 +17,12 @@ class PrototypeActor:
         alive = slab.alive.nonzero(as_tuple=True)[0]
         if len(alive) == 0:
             return
-        mean = {k: slab.params[k][alive].mean(0) for k in slab.params}
+        # slab.alive is always CPU (bookkeeping); slab.params may live on
+        # train_device — move the index to match before fancy-indexing into it.
+        alive = alive.to(slab.device)
+        # Prototype state must stay device-independent for checkpoints (spec
+        # §GPU-pilot): store CPU copies regardless of where the slab itself lives.
+        mean = {k: slab.params[k][alive].mean(0).detach().to("cpu") for k in slab.params}
         if self._ema is None:
             self._ema = mean
             return

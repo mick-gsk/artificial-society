@@ -88,6 +88,13 @@ def test_spawn_death_slot_lifecycle():
     assert c.rssm_slot == a.rssm_slot  # freed slot reused
 
 
+def test_act_actor_mirror_disabled_when_train_device_is_cpu():
+    """GPU-pilot blocker regression: the CPU actor mirror is only needed (and only
+    allocated) when the slab itself doesn't already live on CPU."""
+    ln = SharedLearner(CFG, 42)
+    assert ln._act_actor is None
+
+
 def test_checkpoint_roundtrip():
     ln = SharedLearner(CFG, 42)
     ag = _agent(1)

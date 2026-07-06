@@ -34,3 +34,13 @@ def test_ema_moves_toward_population():
     after = proto.state_dict()["a_w1"]
     assert not torch.equal(before, after)
     assert torch.all((after - before).abs() <= 10.0 * (1 - CFG.prototype_decay) + 1e-6)
+
+
+def test_prototype_stores_cpu():
+    """GPU-pilot blocker regression: prototype EMA state must stay CPU-resident
+    regardless of the slab's device, so checkpoints built from it are portable."""
+    slab = ActorCriticSlab(CFG, make_generator(0, "s"))
+    proto = PrototypeActor(CFG)
+    slab.acquire_slot(None)
+    proto.update(slab)
+    assert all(v.device.type == "cpu" for v in proto.state_dict().values())

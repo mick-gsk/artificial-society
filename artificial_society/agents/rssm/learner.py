@@ -27,15 +27,25 @@ class SharedLearner:
         # *global* torch RNG with no generator hook available — isolate it: seed
         # deterministically from global_seed, construct, then restore the caller's
         # ambient global RNG state so SharedLearner construction is side-effect-free
-        # (spec §6) and reproducible across instances sharing a seed.
-        _saved_rng = torch.get_rng_state()
-        torch.manual_seed((self.global_seed * 0x9E3779B1 + zlib.crc32(b"wm-init")) % (2**63))
-        self.wm = RSSMWorldModel(cfg).to(self.train_device)
-        torch.set_rng_state(_saved_rng)
+        # (spec §6) and reproducible across instances sharing a seed. fork_rng (not
+        # get/set_rng_state) because torch.manual_seed also reseeds CUDA/MPS/XPU
+        # default generators — plain get/set_rng_state only saves/restores the CPU
+        # generator, leaking a global CUDA-RNG side effect on GPU hosts.
+        devices = list(range(torch.cuda.device_count())) if torch.cuda.is_available() else []
+        with torch.random.fork_rng(devices=devices):
+            torch.manual_seed((self.global_seed * 0x9E3779B1 + zlib.crc32(b"wm-init")) % (2**63))
+            self.wm = RSSMWorldModel(cfg).to(self.train_device)
         self._act_wm = (
             self.wm if self.train_device == "cpu" else copy.deepcopy(self.wm).cpu().eval()
         )
-        self.slab = ActorCriticSlab(cfg, make_generator(self.global_seed, "slab-init"))
+        self.slab = ActorCriticSlab(
+            cfg, make_generator(self.global_seed, "slab-init"), device=self.train_device
+        )
+        # act() must stay CPU (spec §6/§8): the slab itself lives on train_device,
+        # so keep a CPU mirror of just the actor params for the act path when
+        # train_device != cpu — avoids feeding a CPU-generator act() call CUDA
+        # tensors from self.slab.params (see actor_critic.ActorCriticSlab.act_single).
+        self._act_actor = self.slab.actor_snapshot_cpu() if self.train_device != "cpu" else None
         self.prototype = PrototypeActor(cfg)
         self.replay = SharedReplay(cfg)
         self._gen_learner = make_generator(self.global_seed, "learner")
@@ -57,6 +67,8 @@ class SharedLearner:
         agent.spawn_origin = origin
         agent.hidden_state = None
         self.replay.start_episode(agent.id, origin)
+        if self._act_actor is not None:  # newborn slot row must be current in the mirror
+            self.slab.refresh_actor_mirror_slot(self._act_actor, agent.rssm_slot)
 
     def on_death(self, agent) -> None:
         self.replay.end_episode(agent.id)
@@ -78,7 +90,9 @@ class SharedLearner:
             h, z, _, _ = self._act_wm.obs_step(h, z, a_prev, obs, gen)
             genes = obs[:, cfg.gene_slice[0] : cfg.gene_slice[1]]
             s_g = self._act_wm.head_input(h, z, genes)
-            action, _ = self.slab.act_single(agent.rssm_slot, s_g, gen)
+            action, _ = self.slab.act_single(
+                agent.rssm_slot, s_g, gen, params_override=self._act_actor
+            )
         agent._rssm_last_action = action.unsqueeze(0)
         return {
             "action_list": [float(x) for x in action],
@@ -107,6 +121,8 @@ class SharedLearner:
             self.prototype.update(self.slab)
         if self._act_wm is not self.wm:
             self._act_wm = copy.deepcopy(self.wm).cpu().eval()
+        if self._act_actor is not None:  # actor params may have moved this cycle
+            self._act_actor = self.slab.actor_snapshot_cpu()
         return metrics
 
     def _imagination_pass(self, agents, tick: int) -> dict | None:
@@ -128,7 +144,12 @@ class SharedLearner:
             h0s.append(h[:, -1])
             z0s.append(z[:, -1])
             genes_l.append(obs_w[:, -1, cfg.gene_slice[0] : cfg.gene_slice[1]])
-            slots.append(torch.full((obs_w.shape[0],), a.rssm_slot, dtype=torch.long))
+            # slots indexes both self.slab.params (train_device) and self.slab.step_count
+            # (always CPU, see ActorCriticSlab._adam_step) — build it on train_device to
+            # match the params it indexes; _adam_step handles the CPU bookkeeping side.
+            slots.append(
+                torch.full((obs_w.shape[0],), a.rssm_slot, dtype=torch.long, device=obs_w.device)
+            )
         if not h0s:
             return None
         return self.slab.imagination_update(
@@ -159,6 +180,8 @@ class SharedLearner:
         self.slab.load_state(sd["slab"])
         if self._act_wm is not self.wm:
             self._act_wm = copy.deepcopy(self.wm).cpu().eval()
+        if self._act_actor is not None:  # slab params replaced wholesale — full refresh
+            self._act_actor = self.slab.actor_snapshot_cpu()
         for a in agents:  # re-open episodes for living agents
             if getattr(a, "rssm_slot", None) is not None:
                 self.replay.start_episode(a.id, getattr(a, "spawn_origin", "unknown"))
