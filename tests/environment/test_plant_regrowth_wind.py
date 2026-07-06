@@ -69,7 +69,7 @@ def test_bare_cell_regrows_even_in_a_storm():
     )
 
 
-def test_wind_still_damages_standing_vegetation():
+def test_wind_still_damages_standing_resource_cover():
     seed_all(7)
     world = World(30, 20)
     x, y = _fertile_cell(world)

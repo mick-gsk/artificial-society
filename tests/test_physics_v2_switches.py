@@ -11,7 +11,7 @@ from artificial_society.simulation import Simulation
 _PARAMS = dict(headless=True, load_checkpoint=False, grid_w=20, grid_h=15, initial_population=8)
 
 
-def test_v2_forage_laesst_fleisch_zellpools_unangetastet():
+def test_v2_gather_laesst_fleisch_zellpools_unangetastet():
     """B6: Zell-Fleisch/Aas-Pools AUS — ein einziger Pfad für Fleischkalorien (Kadaver-Objekte)."""
     sim = Simulation(seed=42, physics_v2=True, **_PARAMS)
     agent = sim.agents[0]
@@ -21,7 +21,7 @@ def test_v2_forage_laesst_fleisch_zellpools_unangetastet():
     sim.world.set_cell(x, y, "meat_food", 50.0)
     sim.world.set_cell(x, y, "plant_food", 20.0)
 
-    agent._forage(sim.world, {})
+    agent._gather(sim.world, {})
 
     cell = sim.world.get_cell(x, y)
     assert cell["carcasses"] == pytest.approx(50.0)
@@ -29,13 +29,13 @@ def test_v2_forage_laesst_fleisch_zellpools_unangetastet():
     assert cell["plant_food"] < 20.0  # Pflanzen-Zell-Foraging bleibt AN
 
 
-def test_v1_forage_unveraendert():
+def test_v1_gather_unveraendert():
     sim = Simulation(seed=42, physics_v2=False, **_PARAMS)
     agent = sim.agents[0]
     agent.traits["diet_preference"] = 1.0
     x, y = agent.pos
     sim.world.set_cell(x, y, "carcasses", 50.0)
-    agent._forage(sim.world, {})
+    agent._gather(sim.world, {})
     assert sim.world.get_cell(x, y)["carcasses"] < 50.0
 
 

@@ -92,10 +92,10 @@ def territory_reward_for_agent(agent, world) -> float:
     return reward
 
 
-def get_home_forage_bonus(agent, world) -> float:
+def get_home_gather_bonus(agent, world) -> float:
     """
     Gibt den Sammel-Effizienz-Bonus auf eigenem Territorium zurueck.
-    Wird in agent.forage() als Multiplikator addiert.
+    Wird in agent._gather() als Multiplikator addiert.
     Biologisch: Tiere kennen ihr Revier besser und sammeln effizienter.
     """
     if agent.tribe_id is None:

@@ -342,10 +342,10 @@ def _item_potency(tag: str) -> float:
     """
     vec = get_vector(tag)
     if float(np.linalg.norm(vec)) > 1e-3:
-        scent = float(vec[IDX["scent"]])
+        trail = float(vec[IDX["trail"]])
         edible = float(vec[IDX["edibility"]])
         tox = float(vec[IDX["toxicity"]])
-        return max(0.0, scent * 1.0 + edible * 0.4 - tox * 1.5)
+        return max(0.0, trail * 1.0 + edible * 0.4 - tox * 1.5)
     if tag.startswith("herb_"):
         return 0.6
     if tag in ("water", "plant_food"):

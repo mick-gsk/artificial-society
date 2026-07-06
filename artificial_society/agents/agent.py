@@ -39,7 +39,7 @@ from artificial_society.environment.structures import (
     structure_feature_vector,
 )
 from artificial_society.environment.territory import (
-    get_home_forage_bonus,
+    get_home_gather_bonus,
     territory_reward_for_agent,
 )
 from artificial_society.systems.causal_model import CausalModelV2
@@ -95,7 +95,7 @@ PLANT_ENERGY = 30.0
 MEAT_ENERGY = 45.0
 CORPSE_ENERGY = 36.0
 
-SHARP_STONE_FORAGE_BONUS = 0.30
+SHARP_STONE_GATHER_BONUS = 0.30
 SHARP_STONE_COLLECT_BONUS = 0.20
 
 SLEEP_DRIVE_THRESHOLD = 0.45
@@ -105,8 +105,8 @@ SLEEP_HEALTH_REGEN = 0.25
 STAGE_SPAWN = 120  # life_stage.CHILD_MAX
 STAGE_ELDER = ELDER_AGE  # life_stage.ADULT_MAX (3500)
 
-COOP_FORAGE_BONUS_PER_MEMBER = 0.14
-COOP_FORAGE_MAX_BONUS = 0.65
+COOP_GATHER_BONUS_PER_MEMBER = 0.14
+COOP_GATHER_MAX_BONUS = 0.65
 COOP_DEFENSE_HEALTH_BONUS = 0.08
 COOP_SHARE_THRESHOLD_DONOR = 160.0
 COOP_SHARE_THRESHOLD_RECV = 60.0
@@ -592,12 +592,12 @@ class Agent:
         if cell.get("passable", True):
             self.pos = (nx, ny)
 
-    def _forage(self, world, mods):
+    def _gather(self, world, mods):
         x, y = self.pos
         cell = world.get_cell(x, y)
         gain = 0.0
-        tool_bonus = SHARP_STONE_FORAGE_BONUS if self.tool == "sharp_stone" else 0.0
-        home_bonus = get_home_forage_bonus(self, world)
+        tool_bonus = SHARP_STONE_GATHER_BONUS if self.tool == "sharp_stone" else 0.0
+        home_bonus = get_home_gather_bonus(self, world)
         eff = mods.get("forage_eff", 1.0) * (1.0 + tool_bonus + home_bonus)
         diet = self.traits.get("diet_preference", 0.0)
         # Energy conservation (Phase 4): consumption debits the cell's *source*
@@ -619,7 +619,7 @@ class Agent:
                 self.plant_eaten += 1
                 gain += take
                 self.modulation.apply_substance("plant_food", take / PLANT_ENERGY)
-                self.modulation.apply_successful_forage(take)
+                self.modulation.apply_successful_gather(take)
         else:
             # Carnivore/omnivore: carcasses first (now correctly keyed on the
             # stored `carcasses` field, not the never-present `carcass`), then the
@@ -634,7 +634,7 @@ class Agent:
                 self.meat_eaten += 1
                 gain += take
                 self.modulation.apply_substance("raw_meat", take / MEAT_ENERGY)
-                self.modulation.apply_successful_forage(take)
+                self.modulation.apply_successful_gather(take)
             elif meat_available > 0:
                 take = min(meat_available, MEAT_ENERGY * eff)
                 apply_consumption(world, x, y, meat=take)
@@ -642,7 +642,7 @@ class Agent:
                 self.meat_eaten += 1
                 gain += take
                 self.modulation.apply_substance("raw_meat", take / MEAT_ENERGY)
-                self.modulation.apply_successful_forage(take)
+                self.modulation.apply_successful_gather(take)
             elif plant_available > 0:
                 take = min(plant_available, PLANT_ENERGY * eff)
                 apply_consumption(world, x, y, plant=take)
@@ -650,7 +650,7 @@ class Agent:
                 self.plant_eaten += 1
                 gain += take
                 self.modulation.apply_substance("plant_food", take / PLANT_ENERGY)
-                self.modulation.apply_successful_forage(take)
+                self.modulation.apply_successful_gather(take)
         water_available = cell.get("water", 0.0)
         if water_available > 0 and self.hydration < 100.0:
             take = min(water_available, 8.0 * eff)
@@ -751,10 +751,10 @@ class Agent:
         # little energy for the active cooperator. Zero-sum: self gains exactly what
         # the donors actually give (the MAX_ENERGY clamp can only lose energy, never
         # create it).
-        forage_bonus = min(COOP_FORAGE_MAX_BONUS, len(nearby) * COOP_FORAGE_BONUS_PER_MEMBER)
+        gather_bonus = min(COOP_GATHER_MAX_BONUS, len(nearby) * COOP_GATHER_BONUS_PER_MEMBER)
         donors = [a for a in nearby if a.energy > self.energy]
-        if forage_bonus > 0.0 and donors:
-            per = forage_bonus / len(donors)
+        if gather_bonus > 0.0 and donors:
+            per = gather_bonus / len(donors)
             pooled = 0.0
             for donor in donors:
                 contrib = min(per, donor.energy)
@@ -1431,7 +1431,7 @@ class Agent:
 
         if not self.is_sleeping:
             if action["forage"] > 0.0:
-                gained = self._forage(
+                gained = self._gather(
                     world,
                     {
                         **mods,

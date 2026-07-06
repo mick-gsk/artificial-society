@@ -83,7 +83,7 @@ def _put_agent_on_land(sim, agent):
 # ---------------------------------------------------------------------------
 
 
-def test_herbivore_forage_transfers_exactly_the_plant_food_it_removes():
+def test_herbivore_gather_transfers_exactly_the_plant_food_it_removes():
     sim = _sim()
     agent = sim.agents[0]
     agent.traits["diet_preference"] = -0.6  # herbivore
@@ -96,7 +96,7 @@ def test_herbivore_forage_transfers_exactly_the_plant_food_it_removes():
 
     e0 = agent.energy
     p0 = cell["plant_food"]
-    agent._forage(sim.world, {})
+    agent._gather(sim.world, {})
     gained = agent.energy - e0
     removed = p0 - cell["plant_food"]
 
@@ -122,7 +122,7 @@ def test_carnivore_eats_carcasses_and_transfers_exactly_what_it_removes():
 
     e0 = agent.energy
     c0 = cell["carcasses"]
-    agent._forage(sim.world, {})
+    agent._gather(sim.world, {})
     gained = agent.energy - e0
     removed = c0 - cell["carcasses"]
 
@@ -131,7 +131,7 @@ def test_carnivore_eats_carcasses_and_transfers_exactly_what_it_removes():
     assert gained == pytest.approx(removed, abs=EPS)
 
 
-def test_carnivore_meat_pool_forage_is_conservative():
+def test_carnivore_meat_pool_gather_is_conservative():
     sim = _sim()
     agent = sim.agents[0]
     agent.traits["diet_preference"] = 0.8
@@ -145,7 +145,7 @@ def test_carnivore_meat_pool_forage_is_conservative():
 
     e0 = agent.energy
     m0 = cell["meat_food"]
-    agent._forage(sim.world, {})
+    agent._gather(sim.world, {})
     gained = agent.energy - e0
     removed = m0 - cell["meat_food"]
 
@@ -178,7 +178,7 @@ def test_corpse_total_harvestable_energy_equals_corpse_value():
 # ---------------------------------------------------------------------------
 
 
-def test_cooperation_forage_bonus_is_zero_sum():
+def test_cooperation_gather_bonus_is_zero_sum():
     sim = _sim()
     a, b, c = sim.agents[0], sim.agents[1], sim.agents[2]
     for agent in (a, b, c):
@@ -316,7 +316,7 @@ def test_consumption_persists_against_regrowth():
     )
 
 
-def test_forage_respects_energy_cap_without_minting_beyond_it():
+def test_gather_respects_energy_cap_without_minting_beyond_it():
     sim = _sim()
     agent = sim.agents[0]
     agent.traits["diet_preference"] = -0.6
@@ -326,5 +326,5 @@ def test_forage_respects_energy_cap_without_minting_beyond_it():
     cell["plant_food"] = 60.0
     cell["food"] = cell["plant_food"]
 
-    agent._forage(sim.world, {})
+    agent._gather(sim.world, {})
     assert agent.energy <= MAX_ENERGY + EPS

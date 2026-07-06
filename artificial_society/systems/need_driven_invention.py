@@ -122,7 +122,7 @@ def compute_need_vector(agent, cell: dict) -> np.ndarray:
     if is_sick:
         need[IDX["edibility"]] += 0.6
         need[IDX["toxicity"]] -= 1.0  # extra toxicity-aversion
-        need[IDX["scent"]] += 0.3  # aromatische Heilpflanzen
+        need[IDX["trail"]] += 0.3  # aromatische Heilpflanzen
 
     # Niedrige Gesundheit (verletzt, nicht unbedingt krank)
     health_drive = max(0.0, 0.6 - health_ratio)
@@ -133,7 +133,7 @@ def compute_need_vector(agent, cell: dict) -> np.ndarray:
     curiosity = agent.traits.get("curiosity", 0.5)
     if curiosity > 0.7 and energy_need_drive < 0.3 and cold_drive < 0.3:
         # Kein unmittelbarer Druck -> erkunde interessante Eigenschaften
-        need[IDX["scent"]] += curiosity * 0.4
+        need[IDX["trail"]] += curiosity * 0.4
         need[IDX["conductivity"]] += curiosity * 0.3
         need[IDX["light_emission"]] += curiosity * 0.2
 
@@ -243,7 +243,7 @@ def _select_action_by_need(
     heat_need = float(max(need[IDX["heat_emission"]], need[IDX["flammable"]]))
     sharp_need = float(need[IDX["sharpness"]])
     food_need = float(need[IDX["edibility"]])
-    scent_need = float(need[IDX["scent"]])
+    trail_need = float(need[IDX["trail"]])
     light_need = float(need[IDX["light_emission"]])
 
     mat_b_vec_safe = mat_b_vec if mat_b_vec is not None else np.zeros(N_PROPS, dtype=np.float32)
@@ -251,7 +251,7 @@ def _select_action_by_need(
     # rub: gut wenn beide Materialien hart+trocken sind (Feuer) oder weich (Mischen)
     rub_affinity = (
         float(mat_a_vec[IDX["hardness"]]) * float(mat_b_vec_safe[IDX["hardness"]]) * heat_need
-        + float(mat_a_vec[IDX["scent"]]) * scent_need * 0.4
+        + float(mat_a_vec[IDX["trail"]]) * trail_need * 0.4
     )
     action_scores["rub"] = rub_affinity
 
@@ -274,8 +274,8 @@ def _select_action_by_need(
     bundle_affinity = (
         float(mat_a_vec[IDX["flammable"]]) + float(mat_b_vec_safe[IDX["flammable"]])
     ) * heat_need * 0.5 + (
-        float(mat_a_vec[IDX["scent"]]) + float(mat_b_vec_safe[IDX["scent"]])
-    ) * scent_need * 0.6
+        float(mat_a_vec[IDX["trail"]]) + float(mat_b_vec_safe[IDX["trail"]])
+    ) * trail_need * 0.6
     action_scores["bundle"] = bundle_affinity
 
     # blow: gut wenn Glut/Feuer vorhanden

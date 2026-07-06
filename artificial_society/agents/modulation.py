@@ -171,7 +171,7 @@ class ModulationSystem:
         self.h[AROUSAL] = _clamp(self.h[AROUSAL] + 0.35)
         self.h[STRESS] = _clamp(self.h[STRESS] + 0.20)
 
-    def apply_successful_forage(self, gain: float):
+    def apply_successful_gather(self, gain: float):
         """Eating well raises serotonin and upkeep."""
         boost = min(0.12, gain * 0.04)
         self.h[SATISFACTION] = _clamp(self.h[SATISFACTION] + boost)

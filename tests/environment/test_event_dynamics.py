@@ -154,7 +154,7 @@ def test_fire_depletes_without_fuel(monkeypatch):
     )
 
 
-def test_blight_needs_moist_dense_vegetation(monkeypatch):
+def test_blight_needs_moist_dense_resource_cover(monkeypatch):
     monkeypatch.setattr(ev, "EVENT_WARMUP_TICKS", 0)
     monkeypatch.setattr(random, "random", lambda: 0.0)
 
