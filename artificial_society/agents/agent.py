@@ -839,7 +839,7 @@ class Agent:
         self.replication_cooldown = REPLICATION_COOLDOWN
         partner.replication_cooldown = REPLICATION_COOLDOWN
         self.pending_spawn = True
-        eff = self.traits.get("gestation_efficiency", 1.0)
+        eff = self.traits.get("spawn_delay_efficiency", 1.0)
 
         self.spawn_delay = max(20, int(SPAWN_DELAY_TIME / eff))
         self.stored_spawn_traits = spawn_traits

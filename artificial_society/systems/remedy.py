@@ -52,7 +52,7 @@ REMEDY_REGISTRY: dict[str, dict] = {
         "initial_sick": 10.0,
         "immunity_after": 300,  # ticks of resistance after recovery
         # Per-tick indicator effects (applied inside apply_fault)
-        "symptom": {
+        "indicator": {
             "energy_drain": 0.12,  # fatigue
             "hydration_drain": 0.20,  # sweating / chills
             "health_drain_per_sick": 0.008,
@@ -80,7 +80,7 @@ REMEDY_REGISTRY: dict[str, dict] = {
         "spread_rate": 0.012,
         "initial_sick": 12.0,
         "immunity_after": 180,
-        "symptom": {
+        "indicator": {
             "energy_drain": 0.08,
             "hydration_drain": 0.50,  # major indicator: dehydration
             "health_drain_per_sick": 0.010,
@@ -107,7 +107,7 @@ REMEDY_REGISTRY: dict[str, dict] = {
         "spread_rate": 0.008,  # airborne but slower incubation
         "initial_sick": 6.0,  # slow onset
         "immunity_after": 400,  # long resistance after recovery
-        "symptom": {
+        "indicator": {
             "energy_drain": 0.10,
             "hydration_drain": 0.05,
             "health_drain_per_sick": 0.012,  # slowly lethal if untreated
@@ -135,7 +135,7 @@ REMEDY_REGISTRY: dict[str, dict] = {
         "spread_rate": 0.010,
         "initial_sick": 14.0,
         "immunity_after": 500,  # typhoid gives long-term resistance historically
-        "symptom": {
+        "indicator": {
             "energy_drain": 0.15,
             "hydration_drain": 0.25,
             "health_drain_per_sick": 0.009,
@@ -163,7 +163,7 @@ REMEDY_REGISTRY: dict[str, dict] = {
         "spread_rate": 0.0,  # non-spreading
         "initial_sick": 8.0,
         "immunity_after": 100,
-        "symptom": {
+        "indicator": {
             "energy_drain": 0.10,
             "hydration_drain": 0.02,
             "health_drain_per_sick": 0.006,
@@ -191,7 +191,7 @@ REMEDY_REGISTRY: dict[str, dict] = {
         "spread_rate": 0.006,  # low contact spread (handling wounds)
         "initial_sick": 18.0,  # fast and aggressive onset
         "immunity_after": 150,
-        "symptom": {
+        "indicator": {
             "energy_drain": 0.18,  # most draining fault
             "hydration_drain": 0.15,
             "health_drain_per_sick": 0.014,  # most dangerous
@@ -290,22 +290,26 @@ def apply_fault_indicators(agent, cell: dict):
     if rec is None:
         return False
 
-    sym = rec.get("symptom", {})
+    indicator = rec.get("indicator", {})
     impaired_ratio = agent.impaired / 100.0
 
     # Core stat drains (scaled by how impaired the agent is)
-    agent.energy = max(0.0, agent.energy - sym.get("energy_drain", 0.08) * impaired_ratio)
-    agent.hydration = max(0.0, agent.hydration - sym.get("hydration_drain", 0.10) * impaired_ratio)
-    agent.health = max(0.0, agent.health - sym.get("health_drain_per_sick", 0.008) * agent.impaired)
+    agent.energy = max(0.0, agent.energy - indicator.get("energy_drain", 0.08) * impaired_ratio)
+    agent.hydration = max(
+        0.0, agent.hydration - indicator.get("hydration_drain", 0.10) * impaired_ratio
+    )
+    agent.health = max(
+        0.0, agent.health - indicator.get("health_drain_per_sick", 0.008) * agent.impaired
+    )
 
     # Special indicator flags
-    if sym.get("regen_block"):
+    if indicator.get("regen_block"):
         # Scurvy: prevent natural health regen (handled externally by flag check)
         agent._scurvy_active = True
     else:
         agent._scurvy_active = False
 
-    if sym.get("confusion") and agent.impaired > 50:
+    if indicator.get("confusion") and agent.impaired > 50:
         # Typhoid: randomly corrupt one action weight this tick
         agent._confused = True
     else:
