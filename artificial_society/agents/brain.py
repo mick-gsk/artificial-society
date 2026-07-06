@@ -74,12 +74,12 @@ VALUE_WEIGHT = 0.50
 REWARD_WEIGHT = 0.35
 
 # --- Neuronale Praedisposition durch Vererbung ---
-WEIGHT_INHERIT_STRENGTH = 0.55
-WEIGHT_MUTATION_SCALE = 0.018
+WEIGHT_DERIVE_STRENGTH = 0.55
+WEIGHT_PERTURBATION_SCALE = 0.018
 
 # --- Imitationslernen (Spiegelneuronen-Analogie) ---
 IMITATION_STRENGTH = 0.10
-IMITATION_MUTATION = 0.01
+IMITATION_PERTURBATION = 0.01
 
 # --- Episodic novelty (NGU-style) ---
 EPISODIC_MEMORY_CAPACITY = 500
@@ -235,11 +235,11 @@ class Brain(nn.Module):
     # ------------------------------------------------------------------
     # Gewichtsvererbung
     # ------------------------------------------------------------------
-    def inherit_weights_from(
+    def derive_weights_from(
         self,
         parent_brain: Brain,
-        strength: float = WEIGHT_INHERIT_STRENGTH,
-        mutation_scale: float = WEIGHT_MUTATION_SCALE,
+        strength: float = WEIGHT_DERIVE_STRENGTH,
+        perturbation_scale: float = WEIGHT_PERTURBATION_SCALE,
     ):
         with torch.no_grad():
             for (_, child_param), (_, parent_param) in zip(
@@ -250,9 +250,9 @@ class Brain(nn.Module):
                     # v1→v2 GEWOLLT — nur form-gleiche Teile (encoder, value,
                     # v1-Anteile) werden vererbt, neue Module starten frisch.
                     continue
-                mutation = torch.randn_like(child_param) * mutation_scale
+                perturbation = torch.randn_like(child_param) * perturbation_scale
                 child_param.copy_(
-                    strength * parent_param + (1.0 - strength) * child_param + mutation
+                    strength * parent_param + (1.0 - strength) * child_param + perturbation
                 )
 
     # ------------------------------------------------------------------
@@ -262,7 +262,7 @@ class Brain(nn.Module):
         self,
         model_brain: Brain,
         strength: float = IMITATION_STRENGTH,
-        mutation_scale: float = IMITATION_MUTATION,
+        perturbation_scale: float = IMITATION_PERTURBATION,
     ):
         with torch.no_grad():
             for (_, my_param), (_, model_param) in zip(
@@ -270,7 +270,7 @@ class Brain(nn.Module):
             ):
                 if my_param.shape != model_param.shape:
                     continue
-                noise = torch.randn_like(my_param) * mutation_scale
+                noise = torch.randn_like(my_param) * perturbation_scale
                 my_param.copy_((1.0 - strength) * my_param + strength * model_param + noise)
 
     def initial_hidden(self):

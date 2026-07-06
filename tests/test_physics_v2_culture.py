@@ -31,7 +31,7 @@ def test_v2_kind_erbt_keine_brain_gewichte():
         for _, p in parent.brain.named_parameters():
             p.add_(torch.randn_like(p) * 0.5)
     parent_w = _brain_weight_snapshot(parent.brain)
-    child = sim.spawn_child_from_parent(parent, dict(parent.genes))
+    child = sim.spawn_child_from_parent(parent, dict(parent.traits))
     child_w = _brain_weight_snapshot(child.brain)
     paare = [(c, p) for c, p in zip(child_w, parent_w) if c.shape == p.shape]
     assert paare, "keine form-gleichen Tensoren gefunden"
@@ -51,7 +51,7 @@ def test_v2_kind_erbt_keine_lern_stores():
     parent.causal_memory.receive_transmitted(("strike", "mat_flint", "mat_stone"), fidelity=0.9)
     parent.remedy_knowledge = {"cough": ["herb_b"]}
     parent.material_inventory = {"mat_flint": 2.0, "water": 1.0}
-    child = sim.spawn_child_from_parent(parent, dict(parent.genes))
+    child = sim.spawn_child_from_parent(parent, dict(parent.traits))
     assert getattr(child, "causal_memory", None) is None or not child.causal_memory.sequences
     assert not child.remedy_knowledge
     child_mats = getattr(child, "material_inventory", {})
@@ -62,7 +62,7 @@ def test_v2_kind_erbt_kein_resource_memory():
     sim = _v2_sim()
     parent = sim.agents[0]
     parent.memory.resource_memory = [(2, 2), (3, 3), (4, 4)]
-    child = sim.spawn_child_from_parent(parent, dict(parent.genes))
+    child = sim.spawn_child_from_parent(parent, dict(parent.traits))
     assert child.memory.resource_memory == [], "resource_memory vererbt (A10 nicht gegated)"
 
 
@@ -96,7 +96,7 @@ def test_spawn_child_wird_nie_mit_parent_aufgerufen():
         assert len(call.args) <= 6  # parent ist der 7. Positionsparameter
 
 
-def test_latente_inherit_from_methoden_feuern_nicht_bei_geburt():
+def test_latente_derive_from_methoden_feuern_nicht_bei_geburt():
     """StrategySystem.inherit_from / EpisodicStrategyMemory.inherit_from sind
     uncalled — Agenten tragen die Attribute nicht. Wächter gegen versehentliches
     Verdrahten."""
@@ -107,16 +107,16 @@ def test_latente_inherit_from_methoden_feuern_nicht_bei_geburt():
     assert not hasattr(a, "episodic_strategy")
 
 
-def test_v2_kind_erbt_weiter_gene_und_trust_prior():
+def test_v2_kind_erbt_weiter_trait_und_trust_prior():
     sim = _v2_sim()
     parent = sim.agents[0]
     parent.tribe_id = 1  # frisches Sim hat tribe_id=None → trust-Zweig feuerte nie
     # strength aus den übergebenen Genen entfernen → prüft den v2-Pfad
     # (inherit_strength_gene) echt, statt tautologisch die Dict-Kopie
-    genes = dict(parent.genes)
-    genes.pop("strength", None)
-    child = sim.spawn_child_from_parent(parent, genes)
-    assert "strength" in child.genes, "strength-Gen wurde nicht via v2-Pfad ergänzt"
+    traits = dict(parent.traits)
+    traits.pop("strength", None)
+    child = sim.spawn_child_from_parent(parent, traits)
+    assert "strength" in child.traits, "strength-Gen wurde nicht via v2-Pfad ergänzt"
     # Verwandtschafts-Prior bleibt (fester Wert, kein Lamarck)
     assert child.trust.get(parent.id) == 0.4
 
@@ -139,7 +139,7 @@ def test_v2_geburten_smoke_nan_frei():
     """Kurzer v2-Lauf mit garantierter Geburt bleibt NaN-frei (Sanity nach dem Umbau)."""
     sim = _v2_sim()
     # Geburt erzwingen (der reguläre Caller extendet sim.agents selbst; hier manuell)
-    sim.agents.append(sim.spawn_child_from_parent(sim.agents[0], dict(sim.agents[0].genes)))
+    sim.agents.append(sim.spawn_child_from_parent(sim.agents[0], dict(sim.agents[0].traits)))
     for _ in range(40):
         sim.step()
     assert len(sim.agents) > 0

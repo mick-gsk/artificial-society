@@ -10,6 +10,7 @@ Locks the three behaviours the 60-tick golden trajectory does NOT cover:
            re-feed into the grad-enabled PPO forward in maybe_train() without an
            "inference tensors cannot be saved for backward" error.
 """
+
 from __future__ import annotations
 
 import pickle
@@ -29,7 +30,7 @@ def _fill(em: EpisodicMemory, n: int) -> None:
 
 
 # --- TC-3: cache is value-identical and correctly invalidated ----------------
-def test_stacked_matches_plain_stack_across_mutations():
+def test_stacked_matches_plain_stack_across_perturbations():
     em = EpisodicMemory(capacity=32, k=4)
     _fill(em, 20)
     assert torch.equal(em.stacked(), torch.stack(list(em.buffer)))
@@ -40,7 +41,7 @@ def test_stacked_matches_plain_stack_across_mutations():
     assert torch.equal(em.stacked(), torch.stack(list(em.buffer)))
 
 
-def test_stacked_cache_reused_until_mutation():
+def test_stacked_cache_reused_until_perturbation():
     em = EpisodicMemory(capacity=32, k=4)
     _fill(em, 10)
     first = em.stacked()

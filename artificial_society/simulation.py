@@ -14,7 +14,7 @@ from artificial_society.agents.agent import (
     ensure_fields,
 )
 from artificial_society.agents.brain import ACTION_SIZE_V2, OBJ_CTX_DIM
-from artificial_society.agents.genetics import inherit_strength as inherit_strength_gene
+from artificial_society.agents.traits import derive_strength as derive_strength_trait
 from artificial_society.environment.materials import DISCOVERY_REGISTRY
 from artificial_society.environment.phys_objects import seed_initial
 from artificial_society.environment.physics.body import BODY_MASS_DEFAULT_KG
@@ -48,8 +48,8 @@ CHECKPOINT_FORMAT_VERSION = 2
 
 IMMUNITY_WINDOW_DEFAULT = 200
 
-INHERIT_SEQUENCES = 10
-INHERIT_FIDELITY = 0.70
+DERIVE_SEQUENCES = 10
+DERIVE_FIDELITY = 0.70
 DEATH_BROADCAST_FIDELITY = 0.45
 DEATH_BROADCAST_RADIUS = 4
 
@@ -195,7 +195,7 @@ class Simulation:
                 attach_body(agent)
             self.agents.append(agent)
 
-    def spawn_child_from_parent(self, parent, genes):
+    def spawn_child_from_parent(self, parent, traits):
         x, y = self.world.find_free_neighbor(parent.pos)
         if x is None:
             x, y = parent.pos
@@ -204,7 +204,7 @@ class Simulation:
         mate_id = getattr(parent, "_last_mate_id", None)
         if mate_id is not None:
             other_parent = agent_by_id.get(mate_id)
-        child = self.evolution.make_child(parent, x, y, genes=genes, other_parent=other_parent)
+        child = self.evolution.make_child(parent, x, y, traits=traits, other_parent=other_parent)
         child.hidden_state = child.brain.initial_hidden()
         child.birth_tick = self.tick
         # Birth is an energy TRANSFER from the mother, not minting: the child
@@ -219,29 +219,27 @@ class Simulation:
             # überspringt es — Golden), DANN baut attach_body den Body daraus.
             # ALIAS beachten: `inherit_strength` ist in dieser Funktion bereits
             # die lokale Gewichts-Vererbungsstärke — daher inherit_strength_gene.
-            inherit_strength_gene(child.genes, parent, other_parent)
+            derive_strength_trait(child.traits, parent, other_parent)
             attach_body(child)
         if not self.physics_v2:
             # Plan 4 (Kultur-Korrektur): im v2-Pfad wird KEIN Gelerntes vererbt —
             # Kind startet mit frischem Netz (attach_body) + leeren Lern-Stores.
             # Nur Gene (inkl. strength) gehen ans Kind. Kultur überlebt allein
             # über soziales Lernen zu Lebzeiten.
-            inherit_strength = max(
-                0.20, min(0.75, 0.75 - (child.genes["plasticity"] - 0.3) / (1.8 - 0.3) * 0.55)
+            derive_strength = max(
+                0.20, min(0.75, 0.75 - (child.traits["plasticity"] - 0.3) / (1.8 - 0.3) * 0.55)
             )
-            child.brain.inherit_weights_from(parent.brain, strength=inherit_strength)
+            child.brain.derive_weights_from(parent.brain, strength=derive_strength)
             if other_parent is not None:
-                child.brain.inherit_weights_from(
-                    other_parent.brain, strength=inherit_strength * 0.4
-                )
+                child.brain.derive_weights_from(other_parent.brain, strength=derive_strength * 0.4)
             parent_mem = getattr(parent, "causal_memory", None)
             if parent_mem:
                 child.causal_memory = CausalMemory(capacity=32)
-                for seq in list(parent_mem.sequences.keys())[:INHERIT_SEQUENCES]:
-                    child.causal_memory.receive_transmitted(seq, fidelity=INHERIT_FIDELITY)
+                for seq in list(parent_mem.sequences.keys())[:DERIVE_SEQUENCES]:
+                    child.causal_memory.receive_transmitted(seq, fidelity=DERIVE_FIDELITY)
             if parent.remedy_knowledge:
                 for disease, herbs in parent.remedy_knowledge.items():
-                    if random.random() < INHERIT_FIDELITY:
+                    if random.random() < DERIVE_FIDELITY:
                         child.remedy_knowledge[disease] = list(herbs)
             parent_inv = getattr(parent, "material_inventory", {})
             parent_discoveries = {
@@ -252,7 +250,7 @@ class Simulation:
             if parent_discoveries:
                 child_inv = getattr(child, "material_inventory", {})
                 for mat_id, qty in parent_discoveries.items():
-                    if random.random() < INHERIT_FIDELITY:
+                    if random.random() < DERIVE_FIDELITY:
                         child_inv[mat_id] = (
                             child_inv.get(mat_id, 0.0) + qty * DEATH_MATERIAL_TRANSFER_RATIO
                         )
@@ -604,7 +602,7 @@ class Simulation:
         for agent in list(self.agents):
             if not agent.alive:
                 continue
-            child_genes = agent.update(
+            child_traits = agent.update(
                 self.world,
                 self.agents,
                 tick,
@@ -614,8 +612,8 @@ class Simulation:
                 economy=self.economy,
                 technology=self.technology,
             )
-            if child_genes is not None:
-                new_children.append(self.spawn_child_from_parent(agent, child_genes))
+            if child_traits is not None:
+                new_children.append(self.spawn_child_from_parent(agent, child_traits))
         self.agents.extend(new_children)
 
         # Flag aus: Pre-Filtering unverändert (Golden-Garantie) — Tote erreichen

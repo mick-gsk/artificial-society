@@ -75,49 +75,48 @@ Decay:
 from __future__ import annotations
 
 import math
-import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
-
 
 # ---------------------------------------------------------------------------
 # Constants (biologically motivated)
 # ---------------------------------------------------------------------------
 
 # Decay rate per tick for a normal (non-traumatic) trace
-BASE_DECAY_RATE         = 0.0015   # full trace lasts ~667 ticks
-FLASHBULB_DECAY_RATE    = 0.00025  # ~4000 ticks (years in agent time)
-TRAUMA_FLOOR            = 0.20     # traumatic traces never drop below this strength
-TRAUMA_CORTISOL_THRESH  = 0.78
+BASE_DECAY_RATE = 0.0015  # full trace lasts ~667 ticks
+FLASHBULB_DECAY_RATE = 0.00025  # ~4000 ticks (years in agent time)
+TRAUMA_FLOOR = 0.20  # traumatic traces never drop below this strength
+TRAUMA_CORTISOL_THRESH = 0.78
 
 # Extinction per safe re-exposure
-EXTINCTION_RATE         = 0.06
-EXTINCTION_MIN_EXPOSURE = 3        # exposures needed before extinction kicks in
+EXTINCTION_RATE = 0.06
+EXTINCTION_MIN_EXPOSURE = 3  # exposures needed before extinction kicks in
 
 # Mood EMA rate
-MOOD_EMA_RATE           = 0.012
+MOOD_EMA_RATE = 0.012
 
 # Generalisation spread to same-category stimuli
 GENERALISATION_STRENGTH = 0.25
 
 # Max traces stored
-MAX_TRACES              = 64
+MAX_TRACES = 64
 
 # Arousal threshold for flashbulb encoding
-FLASHBULB_AROUSAL       = 0.72
+FLASHBULB_AROUSAL = 0.72
 
 # Context similarity threshold for state-dependent retrieval bonus
 CONTEXT_MATCH_THRESHOLD = 0.25
 
 # Stimulus categories (used for generalisation)
 _CATEGORIES = {
-    'predator': {'predator', 'wolf', 'bear', 'snake', 'attack'},
-    'food':     {'plant_food', 'meat', 'cooked_meat', 'cooked_root', 'water', 'berry'},
-    'herb':     {'herb_willow', 'herb_garlic', 'herb_elderberry', 'herb_mushroom', 'herb_moss'},
-    'agent':    {'agent_trust', 'agent_attack', 'agent_share', 'agent_mate'},
-    'place':    {'home', 'camp', 'fire', 'territory'},
-    'weather':  {'cold', 'heat', 'rain', 'drought'},
+    "predator": {"predator", "wolf", "bear", "snake", "attack"},
+    "food": {"plant_food", "meat", "cooked_meat", "cooked_root", "water", "berry"},
+    "herb": {"herb_willow", "herb_garlic", "herb_elderberry", "herb_mushroom", "herb_moss"},
+    "agent": {"agent_trust", "agent_attack", "agent_share", "agent_mate"},
+    "place": {"home", "camp", "fire", "territory"},
+    "weather": {"cold", "heat", "rain", "drought"},
 }
+
 
 def _category(stimulus: str) -> Optional[str]:
     for cat, members in _CATEGORIES.items():
@@ -147,6 +146,7 @@ class EmotionalTrace:
     category        : str
     last_retrieved  : int
     """
+
     stimulus: str
     valence: float
     arousal: float
@@ -157,7 +157,7 @@ class EmotionalTrace:
     tick_encoded: int
     context_hormones: list  # [cortisol, serotonin, dopamine, adrenaline]
     extinction_count: int = 0
-    category: str = 'unknown'
+    category: str = "unknown"
     last_retrieved: int = 0
 
     def effective_valence(self) -> float:
@@ -178,8 +178,8 @@ class EmotionalMemory:
 
     def __init__(self):
         self.traces: list[EmotionalTrace] = []
-        self.mood: float = 0.0          # persistent affective baseline -1..1
-        self._tick: int  = 0
+        self.mood: float = 0.0  # persistent affective baseline -1..1
+        self._tick: int = 0
 
     # ------------------------------------------------------------------
     # Encoding
@@ -212,34 +212,34 @@ class EmotionalMemory:
         valence = max(-1.0, min(1.0, valence))
 
         # Arousal amplifies encoding strength
-        base_strength   = 0.40 + 0.60 * arousal
-        consolidation   = 0.50 + 0.50 * arousal
+        base_strength = 0.40 + 0.60 * arousal
+        consolidation = 0.50 + 0.50 * arousal
 
         # Flashbulb
         if arousal >= FLASHBULB_AROUSAL:
-            decay_rate    = FLASHBULB_DECAY_RATE
+            decay_rate = FLASHBULB_DECAY_RATE
             consolidation = min(1.0, consolidation + 0.20)
         else:
-            decay_rate    = BASE_DECAY_RATE * (1.0 - 0.5 * arousal)
+            decay_rate = BASE_DECAY_RATE * (1.0 - 0.5 * arousal)
 
         # Trauma
         traumatic = cortisol >= TRAUMA_CORTISOL_THRESH and arousal >= 0.55
         if traumatic:
-            decay_rate  = FLASHBULB_DECAY_RATE * 0.5
+            decay_rate = FLASHBULB_DECAY_RATE * 0.5
             base_strength = 1.0
             consolidation = 1.0
 
-        cat = _category(stimulus) or 'unknown'
+        cat = _category(stimulus) or "unknown"
 
         # Reconsolidation: update existing trace if same stimulus
         existing = self._find_trace(stimulus)
         if existing is not None:
             # Blend new experience into existing trace
             blend = 0.35
-            existing.valence      = (1-blend)*existing.valence + blend*valence
-            existing.arousal      = max(existing.arousal, arousal)
-            existing.strength     = min(1.0, existing.strength + 0.20 * base_strength)
-            existing.consolidation= min(1.0, (existing.consolidation + consolidation) * 0.5 + 0.1)
+            existing.valence = (1 - blend) * existing.valence + blend * valence
+            existing.arousal = max(existing.arousal, arousal)
+            existing.strength = min(1.0, existing.strength + 0.20 * base_strength)
+            existing.consolidation = min(1.0, (existing.consolidation + consolidation) * 0.5 + 0.1)
             existing.last_retrieved = tick
             if traumatic:
                 existing.traumatic = True
@@ -263,8 +263,10 @@ class EmotionalMemory:
         self._update_mood(valence, arousal)
 
         # Generalisation: spread weakly to same-category stimuli
-        if cat != 'unknown':
-            self._generalise(cat, valence, arousal * GENERALISATION_STRENGTH, tick, context_hormones)
+        if cat != "unknown":
+            self._generalise(
+                cat, valence, arousal * GENERALISATION_STRENGTH, tick, context_hormones
+            )
 
         return trace
 
@@ -293,8 +295,8 @@ class EmotionalMemory:
             return False
 
         # Gradual extinction: valence moves toward 0, arousal decays faster
-        trace.valence  = min(0.0, trace.valence + EXTINCTION_RATE)
-        trace.arousal  = max(0.0, trace.arousal  - EXTINCTION_RATE * 0.5)
+        trace.valence = min(0.0, trace.valence + EXTINCTION_RATE)
+        trace.arousal = max(0.0, trace.arousal - EXTINCTION_RATE * 0.5)
         trace.strength = max(
             TRAUMA_FLOOR if trace.traumatic else 0.0,
             trace.strength - EXTINCTION_RATE * 0.3,
@@ -367,7 +369,8 @@ class EmotionalMemory:
             return None
         fears = [
             (t.stimulus, self.fear_of(t.stimulus, current_hormones, tick))
-            for t in self.traces if t.valence < 0
+            for t in self.traces
+            if t.valence < 0
         ]
         if not fears:
             return None
@@ -379,7 +382,8 @@ class EmotionalMemory:
             return None
         desires = [
             (t.stimulus, self.desire_of(t.stimulus, current_hormones, tick))
-            for t in self.traces if t.valence > 0
+            for t in self.traces
+            if t.valence > 0
         ]
         if not desires:
             return None
@@ -402,9 +406,9 @@ class EmotionalMemory:
           High fear traces -> adrenaline priming near fear stimuli
           Flashbulb traces -> contextual adrenaline when retrieved
         """
-        cortisol_delta   = 0.0
-        serotonin_delta  = 0.0
-        dopamine_delta   = 0.0
+        cortisol_delta = 0.0
+        serotonin_delta = 0.0
+        dopamine_delta = 0.0
         adrenaline_delta = 0.0
 
         for t in self.traces:
@@ -413,33 +417,35 @@ class EmotionalMemory:
 
             if t.traumatic and t.strength > TRAUMA_FLOOR:
                 # Chronic low-level cortisol elevation from trauma
-                cortisol_delta   += 0.004 * t.strength
+                cortisol_delta += 0.004 * t.strength
                 adrenaline_delta += 0.002 * t.strength
 
             if ev < -0.2:
                 # Fear/pain memory -> cortisol up, serotonin down
-                cortisol_delta  += 0.003 * abs(ev)
+                cortisol_delta += 0.003 * abs(ev)
                 serotonin_delta -= 0.002 * abs(ev)
             elif ev > 0.2:
                 # Positive memory -> serotonin + dopamine up
                 serotonin_delta += 0.002 * ev
-                dopamine_delta  += 0.001 * ev
+                dopamine_delta += 0.001 * ev
 
         # Mood effect on baseline
         if self.mood > 0.1:
             serotonin_delta += 0.005 * self.mood
-            dopamine_delta  += 0.003 * self.mood
+            dopamine_delta += 0.003 * self.mood
         elif self.mood < -0.1:
-            cortisol_delta  += 0.005 * abs(self.mood)
+            cortisol_delta += 0.005 * abs(self.mood)
             serotonin_delta -= 0.004 * abs(self.mood)
 
         # Clamp deltas to avoid runaway
-        def _c(v): return max(-0.04, min(0.04, v))
+        def _c(v):
+            return max(-0.04, min(0.04, v))
+
         return {
-            'cortisol':   _c(cortisol_delta),
-            'serotonin':  _c(serotonin_delta),
-            'dopamine':   _c(dopamine_delta),
-            'adrenaline': _c(adrenaline_delta),
+            "cortisol": _c(cortisol_delta),
+            "serotonin": _c(serotonin_delta),
+            "dopamine": _c(dopamine_delta),
+            "adrenaline": _c(adrenaline_delta),
         }
 
     # ------------------------------------------------------------------
@@ -480,14 +486,14 @@ class EmotionalMemory:
         self.traces = surviving
 
         # Mood decays slowly toward 0 (hedonic adaptation)
-        self.mood *= (1.0 - 0.003)
+        self.mood *= 1.0 - 0.003
 
     # ------------------------------------------------------------------
     # Inheritance (called at birth from parent)
     # ------------------------------------------------------------------
-    def inherit_from(
+    def derive_from(
         self,
-        parent_em: 'EmotionalMemory',
+        parent_em: EmotionalMemory,
         strength_factor: float = 0.30,
     ) -> None:
         """
@@ -505,11 +511,11 @@ class EmotionalMemory:
                 continue
             child_trace = EmotionalTrace(
                 stimulus=t.stimulus,
-                valence=t.valence * 0.6,   # muted but directional
+                valence=t.valence * 0.6,  # muted but directional
                 arousal=t.arousal * 0.5,
                 strength=t.strength * strength_factor,
                 decay_rate=BASE_DECAY_RATE,  # not inherited as flashbulb
-                traumatic=False,             # trauma not directly inherited
+                traumatic=False,  # trauma not directly inherited
                 consolidation=t.consolidation * 0.5,
                 tick_encoded=self._tick,
                 context_hormones=[0.2, 0.45, 0.3, 0.05],  # default baseline
@@ -525,25 +531,29 @@ class EmotionalMemory:
     def summary(self) -> list[dict]:
         return [
             {
-                'stimulus':      t.stimulus,
-                'valence':       round(t.valence, 2),
-                'arousal':       round(t.arousal, 2),
-                'strength':      round(t.strength, 2),
-                'traumatic':     t.traumatic,
-                'consolidation': round(t.consolidation, 2),
-                'category':      t.category,
-                'extinctions':   t.extinction_count,
+                "stimulus": t.stimulus,
+                "valence": round(t.valence, 2),
+                "arousal": round(t.arousal, 2),
+                "strength": round(t.strength, 2),
+                "traumatic": t.traumatic,
+                "consolidation": round(t.consolidation, 2),
+                "category": t.category,
+                "extinctions": t.extinction_count,
             }
             for t in sorted(self.traces, key=lambda x: -x.strength)
         ]
 
     @property
     def mood_label(self) -> str:
-        if self.mood >  0.35: return 'content'
-        if self.mood >  0.10: return 'neutral_positive'
-        if self.mood < -0.35: return 'distressed'
-        if self.mood < -0.10: return 'neutral_negative'
-        return 'neutral'
+        if self.mood > 0.35:
+            return "content"
+        if self.mood > 0.10:
+            return "neutral_positive"
+        if self.mood < -0.35:
+            return "distressed"
+        if self.mood < -0.10:
+            return "neutral_negative"
+        return "neutral"
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -583,7 +593,7 @@ class EmotionalMemory:
         category shift slightly toward the new valence.
         """
         for t in self.traces:
-            if t.category == category and t.stimulus != 'generalisation':
+            if t.category == category and t.stimulus != "generalisation":
                 blend = GENERALISATION_STRENGTH * 0.15
                 t.valence = (1 - blend) * t.valence + blend * valence
 
@@ -599,13 +609,12 @@ class EmotionalMemory:
         if not h1 or not h2:
             return 0.0
         n = min(len(h1), len(h2))
-        dot  = sum(h1[i] * h2[i] for i in range(n))
-        mag1 = math.sqrt(sum(x*x for x in h1[:n])) or 1e-9
-        mag2 = math.sqrt(sum(x*x for x in h2[:n])) or 1e-9
+        dot = sum(h1[i] * h2[i] for i in range(n))
+        mag1 = math.sqrt(sum(x * x for x in h1[:n])) or 1e-9
+        mag2 = math.sqrt(sum(x * x for x in h2[:n])) or 1e-9
         return dot / (mag1 * mag2)
 
     def __repr__(self) -> str:
         return (
-            f"EmotionalMemory(traces={len(self.traces)}, "
-            f"mood={self.mood:.2f} [{self.mood_label}])"
+            f"EmotionalMemory(traces={len(self.traces)}, mood={self.mood:.2f} [{self.mood_label}])"
         )

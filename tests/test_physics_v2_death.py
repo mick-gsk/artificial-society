@@ -68,7 +68,7 @@ def test_verzweigung_flag_aus_v1_pfad_unveraendert():
 def _erzwungener_kill(sim):
     angreifer, ziel = sim.agents[0], sim.agents[1]
     ziel.pos = angreifer.pos  # adjazent (Radius 1 schließt dieselbe Zelle ein)
-    angreifer.genes["aggression"] = (
+    angreifer.traits["aggression"] = (
         5.0  # threshold 4.7 → random.random() > 4.7 nie → Angriff sicher
     )
     angreifer.trust[ziel.id] = -1.0

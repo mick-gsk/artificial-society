@@ -1,9 +1,9 @@
 from artificial_society.agents.agent import Agent
-from artificial_society.agents.genetics import inherit_genes
+from artificial_society.agents.traits import derive_traits
 
 
 class EvolutionSystem:
-    def make_child(self, parent, x, y, genes=None, other_parent=None):
+    def make_child(self, parent, x, y, traits=None, other_parent=None):
         """
         Erzeugt ein Kind mit korrekter Zwei-Eltern-Vererbung.
 
@@ -13,11 +13,11 @@ class EvolutionSystem:
         Stamm des staerkeren Elternteils (gemischte Systeme).
         Verhindert dass immer nur der Mutter-Stamm weitergegeben wird.
         """
-        if genes is None:
+        if traits is None:
             if other_parent is not None:
-                genes = inherit_genes(parent, other_parent)
+                traits = derive_traits(parent, other_parent)
             else:
-                genes = inherit_genes(parent)
+                traits = derive_traits(parent)
 
         # Stamm-Bestimmung: fitness-gewichtet statt immer Mutter
         if other_parent is not None:
@@ -30,7 +30,7 @@ class EvolutionSystem:
         child = Agent.spawn_child(
             x=x,
             y=y,
-            genes=genes,
+            traits=traits,
             generation=parent.generation + 1,
             parent_id=parent.id,
             tribe_id=dominant.tribe_id,

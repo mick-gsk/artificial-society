@@ -86,7 +86,7 @@ def _put_agent_on_land(sim, agent):
 def test_herbivore_forage_transfers_exactly_the_plant_food_it_removes():
     sim = _sim()
     agent = sim.agents[0]
-    agent.genes["diet_preference"] = -0.6  # herbivore
+    agent.traits["diet_preference"] = -0.6  # herbivore
     agent.energy = 50.0
     agent.hydration = 100.0  # isolate: skip the water branch
     cell = _put_agent_on_land(sim, agent)
@@ -111,7 +111,7 @@ def test_carnivore_eats_carcasses_and_transfers_exactly_what_it_removes():
     the old outer `if food_available > 0` guard skipped it entirely."""
     sim = _sim()
     agent = sim.agents[0]
-    agent.genes["diet_preference"] = 0.8  # carnivore
+    agent.traits["diet_preference"] = 0.8  # carnivore
     agent.energy = 50.0
     agent.hydration = 100.0
     cell = _put_agent_on_land(sim, agent)
@@ -134,7 +134,7 @@ def test_carnivore_eats_carcasses_and_transfers_exactly_what_it_removes():
 def test_carnivore_meat_pool_forage_is_conservative():
     sim = _sim()
     agent = sim.agents[0]
-    agent.genes["diet_preference"] = 0.8
+    agent.traits["diet_preference"] = 0.8
     agent.energy = 50.0
     agent.hydration = 100.0
     cell = _put_agent_on_land(sim, agent)
@@ -319,7 +319,7 @@ def test_consumption_persists_against_regrowth():
 def test_forage_respects_energy_cap_without_minting_beyond_it():
     sim = _sim()
     agent = sim.agents[0]
-    agent.genes["diet_preference"] = -0.6
+    agent.traits["diet_preference"] = -0.6
     agent.energy = MAX_ENERGY - 1.0
     agent.hydration = 100.0
     cell = _put_agent_on_land(sim, agent)

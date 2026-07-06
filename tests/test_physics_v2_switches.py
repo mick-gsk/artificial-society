@@ -15,7 +15,7 @@ def test_v2_forage_laesst_fleisch_zellpools_unangetastet():
     """B6: Zell-Fleisch/Aas-Pools AUS — ein einziger Pfad für Fleischkalorien (Kadaver-Objekte)."""
     sim = Simulation(seed=42, physics_v2=True, **_PARAMS)
     agent = sim.agents[0]
-    agent.genes["diet_preference"] = 1.0  # Karnivor — würde in v1 zuerst Aas/Fleisch nehmen
+    agent.traits["diet_preference"] = 1.0  # Karnivor — würde in v1 zuerst Aas/Fleisch nehmen
     x, y = agent.pos
     sim.world.set_cell(x, y, "carcasses", 50.0)
     sim.world.set_cell(x, y, "meat_food", 50.0)
@@ -32,7 +32,7 @@ def test_v2_forage_laesst_fleisch_zellpools_unangetastet():
 def test_v1_forage_unveraendert():
     sim = Simulation(seed=42, physics_v2=False, **_PARAMS)
     agent = sim.agents[0]
-    agent.genes["diet_preference"] = 1.0
+    agent.traits["diet_preference"] = 1.0
     x, y = agent.pos
     sim.world.set_cell(x, y, "carcasses", 50.0)
     agent._forage(sim.world, {})

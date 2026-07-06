@@ -130,7 +130,7 @@ def compute_need_vector(agent, cell: dict) -> np.ndarray:
     need[IDX["conductivity"]] += health_drive * 0.4  # Waermeleitend = lindernd
 
     # Neugier-Bonus: Agents mit hoher Neugier suchen breitere Eigenschaften
-    curiosity = agent.genes.get("curiosity", 0.5)
+    curiosity = agent.traits.get("curiosity", 0.5)
     if curiosity > 0.7 and hunger_drive < 0.3 and cold_drive < 0.3:
         # Kein unmittelbarer Druck -> erkunde interessante Eigenschaften
         need[IDX["scent"]] += curiosity * 0.4
@@ -346,7 +346,7 @@ def agent_invent_from_need(
     # Step 2: Schwellenwert - nur bei echtem Bedarf erfinden
     # (verhindert blindes Zufalls-Experimentieren wenn alles gut ist)
     # Neugierde-Gen kann den Schwellenwert senken
-    curiosity = agent.genes.get("curiosity", 0.5)
+    curiosity = agent.traits.get("curiosity", 0.5)
     eff_threshold = NEED_THRESHOLD * (1.2 - curiosity * 0.4)
     if need_magnitude < eff_threshold:
         return 0.0

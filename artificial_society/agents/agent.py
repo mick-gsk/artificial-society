@@ -10,7 +10,6 @@ from artificial_society.agents.brain import INPUT_SIZE, V1_HEAD_DIMS, Brain
 from artificial_society.agents.communication import CommunicationSystem
 from artificial_society.agents.emotional_memory import EmotionalMemory
 from artificial_society.agents.endocrine import EndocrineSystem
-from artificial_society.agents.genetics import ensure_strength_gene, inherit_genes, random_genes
 from artificial_society.agents.knowledge import KnowledgeGraph
 from artificial_society.agents.life_stage import get_stage_stats
 from artificial_society.agents.memory import EpisodicMemory
@@ -21,6 +20,7 @@ from artificial_society.agents.perception_v2 import (
     resolve_slot_of,
 )
 from artificial_society.agents.theory_of_mind import TheoryOfMind
+from artificial_society.agents.traits import derive_traits, ensure_strength_trait, random_traits
 from artificial_society.environment.herbs import available_herbs, collect_herb
 from artificial_society.environment.materials import get_vector, material_reward
 from artificial_society.environment.physics.actions import (
@@ -211,7 +211,9 @@ def ensure_fields(agent) -> None:
     if not hasattr(agent, "hands"):
         agent.hands = None
     if agent.physics_v2 and agent.body is None:
-        agent.body = Body(body_mass=BODY_MASS_DEFAULT_KG, strength=agent.genes.get("strength", 0.5))
+        agent.body = Body(
+            body_mass=BODY_MASS_DEFAULT_KG, strength=agent.traits.get("strength", 0.5)
+        )
     if agent.physics_v2 and agent.hands is None:
         agent.hands = Hands()
     if agent.physics_v2:
@@ -219,10 +221,10 @@ def ensure_fields(agent) -> None:
         # (Checkpoint-geladene Agenten; frisch gebaute sind schon komplett).
         if not getattr(agent.brain, "physics_v2", False):
             print(f"[compat] Agent {agent.id}: v1-Brain im v2-Modus, rebuilding.")
-            agent.brain = Brain(plasticity=agent.genes.get("plasticity", 1.0), physics_v2=True)
+            agent.brain = Brain(plasticity=agent.traits.get("plasticity", 1.0), physics_v2=True)
             agent.hidden_state = agent.brain.initial_hidden()
         if getattr(agent, "causal_model", None) is None:
-            agent.causal_model = CausalModelV2(plasticity=agent.genes.get("plasticity", 1.0))
+            agent.causal_model = CausalModelV2(plasticity=agent.traits.get("plasticity", 1.0))
         if getattr(agent, "_novelty_buckets", None) is None:
             agent._novelty_buckets = NoveltyBuckets()
         if not hasattr(agent, "_causal_pending"):
@@ -241,10 +243,10 @@ def attach_body(agent) -> None:
     ruft attach_body zuerst) — Eltern- und Kind-Brain sind dann form-gleich.
     """
     agent.physics_v2 = True
-    ensure_strength_gene(agent.genes)
-    agent.body = Body(body_mass=BODY_MASS_DEFAULT_KG, strength=agent.genes["strength"])
+    ensure_strength_trait(agent.traits)
+    agent.body = Body(body_mass=BODY_MASS_DEFAULT_KG, strength=agent.traits["strength"])
     agent.hands = Hands()
-    plast = agent.genes.get("plasticity", 1.0)
+    plast = agent.traits.get("plasticity", 1.0)
     agent.brain = Brain(plasticity=plast, physics_v2=True)
     agent.hidden_state = agent.brain.initial_hidden()
     agent.causal_model = CausalModelV2(plasticity=plast)
@@ -333,7 +335,7 @@ class Agent:
     hydration: float = 100.0
     age: int = 0
     pos: tuple = (0, 0)
-    genes: dict = field(default_factory=random_genes)
+    traits: dict = field(default_factory=random_traits)
     memory: EpisodicMemory = field(default_factory=lambda: EpisodicMemory(10))
     brain: Brain = field(default_factory=Brain)
     communication: CommunicationSystem = field(default_factory=CommunicationSystem)
@@ -352,7 +354,7 @@ class Agent:
     sex: str = "m"
     pregnant: bool = False
     gestation: float = 0.0
-    stored_child_genes: dict | None = None
+    stored_child_traits: dict | None = None
     children: int = 0
     generation: int = 0
     parent_id: int | None = None
@@ -387,13 +389,13 @@ class Agent:
     @classmethod
     def spawn_random(cls, x, y):
         cls.id_counter += 1
-        genes = random_genes()
-        brain = Brain(plasticity=genes.get("plasticity", 1.0))
+        traits = random_traits()
+        brain = Brain(plasticity=traits.get("plasticity", 1.0))
         agent = cls(
             id=cls.id_counter,
             pos=(x, y),
-            genes=genes,
-            memory=EpisodicMemory(genes["memory_capacity"]),
+            traits=traits,
+            memory=EpisodicMemory(traits["memory_capacity"]),
             brain=brain,
             sex=random.choice(["m", "f"]),
         )
@@ -406,14 +408,14 @@ class Agent:
         return agent
 
     @classmethod
-    def spawn_child(cls, x, y, genes, generation=1, parent_id=None, tribe_id=None, parent=None):
+    def spawn_child(cls, x, y, traits, generation=1, parent_id=None, tribe_id=None, parent=None):
         cls.id_counter += 1
-        brain = Brain(plasticity=genes.get("plasticity", 1.0))
+        brain = Brain(plasticity=traits.get("plasticity", 1.0))
         agent = cls(
             id=cls.id_counter,
             pos=(x, y),
-            genes=genes,
-            memory=EpisodicMemory(genes["memory_capacity"]),
+            traits=traits,
+            memory=EpisodicMemory(traits["memory_capacity"]),
             brain=brain,
             energy=CHILD_START_ENERGY,
             sex=random.choice(["m", "f"]),
@@ -428,9 +430,9 @@ class Agent:
         agent.emotional_memory = EmotionalMemory()
         agent._recent_action_seq = []
         if parent is not None:
-            agent.tom.inherit_from(parent.tom, strength=0.4)
-            agent.knowledge.inherit_from(parent.knowledge, strength=0.7)
-            agent.emotional_memory.inherit_from(parent.emotional_memory, strength_factor=0.30)
+            agent.tom.derive_from(parent.tom, strength=0.4)
+            agent.knowledge.derive_from(parent.knowledge, strength=0.7)
+            agent.emotional_memory.derive_from(parent.emotional_memory, strength_factor=0.30)
             known_places = list(parent.world_memory.items())
             random.shuffle(known_places)
             for pos, info in known_places[:50]:
@@ -472,16 +474,17 @@ class Agent:
         return "adult"
 
     def display_color(self):
-        meat_bias = max(0.0, min(1.0, (self.genes["diet_preference"] + 1.0) * 0.5))
-        plant_bias = max(0.0, min(1.0, (-self.genes["diet_preference"] + 1.0) * 0.5))
+        meat_bias = max(0.0, min(1.0, (self.traits["diet_preference"] + 1.0) * 0.5))
+        plant_bias = max(0.0, min(1.0, (-self.traits["diet_preference"] + 1.0) * 0.5))
         g = max(
             70,
             min(
-                255, int(80 + 120 * self.genes["cooperation"] + 35 * self.genes["memory_retention"])
+                255,
+                int(80 + 120 * self.traits["cooperation"] + 35 * self.traits["memory_retention"]),
             ),
         )
-        r = max(70, min(255, int(80 + 100 * meat_bias + 60 * self.genes["aggression"])))
-        b = max(70, min(255, int(80 + 100 * plant_bias + 50 * self.genes["plasticity"] / 1.8)))
+        r = max(70, min(255, int(80 + 100 * meat_bias + 60 * self.traits["aggression"])))
+        b = max(70, min(255, int(80 + 100 * plant_bias + 50 * self.traits["plasticity"] / 1.8)))
         return (r, g, b)
 
     def can_reproduce(self):
@@ -502,8 +505,8 @@ class Agent:
             a
             for a in agents
             if a is not self
-            and abs(a.pos[0] - x) <= int(self.genes["sense_radius"])
-            and abs(a.pos[1] - y) <= int(self.genes["sense_radius"])
+            and abs(a.pos[0] - x) <= int(self.traits["sense_radius"])
+            and abs(a.pos[1] - y) <= int(self.traits["sense_radius"])
             and a.alive
         ]
         friends = sum(1 for a in near if self.trust.get(a.id, 0.0) > 0.2)
@@ -534,10 +537,10 @@ class Agent:
             cell["disturbance"] / 100.0,
             min(1.0, len(near) / 10.0),
             min(1.0, friends / 6.0),
-            self.genes["curiosity"],
-            self.genes["aggression"],
-            self.genes["cooperation"],
-            self.genes["sociality"],
+            self.traits["curiosity"],
+            self.traits["aggression"],
+            self.traits["cooperation"],
+            self.traits["sociality"],
             1.0 if self.tool else 0.0,
             avg_trust * 0.5 + 0.5,
             min(1.0, self.resources["wood"] / 4.0),
@@ -559,7 +562,8 @@ class Agent:
         melatonin = self.endocrine.h[2]
         vision_mult = max(0.4, 1.0 - 0.6 * melatonin)
         radius = max(
-            1, int(round((self.genes["vision"] + 0.35 * self.genes["sense_radius"]) * vision_mult))
+            1,
+            int(round((self.traits["vision"] + 0.35 * self.traits["sense_radius"]) * vision_mult)),
         )
         return world.neighbors(x, y, radius)
 
@@ -568,11 +572,11 @@ class Agent:
         if self.pregnant:
             self.gestation -= 1
             self.energy -= 0.03
-            if self.gestation <= 0 and self.stored_child_genes is not None:
-                child = self.stored_child_genes
+            if self.gestation <= 0 and self.stored_child_traits is not None:
+                child = self.stored_child_traits
                 self.pregnant = False
                 self.gestation = 0
-                self.stored_child_genes = None
+                self.stored_child_traits = None
 
         return child
 
@@ -595,7 +599,7 @@ class Agent:
         tool_bonus = SHARP_STONE_FORAGE_BONUS if self.tool == "sharp_stone" else 0.0
         home_bonus = get_home_forage_bonus(self, world)
         eff = mods.get("forage_eff", 1.0) * (1.0 + tool_bonus + home_bonus)
-        diet = self.genes.get("diet_preference", 0.0)
+        diet = self.traits.get("diet_preference", 0.0)
         # Energy conservation (Phase 4): consumption debits the cell's *source*
         # pools (plant_food / meat_food / carcasses) through apply_consumption /
         # the World façade, not the derived `food` aggregate, which regrow_cell
@@ -693,7 +697,7 @@ class Agent:
     def _attack(self, agents, mods):
         x, y = self.pos
         agg_bias = mods.get("aggression_bias", 0.0)
-        threshold = max(0.05, self.genes["aggression"] + agg_bias - 0.3)
+        threshold = max(0.05, self.traits["aggression"] + agg_bias - 0.3)
         if random.random() > threshold:
             return 0.0
         targets = [
@@ -708,7 +712,7 @@ class Agent:
         if not targets:
             return 0.0
         target = random.choice(targets)
-        dmg = max(1.0, 8.0 * self.genes["aggression"] + agg_bias * 5.0)
+        dmg = max(1.0, 8.0 * self.traits["aggression"] + agg_bias * 5.0)
         target.health -= dmg
         target.endocrine.apply_attack_received()
         if target.health <= 0:
@@ -824,21 +828,21 @@ class Agent:
         mate = max(
             males,
             key=lambda a: (
-                a.genes.get("cooperation", 0.5)
-                + a.genes.get("plasticity", 1.0) / 1.8
+                a.traits.get("cooperation", 0.5)
+                + a.traits.get("plasticity", 1.0) / 1.8
                 + self.trust.get(a.id, 0.0)
             ),
         )
-        child_genes = inherit_genes(self, mate)
+        child_traits = derive_traits(self, mate)
         self.energy -= REPRODUCTION_COST
         mate.energy -= REPRODUCTION_COST * 0.5
         self.reproduction_cooldown = REPRODUCTION_COOLDOWN
         mate.reproduction_cooldown = REPRODUCTION_COOLDOWN
         self.pregnant = True
-        eff = self.genes.get("gestation_efficiency", 1.0)
+        eff = self.traits.get("gestation_efficiency", 1.0)
 
         self.gestation = max(20, int(GESTATION_TIME / eff))
-        self.stored_child_genes = child_genes
+        self.stored_child_traits = child_traits
         self._last_mate_id = mate.id
         mate._last_mate_id = self.id
         self.children += 1
@@ -1464,7 +1468,7 @@ class Agent:
 
         if stage.get("can_reproduce", True):
             self._try_reproduce(world, agents)
-        child_genes = self.progress_pregnancy()
+        child_traits = self.progress_pregnancy()
 
         if tick % 3 == 0:
             reward += social_learning_step(self, agents, tick)
@@ -1482,7 +1486,9 @@ class Agent:
             else:
                 self._need_inv_cooldown -= 1
 
-        inv_prob = INVENTION_BASE_PROB + INVENTION_CURIOSITY_MULT * self.genes.get("curiosity", 0.5)
+        inv_prob = INVENTION_BASE_PROB + INVENTION_CURIOSITY_MULT * self.traits.get(
+            "curiosity", 0.5
+        )
         if not self.physics_v2 and tick % 3 == 0 and random.random() < inv_prob:
             invented = agent_try_invention(self, world, *self.pos)
             if invented:
@@ -1591,4 +1597,4 @@ class Agent:
             tick=tick,
         )
 
-        return child_genes
+        return child_traits

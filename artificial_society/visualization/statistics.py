@@ -14,7 +14,7 @@ class StatisticsTracker:
         live = [a for a in agents if a.alive]
         pop = len(live)
         avg_age = sum(a.age for a in live) / pop if pop else 0
-        avg_coop = sum(a.genes["cooperation"] for a in live) / pop if pop else 0
+        avg_coop = sum(a.traits["cooperation"] for a in live) / pop if pop else 0
         known_sites = sum(len(a.memory.resource_memory) for a in live)
         pregnant = sum(1 for a in live if a.pregnant)
         avg_children = sum(a.children for a in live) / pop if pop else 0

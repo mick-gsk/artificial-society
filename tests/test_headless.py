@@ -16,7 +16,7 @@ def _initial_state_digest(sim):
         for x in range(0, sim.world.width, 3)
     )
     agent_sample = tuple(
-        (a.pos, a.sex, round(a.genes["speed"], 6), round(a.genes["curiosity"], 6))
+        (a.pos, a.sex, round(a.traits["speed"], 6), round(a.traits["curiosity"], 6))
         for a in sim.agents
     )
     return biome_sample, agent_sample

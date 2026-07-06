@@ -24,9 +24,9 @@ Integration points in agent.py
   3. spawn_child()         -> child.tom.inherit_from(parent.tom)
   4. KnowledgeGraph share  -> gated by tom.should_teach(other_id)
 """
+
 from __future__ import annotations
 
-import math
 import random
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -56,30 +56,41 @@ class AgentModel:
     observation_count: int  -- total observations of B
     intent_vector   : list  -- smoothed action-mode distribution (6 floats)
     """
+
     agent_id: int
     inferred_energy: float = 0.5
     inferred_knowledge: set = field(default_factory=set)
-    role: str = 'unknown'
+    role: str = "unknown"
     last_seen_tick: int = 0
     last_seen_pos: tuple = (0, 0)
     trust_estimate: float = 0.0
     deception_count: int = 0
     observation_count: int = 0
-    intent_vector: list = field(default_factory=lambda: [1/6]*6)
+    intent_vector: list = field(default_factory=lambda: [1 / 6] * 6)
 
     # Action mode index map (must match last_action_mode strings used in agent.py)
-    _MODE_IDX: dict = field(default_factory=lambda: {
-        'idle': 0, 'move': 0, 'gather': 1, 'forage_herb': 1,
-        'sleep': 2, 'invent': 3, 'craft': 3, 'experiment': 3,
-        'share': 4, 'signal': 4, 'mate': 4,
-        'attack': 5,
-    })
+    _MODE_IDX: dict = field(
+        default_factory=lambda: {
+            "idle": 0,
+            "move": 0,
+            "gather": 1,
+            "forage_herb": 1,
+            "sleep": 2,
+            "invent": 3,
+            "craft": 3,
+            "experiment": 3,
+            "share": 4,
+            "signal": 4,
+            "mate": 4,
+            "attack": 5,
+        }
+    )
 
     def update_intent(self, action_mode: str, alpha: float = 0.15) -> None:
         """Exponential moving average over observed action modes."""
         idx = self._MODE_IDX.get(action_mode, 0)
         for i in range(len(self.intent_vector)):
-            self.intent_vector[i] *= (1.0 - alpha)
+            self.intent_vector[i] *= 1.0 - alpha
         self.intent_vector[idx] += alpha
         # Normalise
         total = sum(self.intent_vector) or 1.0
@@ -88,16 +99,21 @@ class AgentModel:
     def infer_role(self) -> str:
         """Infer role from observed action distribution."""
         iv = self.intent_vector
-        if iv[5] > 0.30:           return 'warrior'
-        if iv[3] > 0.25:           return 'maker'
-        if iv[1] > 0.30:           return 'hunter'
-        if iv[4] > 0.25:           return 'elder'
-        if iv[2] > 0.25:           return 'sleeper'
-        return 'scout'
+        if iv[5] > 0.30:
+            return "warrior"
+        if iv[3] > 0.25:
+            return "maker"
+        if iv[1] > 0.30:
+            return "hunter"
+        if iv[4] > 0.25:
+            return "elder"
+        if iv[2] > 0.25:
+            return "sleeper"
+        return "scout"
 
     def predicted_next_action(self) -> str:
         """Return most likely next action mode."""
-        modes = ['idle', 'gather', 'sleep', 'invent', 'share', 'attack']
+        modes = ["idle", "gather", "sleep", "invent", "share", "attack"]
         return modes[self.intent_vector.index(max(self.intent_vector))]
 
 
@@ -128,7 +144,7 @@ class TheoryOfMind:
     # ------------------------------------------------------------------
     def observe_agent(
         self,
-        other,          # Agent instance
+        other,  # Agent instance
         tick: int,
         own_trust: float = 0.0,
     ) -> AgentModel:
@@ -151,34 +167,34 @@ class TheoryOfMind:
         m = self.models[oid]
         m.observation_count += 1
         m.last_seen_tick = tick
-        m.last_seen_pos  = other.pos
+        m.last_seen_pos = other.pos
 
         # Infer energy from action mode (sick/slow = low energy)
-        if other.last_action_mode == 'sleep':
+        if other.last_action_mode == "sleep":
             m.inferred_energy = max(0.0, m.inferred_energy - 0.05)
-        elif other.last_action_mode in ('gather', 'hunt'):
+        elif other.last_action_mode in ("gather", "hunt"):
             m.inferred_energy = min(1.0, m.inferred_energy + 0.03)
-        elif other.last_action_mode == 'idle':
+        elif other.last_action_mode == "idle":
             m.inferred_energy *= 0.97  # slight decay -- assume idle = depleted
 
         # Infer knowledge from observed behaviour
-        if other.last_action_mode in ('invent', 'craft', 'experiment'):
+        if other.last_action_mode in ("invent", "craft", "experiment"):
             # Agent is doing research -- probably knows more than us
             if other.tool:
-                m.inferred_knowledge.add(f'tool:{other.tool}')
-        if other.last_action_mode == 'forage_herb':
-            m.inferred_knowledge.add('herb_use')
+                m.inferred_knowledge.add(f"tool:{other.tool}")
+        if other.last_action_mode == "forage_herb":
+            m.inferred_knowledge.add("herb_use")
         if other.tool:
-            m.inferred_knowledge.add(f'tool:{other.tool}')
+            m.inferred_knowledge.add(f"tool:{other.tool}")
 
         # Material inventory signals (visible items)
-        inv = getattr(other, 'material_inventory', {})
+        inv = getattr(other, "material_inventory", {})
         for mat in inv:
             if inv.get(mat, 0) > 0.1:
-                m.inferred_knowledge.add(f'has:{mat}')
+                m.inferred_knowledge.add(f"has:{mat}")
 
         # Trust estimate: adjust from message content
-        msg = getattr(other, 'message_vector', [0.0]*4)
+        msg = getattr(other, "message_vector", [0.0] * 4)
         if len(msg) >= 2 and msg[0] > 0.3:
             m.trust_estimate = min(1.0, m.trust_estimate + 0.02)
         elif len(msg) >= 2 and msg[0] < -0.3:
@@ -228,7 +244,7 @@ class TheoryOfMind:
             p += 0.25
 
         # Role bonus: elders teach more
-        if m.role == 'elder':
+        if m.role == "elder":
             p += 0.10
 
         # Deception penalty: if B has deceived us before, share less
@@ -263,7 +279,7 @@ class TheoryOfMind:
 
         p = 0.02 + 0.15 * own_aggression + 0.20 * competition_pressure
         p -= 0.30 * max(0.0, m.trust_estimate)  # trust suppresses deception
-        p  = max(0.0, min(0.60, p))
+        p = max(0.0, min(0.60, p))
         return random.random() < p
 
     # ------------------------------------------------------------------
@@ -287,9 +303,9 @@ class TheoryOfMind:
     # ------------------------------------------------------------------
     # Cultural transmission at birth
     # ------------------------------------------------------------------
-    def inherit_from(
+    def derive_from(
         self,
-        parent_tom: 'TheoryOfMind',
+        parent_tom: TheoryOfMind,
         strength: float = 0.4,
     ) -> None:
         """
@@ -305,9 +321,9 @@ class TheoryOfMind:
             child_model = AgentModel(agent_id=oid)
             # Inherit trust estimate with noise
             noise = random.gauss(0, 0.10)
-            child_model.trust_estimate = max(-1.0, min(1.0,
-                strength * parent_model.trust_estimate + noise
-            ))
+            child_model.trust_estimate = max(
+                -1.0, min(1.0, strength * parent_model.trust_estimate + noise)
+            )
             # Inherit role belief
             child_model.role = parent_model.role
             # Inherit partial knowledge inference (with forgetting)
@@ -315,8 +331,7 @@ class TheoryOfMind:
                 if random.random() < strength:
                     child_model.inferred_knowledge.add(k)
             child_model.intent_vector = [
-                strength * v + (1 - strength) * (1/6)
-                for v in parent_model.intent_vector
+                strength * v + (1 - strength) * (1 / 6) for v in parent_model.intent_vector
             ]
             self.models[oid] = child_model
 
@@ -335,7 +350,7 @@ class TheoryOfMind:
         return max(self.models, key=lambda k: self.models[k].trust_estimate)
 
     def most_skilled_maker(self) -> int | None:
-        makers = {oid: m for oid, m in self.models.items() if m.role == 'maker'}
+        makers = {oid: m for oid, m in self.models.items() if m.role == "maker"}
         if not makers:
             return None
         return max(makers, key=lambda k: makers[k].observation_count)
@@ -350,12 +365,12 @@ class TheoryOfMind:
     def summary(self) -> list[dict]:
         return [
             {
-                'id':           m.agent_id,
-                'role':         m.role,
-                'trust_est':    round(m.trust_estimate, 2),
-                'observations': m.observation_count,
-                'inferred_knowledge_count': len(m.inferred_knowledge),
-                'predicted_next': m.predicted_next_action(),
+                "id": m.agent_id,
+                "role": m.role,
+                "trust_est": round(m.trust_estimate, 2),
+                "observations": m.observation_count,
+                "inferred_knowledge_count": len(m.inferred_knowledge),
+                "predicted_next": m.predicted_next_action(),
             }
             for m in sorted(self.models.values(), key=lambda x: -x.observation_count)
         ]

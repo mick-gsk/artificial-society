@@ -15,31 +15,32 @@ Strategien:
 Biologisches Vorbild: Individuelle Nischen in sozialen Gruppen.
 Nicht jedes Mitglied macht dasselbe — Arbeitsteilung entsteht emergent.
 """
+
 from __future__ import annotations
+
 import random
-from dataclasses import dataclass, field
-from typing import Dict, Optional
+from dataclasses import dataclass
+from typing import Dict
 
-
-STRATEGIES = ('Explorer', 'Builder', 'Hoarder', 'Trader', 'Inventor', 'Caretaker')
+STRATEGIES = ("Explorer", "Builder", "Hoarder", "Trader", "Inventor", "Caretaker")
 
 STRATEGY_GOAL_BIAS: Dict[str, Dict[str, float]] = {
-    'Explorer':  {'EXPLORE': 2.0, 'EAT': 0.8, 'REPRODUCE': 0.8},
-    'Builder':   {'BUILD': 3.0,   'EXPLORE': 0.6, 'EAT': 1.0},
-    'Hoarder':   {'EAT': 1.5,    'BUILD': 1.5, 'EXPLORE': 0.5},
-    'Trader':    {'COOPERATE': 2.5, 'EAT': 1.0, 'EXPLORE': 1.0},
-    'Inventor':  {'RESEARCH': 3.0, 'EXPLORE': 1.2, 'EAT': 0.9},
-    'Caretaker': {'COOPERATE': 2.0, 'REPRODUCE': 1.5, 'EAT': 1.0},
+    "Explorer": {"EXPLORE": 2.0, "EAT": 0.8, "REPRODUCE": 0.8},
+    "Builder": {"BUILD": 3.0, "EXPLORE": 0.6, "EAT": 1.0},
+    "Hoarder": {"EAT": 1.5, "BUILD": 1.5, "EXPLORE": 0.5},
+    "Trader": {"COOPERATE": 2.5, "EAT": 1.0, "EXPLORE": 1.0},
+    "Inventor": {"RESEARCH": 3.0, "EXPLORE": 1.2, "EAT": 0.9},
+    "Caretaker": {"COOPERATE": 2.0, "REPRODUCE": 1.5, "EAT": 1.0},
 }
 
 # Welche Rewards stärken welche Strategie
 STRATEGY_REWARD_SOURCE: Dict[str, list] = {
-    'Explorer':  ['explore', 'forage'],
-    'Builder':   ['build', 'structure'],
-    'Hoarder':   ['forage', 'storage'],
-    'Trader':    ['cooperate', 'trade'],
-    'Inventor':  ['research', 'invention'],
-    'Caretaker': ['cooperate', 'birth', 'kin'],
+    "Explorer": ["explore", "forage"],
+    "Builder": ["build", "structure"],
+    "Hoarder": ["forage", "storage"],
+    "Trader": ["cooperate", "trade"],
+    "Inventor": ["research", "invention"],
+    "Caretaker": ["cooperate", "birth", "kin"],
 }
 
 
@@ -73,10 +74,8 @@ class StrategySystem:
     """
 
     def __init__(self):
-        self.records: Dict[str, StrategyRecord] = {
-            s: StrategyRecord(name=s) for s in STRATEGIES
-        }
-        self.current: str = 'Explorer'
+        self.records: Dict[str, StrategyRecord] = {s: StrategyRecord(name=s) for s in STRATEGIES}
+        self.current: str = "Explorer"
         self._switch_cooldown: int = 0
         self._ticks_on_current: int = 0
 
@@ -95,7 +94,7 @@ class StrategySystem:
 
         self._switch_cooldown = max(0, self._switch_cooldown - 1)
 
-    def maybe_switch(self, genes: dict, tick: int) -> str:
+    def maybe_switch(self, traits: dict, tick: int) -> str:
         """
         Decide whether to switch strategy.
         Explorers and Inventors switch more often (curiosity).
@@ -114,12 +113,12 @@ class StrategySystem:
         if best_name != self.current:
             self.current = best_name
             # Cooldown depends on plasticity gene
-            plasticity = genes.get('plasticity', 1.0)
+            plasticity = traits.get("plasticity", 1.0)
             self._switch_cooldown = max(20, int(60 / plasticity))
             self._ticks_on_current = 0
 
         # Occasional random exploration of strategies (epsilon-greedy)
-        curiosity = genes.get('curiosity', 0.5)
+        curiosity = traits.get("curiosity", 0.5)
         if random.random() < 0.02 * curiosity:
             self.current = random.choice(STRATEGIES)
             self._switch_cooldown = 15
@@ -130,18 +129,16 @@ class StrategySystem:
         """Return goal priority weights for current strategy."""
         return STRATEGY_GOAL_BIAS.get(self.current, {})
 
-    def inherit_from(self, parent_strategy: 'StrategySystem', strength: float = 0.4):
+    def derive_from(self, parent_strategy: StrategySystem, strength: float = 0.4):
         """Child inherits strategy preferences with noise."""
         for name, rec in parent_strategy.records.items():
-            self.records[name].score = (
-                strength * rec.score + (1.0 - strength) * 0.5
-            )
+            self.records[name].score = strength * rec.score + (1.0 - strength) * 0.5
         # Start with parent's best strategy
         best = max(parent_strategy.records.values(), key=lambda r: r.score)
         self.current = best.name
 
     def summary(self) -> dict:
         return {
-            'current': self.current,
-            'scores': {n: round(r.score, 3) for n, r in self.records.items()}
+            "current": self.current,
+            "scores": {n: round(r.score, 3) for n, r in self.records.items()},
         }

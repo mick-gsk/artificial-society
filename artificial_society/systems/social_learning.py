@@ -63,7 +63,7 @@ def social_learning_step(agent, agents: list, tick: int) -> float:
             continue
 
         other_reward = getattr(other, "last_reward", 0.0)
-        curiosity = agent.genes.get("curiosity", 0.5)
+        curiosity = agent.traits.get("curiosity", 0.5)
         trust = agent.trust.get(other.id, 0.0)
 
         # --- 1. Kausal-Sequenz beobachten ---

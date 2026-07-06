@@ -99,9 +99,9 @@ def test_forward_v2_teilmaske_nutzt_nur_belegte_slots():
     assert torch.allclose(obj_ctx[0, 32:], embeds[0, 3])
 
 
-def test_inherit_weights_ueberspringt_shape_mismatch_v1_v2():
+def test_derive_weights_ueberspringt_shape_mismatch_v1_v2():
     """C5: inherit_weights_from überspringt Mismatches still (gewollt beim
     Architektur-Wechsel) — v2-Kind von v1-Eltern crasht nicht."""
     torch.manual_seed(1)
     v1, v2 = Brain(), Brain(physics_v2=True)
-    v2.inherit_weights_from(v1)  # darf nicht werfen
+    v2.derive_weights_from(v1)  # darf nicht werfen

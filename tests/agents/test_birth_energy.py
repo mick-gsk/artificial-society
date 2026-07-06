@@ -30,7 +30,7 @@ def test_birth_transfers_energy_from_the_mother():
     mother._last_mate_id = None
 
     total_before = mother.energy
-    child = sim.spawn_child_from_parent(mother, dict(mother.genes))
+    child = sim.spawn_child_from_parent(mother, dict(mother.traits))
 
     assert child.energy == pytest.approx(CHILD_START_ENERGY)  # rich mother: full start
     assert child.energy + mother.energy == pytest.approx(total_before), (
@@ -45,7 +45,7 @@ def test_starving_mother_bears_weak_child():
     mother.energy = 40.0
     mother._last_mate_id = None
 
-    child = sim.spawn_child_from_parent(mother, dict(mother.genes))
+    child = sim.spawn_child_from_parent(mother, dict(mother.traits))
 
     assert child.energy == pytest.approx(40.0 - BIRTH_ENERGY_FLOOR), (
         "a poor mother can only afford a weak child"
