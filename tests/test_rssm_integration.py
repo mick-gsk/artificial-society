@@ -93,6 +93,25 @@ def test_deaths_reach_replay_as_terminals():
     assert sim.rssm_learner.replay.num_death_episodes > 0
 
 
+def test_rssm_death_leaves_no_carcass_and_no_broadcast():
+    """NEW-1 regression (arm-parity review fix): rssm dead agents must be routed
+    straight to `rssm_learner.on_death` and skip the v1 dead-handling branch
+    entirely — no `add_carcass` credit, no `_broadcast_death_knowledge` call.
+    Arm A (rssm) is pre-filtered out of dead-handling in `step()` and can never
+    reach those subsidies, so arms B/C must not get them either on the rssm
+    path (which only exists via the shared `remove_dead`)."""
+    sim = Simulation(seed=42, brain_arch="rssm", rssm_config=_FAST, **_PARAMS)
+    sim.step()  # everyone gets at least one stored transition first
+    victim = sim.agents[0]
+    victim.health = 0.0
+    vx, vy = victim.pos
+    carcasses_before = sim.world.get_cell(vx, vy)["carcasses"]
+    sim.step()  # victim's early death-return fires before this tick's store point
+    carcasses_after = sim.world.get_cell(vx, vy)["carcasses"]
+    assert carcasses_after == carcasses_before  # no add_carcass credit for rssm deaths
+    assert sim.rssm_learner.replay.num_death_episodes > 0  # terminal fix still intact
+
+
 def test_checkpoint_roundtrip_and_mismatch_guard(tmp_path, monkeypatch):
     import artificial_society.simulation as sim_mod
 

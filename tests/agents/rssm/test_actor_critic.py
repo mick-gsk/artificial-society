@@ -273,6 +273,56 @@ def test_reinforce_score_term_matches_analytic_score_and_pins_cancellation_bug()
     assert not torch.allclose(grad_old, grad_fixed, atol=1e-3)
 
 
+def test_log_prob_matches_tanh_transformed_normal():
+    """NEW-2 regression (final review): `_log_prob` summed `base + jac` instead of
+    `base - jac` — the tanh change-of-variables log-density is base MINUS the
+    log-det-Jacobian, even though the Jacobian term itself (`jac`) was already the
+    correctly-signed `log(1 - tanh(pre)**2)`. Cross-check against torch.distributions'
+    own TanhTransform composition, built with an explicit generator (no global RNG)."""
+    gen = torch.Generator().manual_seed(0)
+    mu = torch.randn(64, 3, generator=gen) * 0.5
+    logstd = torch.rand(64, 3, generator=gen) - 0.5  # in [-0.5, 0.5], valid LOGSTD range
+    pre = mu + torch.randn(64, 3, generator=gen) * logstd.exp()
+    a = torch.tanh(pre)
+
+    got = ActorCriticSlab._log_prob(mu, logstd, pre, a)
+
+    base_dist = torch.distributions.Normal(mu, logstd.exp())
+    transformed = torch.distributions.TransformedDistribution(
+        base_dist, [torch.distributions.transforms.TanhTransform()]
+    )
+    expected = transformed.log_prob(a).sum(-1)
+    assert torch.allclose(got, expected, atol=1e-3)
+
+
+def test_losses_reinforce_calls_log_prob_with_both_detached_and_live_pre(monkeypatch):
+    """NEW-3 regression (pins the Critical-1 call site): spy on `_log_prob` during a
+    real reinforce-mode `imagination_update` and assert it is invoked at least once
+    with a detached `pre` (requires_grad=False — the score term, line ~208) AND at
+    least once with a live, reparameterized `pre` (requires_grad=True — the entropy
+    term, line ~194). The pre-fix code fed only the live `pre` to every call, which
+    silently cancelled the score-function gradient (see the sibling cancellation test
+    above); this test pins the call sites themselves so that regression can't recur
+    even if the math test above is weakened or removed."""
+    slab = _slab()
+    slots = torch.tensor([slab.acquire_slot(None)])
+    wm = RSSMWorldModel(CFG)  # CFG default actor_grad == "reinforce"
+    h0, z0, genes = _starts(1)
+
+    seen_requires_grad = []
+    original = ActorCriticSlab._log_prob
+
+    def spy(mu, logstd, pre, act):
+        seen_requires_grad.append(bool(pre.requires_grad))
+        return original(mu, logstd, pre, act)
+
+    monkeypatch.setattr(ActorCriticSlab, "_log_prob", staticmethod(spy))
+    slab.imagination_update(wm, h0, z0, genes, slots, make_generator(12, "spy"), None)
+
+    assert True in seen_requires_grad  # entropy term: live, reparameterized pre
+    assert False in seen_requires_grad  # score term: detached pre
+
+
 def test_actor_mirror_slot_refresh_plumbing():
     """GPU-pilot blocker regression: actor_snapshot_cpu()/refresh_actor_mirror_slot
     are the mechanism SharedLearner uses to keep a CPU act-path mirror of a

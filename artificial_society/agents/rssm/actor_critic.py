@@ -147,9 +147,11 @@ class ActorCriticSlab:
     @staticmethod
     def _log_prob(mu, logstd, pre, act):
         base = -0.5 * (((pre - mu) / logstd.exp()) ** 2 + 2 * logstd + math.log(2 * math.pi))
-        # tanh log-det-Jacobian (stable form)
+        # tanh log-det-Jacobian (stable form): jac == log(1 - tanh(pre)**2).
+        # Change-of-variables density is base - jac (review fix, NEW-2); the
+        # pre-fix `base + jac` inverted the sign.
         jac = 2.0 * (math.log(2.0) - pre - F.softplus(-2.0 * pre))
-        return (base + jac).sum(-1)
+        return (base - jac).sum(-1)
 
     def act_single(self, slot, s_g, gen, params_override=None):
         """params_override: optional CPU actor-param mirror (see actor_snapshot_cpu)

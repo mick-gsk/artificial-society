@@ -357,17 +357,24 @@ class Simulation:
             if agent.alive:
                 survivors.append(agent)
                 continue
+            # Arm parity (review fix, NEW-1): rssm agents get ONLY the learner's
+            # on_death terminal handling here, never broadcast/carcass — arm A
+            # (rssm) is pre-filtered out of the dead-handling in step() and never
+            # reaches those subsidies, so arms B/C (v1/v2) must not get a
+            # per-death food/knowledge credit rssm structurally cannot receive.
+            # Guard is brain_arch=="rssm", NOT rssm_slot is not None (review fix,
+            # Important 6): on_death must also run for slot-less arm-C (MPC) agents
+            # — it closes their replay episode terminal regardless, and release_slot
+            # is itself a no-op when agent.rssm_slot is None.
+            if getattr(agent, "brain_arch", None) == "rssm":
+                if self.rssm_learner is not None:
+                    self.rssm_learner.on_death(agent)
+                continue
             self._broadcast_death_knowledge(agent)
             # Known approximation (accepted): an agent that dies outside its own
             # update() (e.g. attacked later in the tick) has its last stored
             # transition at done=False — the continue head still learns deaths
             # from the majority in-update deaths + stratified sampling (spec §4.4).
-            # Guard is brain_arch=="rssm", NOT rssm_slot is not None (review fix,
-            # Important 6): on_death must also run for slot-less arm-C (MPC) agents
-            # — it closes their replay episode terminal regardless, and release_slot
-            # is itself a no-op when agent.rssm_slot is None.
-            if self.rssm_learner is not None and getattr(agent, "brain_arch", None) == "rssm":
-                self.rssm_learner.on_death(agent)
             if self.physics_v2:
                 # v2 (C2/C3): echte Terminal-Transition — done=True erreicht den
                 # Buffer, r_death (−3.0) wird GENAU EINMAL gemünzt, der
