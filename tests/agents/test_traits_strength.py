@@ -35,8 +35,8 @@ def test_derive_traits_ueberspringt_strength_auch_bei_v2_eltern():
     machen (v1-Strom!) und keinen Key erzeugen — Vererbung läuft über inherit_strength."""
     random.seed(6)
     parent = SimpleNamespace(traits={**random_traits(), "strength": 0.7}, learning_score=1.0)
-    child = derive_traits(parent, parent)
-    assert "strength" not in child
+    spawn = derive_traits(parent, parent)
+    assert "strength" not in spawn
 
 
 def test_ensure_strength_trait_zieht_einmal_und_ist_idempotent():
@@ -55,9 +55,9 @@ def test_derive_strength_fitness_gewichtet_mit_sigma_0012():
     b = SimpleNamespace(traits={"strength": 0.7}, learning_score=1.0)
     kinder = []
     for _ in range(200):
-        child = {}
-        derive_strength(child, a, b)
-        kinder.append(child["strength"])
+        spawn = {}
+        derive_strength(spawn, a, b)
+        kinder.append(spawn["strength"])
     mittel = sum(kinder) / len(kinder)
     streuung = (sum((k - mittel) ** 2 for k in kinder) / len(kinder)) ** 0.5
     assert abs(mittel - 0.5) < 0.01  # gleiche Fitness ⇒ Mittelwert der Eltern
@@ -74,8 +74,8 @@ def test_attach_body_speist_body_aus_dem_gen():
     assert 0.1 <= agent.body.strength <= 0.9
 
 
-def test_spawn_child_from_parent_v2_laeuft_ohne_namenskollision():
-    """Regression (Review F1): spawn_child_from_parent hat eine LOKALE Variable
+def test_spawn_agent_from_parent_v2_laeuft_ohne_namenskollision():
+    """Regression (Review F1): spawn_agent_from_parent hat eine LOKALE Variable
     `inherit_strength` (Gewichts-Vererbungsstärke für inherit_weights_from) —
     der genetics-Import MUSS aliased sein (inherit_strength_gene), sonst
     UnboundLocalError beim ersten v2-Kind-Spawn (latent bis Task 14)."""
@@ -91,7 +91,7 @@ def test_spawn_child_from_parent_v2_laeuft_ohne_namenskollision():
         initial_population=8,
     )
     eltern = sim.agents[0]
-    kind = sim.spawn_child_from_parent(eltern, dict(eltern.traits))
+    kind = sim.spawn_agent_from_parent(eltern, dict(eltern.traits))
     assert "strength" in kind.traits
     assert kind.body is not None
     assert kind.body.strength == kind.traits["strength"]

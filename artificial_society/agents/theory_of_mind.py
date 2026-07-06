@@ -21,7 +21,7 @@ Integration points in agent.py
 -------------------------------
   1. _ensure_new_fields()  -> agent.tom = TheoryOfMind(agent.id)
   2. update_social()       -> agent.tom.observe_agent(other, tick)
-  3. spawn_child()         -> child.tom.inherit_from(parent.tom)
+  3. spawn_agent()         -> child.tom.inherit_from(parent.tom)
   4. KnowledgeGraph share  -> gated by tom.should_teach(other_id)
 """
 
@@ -81,7 +81,7 @@ class AgentModel:
             "experiment": 3,
             "share": 4,
             "signal": 4,
-            "mate": 4,
+            "partner": 4,
             "attack": 5,
         }
     )
@@ -318,22 +318,22 @@ class TheoryOfMind:
         for oid, parent_model in parent_tom.models.items():
             if parent_model.observation_count < 3:
                 continue  # don't inherit shallow observations
-            child_model = AgentModel(agent_id=oid)
+            spawn_model = AgentModel(agent_id=oid)
             # Inherit trust estimate with noise
             noise = random.gauss(0, 0.10)
-            child_model.trust_estimate = max(
+            spawn_model.trust_estimate = max(
                 -1.0, min(1.0, strength * parent_model.trust_estimate + noise)
             )
             # Inherit role belief
-            child_model.role = parent_model.role
+            spawn_model.role = parent_model.role
             # Inherit partial knowledge inference (with forgetting)
             for k in parent_model.inferred_knowledge:
                 if random.random() < strength:
-                    child_model.inferred_knowledge.add(k)
-            child_model.intent_vector = [
+                    spawn_model.inferred_knowledge.add(k)
+            spawn_model.intent_vector = [
                 strength * v + (1 - strength) * (1 / 6) for v in parent_model.intent_vector
             ]
-            self.models[oid] = child_model
+            self.models[oid] = spawn_model
 
     # ------------------------------------------------------------------
     # Helpers

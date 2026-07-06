@@ -34,7 +34,7 @@ NEW_FIELDS = (
     "is_sleeping",
     "brain",
     "tool",
-    "_last_mate_id",
+    "_last_partner_id",
     "_need_inv_cooldown",
     "tom",
     "knowledge",

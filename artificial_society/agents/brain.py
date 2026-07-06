@@ -242,17 +242,17 @@ class Brain(nn.Module):
         perturbation_scale: float = WEIGHT_PERTURBATION_SCALE,
     ):
         with torch.no_grad():
-            for (_, child_param), (_, parent_param) in zip(
+            for (_, spawn_param), (_, parent_param) in zip(
                 self.named_parameters(), parent_brain.named_parameters()
             ):
-                if child_param.shape != parent_param.shape:
+                if spawn_param.shape != parent_param.shape:
                     # Spec C5: still überspringen ist beim Architektur-Wechsel
                     # v1→v2 GEWOLLT — nur form-gleiche Teile (encoder, value,
                     # v1-Anteile) werden vererbt, neue Module starten frisch.
                     continue
-                perturbation = torch.randn_like(child_param) * perturbation_scale
-                child_param.copy_(
-                    strength * parent_param + (1.0 - strength) * child_param + perturbation
+                perturbation = torch.randn_like(spawn_param) * perturbation_scale
+                spawn_param.copy_(
+                    strength * parent_param + (1.0 - strength) * spawn_param + perturbation
                 )
 
     # ------------------------------------------------------------------

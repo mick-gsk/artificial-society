@@ -112,7 +112,7 @@ def ensure_strength_trait(traits: dict) -> None:
         traits["strength"] = random.uniform(*TRAIT_RANGES["strength"])
 
 
-def derive_strength(child_traits: dict, parent_a, parent_b=None) -> None:
+def derive_strength(spawn_traits: dict, parent_a, parent_b=None) -> None:
     """Vererbung des strength-Gens (NUR im v2-Kind-Pfad aufrufen).
 
     Fitness-gewichtetes Mittel wie inherit_genes, Mutations-σ 0.012-Klasse
@@ -126,4 +126,4 @@ def derive_strength(child_traits: dict, parent_a, parent_b=None) -> None:
     score_b = max(0.01, getattr(parent_b, "learning_score", 1.0))
     w_a = score_a / (score_a + score_b)
     base = w_a * val_a + (1.0 - w_a) * val_b
-    child_traits["strength"] = clamp(base + random.gauss(0, STRENGTH_PERTURBATION_SIGMA), lo, hi)
+    spawn_traits["strength"] = clamp(base + random.gauss(0, STRENGTH_PERTURBATION_SIGMA), lo, hi)

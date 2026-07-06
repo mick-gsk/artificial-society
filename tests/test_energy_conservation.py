@@ -224,7 +224,7 @@ def test_hamilton_rewards_conserve_total_energy():
         m.alive = True
         m.tribe_id = 7
         m.energy = 100.0 + 10.0 * i
-        m.children = i  # differentiate kin weight
+        m.spawn_count = i  # differentiate kin weight
     # Everyone else: solo, untouched by redistribution.
     for other in sim.agents[3:]:
         other.tribe_id = None
@@ -240,7 +240,7 @@ def test_hamilton_rewards_conserve_total_energy():
     assert any(m.energy != (100.0 + 10.0 * i) for i, m in enumerate(members))
 
 
-def test_hamilton_redistributes_toward_kin_with_children():
+def test_hamilton_redistributes_toward_kin_with_spawn_count():
     sim = _sim()
     sim.tick = HAMILTON_TICK_INTERVAL
     childless, parent = sim.agents[0], sim.agents[1]
@@ -248,8 +248,8 @@ def test_hamilton_redistributes_toward_kin_with_children():
         m.alive = True
         m.tribe_id = 9
         m.energy = 120.0
-    childless.children = 0
-    parent.children = 4
+    childless.spawn_count = 0
+    parent.spawn_count = 4
     for other in sim.agents[2:]:
         other.tribe_id = None
 
@@ -270,7 +270,7 @@ def test_hamilton_does_not_mint_from_a_negative_energy_member():
     for m in (a, b, c):
         m.alive = True
         m.tribe_id = 5
-        m.children = 0
+        m.spawn_count = 0
     a.energy = -50.0
     b.energy = 60.0
     c.energy = 70.0

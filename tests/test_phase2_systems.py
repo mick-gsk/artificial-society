@@ -49,14 +49,14 @@ def test_births_occur_and_grow_population():
         headless=True, seed=3, grid_w=22, grid_h=16, initial_population=16, load_checkpoint=False
     )
     peak_alive = 0
-    ever_born = False
+    ever_spawn = False
     for _ in range(300):
         sim.step()
         alive = [a for a in sim.agents if a.alive]
         peak_alive = max(peak_alive, len(alive))
-        if any(a.birth_tick > 0 for a in alive):
-            ever_born = True
-    assert ever_born, "no child was ever born (reproduction not wired)"
+        if any(a.spawn_tick > 0 for a in alive):
+            ever_spawn = True
+    assert ever_spawn, "no child was ever born (reproduction not wired)"
     assert peak_alive > 16, "population never grew past the 16 founders via births"
 
 

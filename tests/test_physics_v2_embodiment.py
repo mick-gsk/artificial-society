@@ -53,7 +53,7 @@ def test_ueberlast_drop_laeuft_im_sim_tick():
 
 
 def test_respawns_werden_embodied():
-    """Deckt den emergency_respawn-Pfad; spawn_child_from_parent nutzt dasselbe
+    """Deckt den emergency_respawn-Pfad; spawn_agent_from_parent nutzt dasselbe
     attach_body-Muster (Code-identisch, im Sozial-RNG schwer deterministisch erzwingbar)."""
     sim = Simulation(seed=42, physics_v2=True, **_PARAMS)
     sim.agents = sim.agents[:1]  # unter MIN_POPULATION → Respawn im nächsten Tick

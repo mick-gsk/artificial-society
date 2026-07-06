@@ -67,26 +67,26 @@ from artificial_society.systems.social_learning import social_learning_step
 
 MAX_ENERGY = 240.0
 INITIAL_ENERGY = 120.0
-CHILD_START_ENERGY = 100.0
+SPAWN_START_ENERGY = 100.0
 # A newborn's start energy is TRANSFERRED from the mother at birth (capped so she
 # keeps this floor), not minted: the old net mint per birth (100 start vs the
 # smaller parental conception cost) subsidised population overshoot past the
 # world's food carrying capacity, ending in mass starvation.
-BIRTH_ENERGY_FLOOR = 10.0
-REPRODUCTION_ENERGY = 60.0
-REPRODUCTION_COST = 20.0
-REPRODUCTION_COOLDOWN = 100
+SPAWN_ENERGY_FLOOR = 10.0
+REPLICATION_ENERGY = 60.0
+REPLICATION_COST = 20.0
+REPLICATION_COOLDOWN = 100
 # Density-dependent fertility. Personal energy alone (>= REPRODUCTION_ENERGY) is a
 # poor breeding cue: agents hoard up to MAX_ENERGY (240) and so breed off fat
 # reserves banked when food was plentiful, blind to how crowded the ground has
 # become. A mother now also requires the local food standing stock, shared across
 # the mouths already nearby, to clear a floor — the logistic negative feedback of a
 # real ecosystem: as local density rises, per-capita food falls and fertility drops.
-REPRODUCTION_SENSE_RADIUS = 2
-REPRODUCTION_MIN_FOOD_PER_CAPITA = 6.0
+REPLICATION_SENSE_RADIUS = 2
+REPLICATION_MIN_FOOD_PER_CAPITA = 6.0
 # Tuned values previously applied at import by emergence_runtime; now the source of truth.
-MIN_REPRODUCTION_AGE = 60  # int(life_stage.CHILD_MAX * 0.5)
-GESTATION_TIME = 40
+MIN_REPLICATION_AGE = 60  # int(life_stage.CHILD_MAX * 0.5)
+SPAWN_DELAY_TIME = 40
 AGE_LIMIT = 5000
 ELDER_AGE = 3500  # life_stage.ADULT_MAX
 AGE_HEALTH_DECAY_START = 3500  # life_stage.ADULT_MAX
@@ -102,7 +102,7 @@ SLEEP_DRIVE_THRESHOLD = 0.45
 SLEEP_ENERGY_REGEN = 0.40
 SLEEP_HEALTH_REGEN = 0.25
 
-STAGE_CHILD = 120  # life_stage.CHILD_MAX
+STAGE_SPAWN = 120  # life_stage.CHILD_MAX
 STAGE_ELDER = ELDER_AGE  # life_stage.ADULT_MAX (3500)
 
 COOP_FORAGE_BONUS_PER_MEMBER = 0.14
@@ -165,8 +165,8 @@ def ensure_fields(agent) -> None:
         agent.tool = None
     if agent.tool is None and getattr(agent, "material_inventory", {}).get("sharp_stone", 0) > 0.1:
         agent.tool = "sharp_stone"
-    if not hasattr(agent, "_last_mate_id"):
-        agent._last_mate_id = None
+    if not hasattr(agent, "_last_partner_id"):
+        agent._last_partner_id = None
     if not hasattr(agent, "_need_inv_cooldown"):
         agent._need_inv_cooldown = 0
     if not hasattr(agent, "tom") or agent.tom is None:
@@ -347,20 +347,20 @@ class Agent:
     tool: str | None = None
     alive: bool = True
     learning_score: float = 0.0
-    reproduction_cooldown: int = 0
+    replication_cooldown: int = 0
     hidden_state: object = None
     last_reward: float = 0.0
     last_loss: float = 0.0
     sex: str = "m"
-    pregnant: bool = False
-    gestation: float = 0.0
-    stored_child_traits: dict | None = None
-    children: int = 0
+    pending_spawn: bool = False
+    spawn_delay: float = 0.0
+    stored_spawn_traits: dict | None = None
+    spawn_count: int = 0
     generation: int = 0
     parent_id: int | None = None
     plant_eaten: int = 0
     meat_eaten: int = 0
-    birth_tick: int = 0
+    spawn_tick: int = 0
     sick: float = 0.0
     last_action_mode: str = "idle"
     disease_id: str | None = None
@@ -374,7 +374,7 @@ class Agent:
     last_goal_change: int = 0
     goal_commitment: int = 0
     is_sleeping: bool = False
-    _last_mate_id: int | None = None
+    _last_partner_id: int | None = None
     _need_inv_cooldown: int = 0
     tom: TheoryOfMind = field(default_factory=lambda: TheoryOfMind(0))
     knowledge: KnowledgeGraph = field(default_factory=KnowledgeGraph)
@@ -408,7 +408,7 @@ class Agent:
         return agent
 
     @classmethod
-    def spawn_child(cls, x, y, traits, generation=1, parent_id=None, tribe_id=None, parent=None):
+    def spawn_agent(cls, x, y, traits, generation=1, parent_id=None, tribe_id=None, parent=None):
         cls.id_counter += 1
         brain = Brain(plasticity=traits.get("plasticity", 1.0))
         agent = cls(
@@ -417,14 +417,14 @@ class Agent:
             traits=traits,
             memory=EpisodicMemory(traits["memory_capacity"]),
             brain=brain,
-            energy=CHILD_START_ENERGY,
+            energy=SPAWN_START_ENERGY,
             sex=random.choice(["m", "f"]),
             generation=generation,
             parent_id=parent_id,
             tribe_id=tribe_id,
         )
         agent.hidden_state = brain.initial_hidden()
-        agent.reproduction_cooldown = REPRODUCTION_COOLDOWN
+        agent.replication_cooldown = REPLICATION_COOLDOWN
         agent.tom = TheoryOfMind(agent.id)
         agent.knowledge = KnowledgeGraph()
         agent.emotional_memory = EmotionalMemory()
@@ -467,7 +467,7 @@ class Agent:
         return nearby
 
     def life_stage(self):
-        if self.age < STAGE_CHILD:
+        if self.age < STAGE_SPAWN:
             return "child"
         if self.age >= STAGE_ELDER:
             return "elder"
@@ -487,14 +487,14 @@ class Agent:
         b = max(70, min(255, int(80 + 100 * plant_bias + 50 * self.traits["plasticity"] / 1.8)))
         return (r, g, b)
 
-    def can_reproduce(self):
+    def can_replicate(self):
         return (
             self.alive
-            and self.age >= MIN_REPRODUCTION_AGE
+            and self.age >= MIN_REPLICATION_AGE
             and self.age < ELDER_AGE
-            and self.energy >= REPRODUCTION_ENERGY
-            and self.reproduction_cooldown <= 0
-            and not self.pregnant
+            and self.energy >= REPLICATION_ENERGY
+            and self.replication_cooldown <= 0
+            and not self.pending_spawn
         )
 
     def local_features(self, world, agents):
@@ -567,18 +567,18 @@ class Agent:
         )
         return world.neighbors(x, y, radius)
 
-    def progress_pregnancy(self):
-        child = None
-        if self.pregnant:
-            self.gestation -= 1
+    def progress_pending_spawn(self):
+        spawn = None
+        if self.pending_spawn:
+            self.spawn_delay -= 1
             self.energy -= 0.03
-            if self.gestation <= 0 and self.stored_child_traits is not None:
-                child = self.stored_child_traits
-                self.pregnant = False
-                self.gestation = 0
-                self.stored_child_traits = None
+            if self.spawn_delay <= 0 and self.stored_spawn_traits is not None:
+                spawn = self.stored_spawn_traits
+                self.pending_spawn = False
+                self.spawn_delay = 0
+                self.stored_spawn_traits = None
 
-        return child
+        return spawn
 
     def primitive_move(self, world, action):
         if self.is_sleeping:
@@ -796,7 +796,7 @@ class Agent:
         neighbour snapshot at the shared radius so it costs no extra scan.
         """
         x, y = self.pos
-        r = REPRODUCTION_SENSE_RADIUS
+        r = REPLICATION_SENSE_RADIUS
         total_food = 0.0
         for cx in range(x - r, x + r + 1):
             for cy in range(y - r, y + r + 1):
@@ -805,10 +805,10 @@ class Agent:
         nearby = len(self._nearby_cached(agents, r))
         return total_food / (nearby + 1.0)
 
-    def _try_reproduce(self, world, agents):
-        if not self.can_reproduce() or self.sex != "f":
+    def _try_replicate(self, world, agents):
+        if not self.can_replicate() or self.sex != "f":
             return None
-        if self._local_food_per_capita(world, agents) < REPRODUCTION_MIN_FOOD_PER_CAPITA:
+        if self._local_food_per_capita(world, agents) < REPLICATION_MIN_FOOD_PER_CAPITA:
             # The ground here can't feed another mouth right now — hold off.
             return None
         x, y = self.pos
@@ -818,14 +818,14 @@ class Agent:
             if a is not self
             and a.alive
             and a.sex == "m"
-            and a.can_reproduce()
+            and a.can_replicate()
             and abs(a.pos[0] - x) <= 5
             and abs(a.pos[1] - y) <= 5
             and self.trust.get(a.id, 0.0) >= -0.2
         ]
         if not males:
             return None
-        mate = max(
+        partner = max(
             males,
             key=lambda a: (
                 a.traits.get("cooperation", 0.5)
@@ -833,20 +833,20 @@ class Agent:
                 + self.trust.get(a.id, 0.0)
             ),
         )
-        child_traits = derive_traits(self, mate)
-        self.energy -= REPRODUCTION_COST
-        mate.energy -= REPRODUCTION_COST * 0.5
-        self.reproduction_cooldown = REPRODUCTION_COOLDOWN
-        mate.reproduction_cooldown = REPRODUCTION_COOLDOWN
-        self.pregnant = True
+        spawn_traits = derive_traits(self, partner)
+        self.energy -= REPLICATION_COST
+        partner.energy -= REPLICATION_COST * 0.5
+        self.replication_cooldown = REPLICATION_COOLDOWN
+        partner.replication_cooldown = REPLICATION_COOLDOWN
+        self.pending_spawn = True
         eff = self.traits.get("gestation_efficiency", 1.0)
 
-        self.gestation = max(20, int(GESTATION_TIME / eff))
-        self.stored_child_traits = child_traits
-        self._last_mate_id = mate.id
-        mate._last_mate_id = self.id
-        self.children += 1
-        mate.children += 1
+        self.spawn_delay = max(20, int(SPAWN_DELAY_TIME / eff))
+        self.stored_spawn_traits = spawn_traits
+        self._last_partner_id = partner.id
+        partner._last_partner_id = self.id
+        self.spawn_count += 1
+        partner.spawn_count += 1
         return None
 
     def _collect_resources(self, world):
@@ -1190,9 +1190,7 @@ class Agent:
             self.goal_commitment = 30
 
         elif (
-            self.energy > REPRODUCTION_ENERGY
-            and self.health > 70
-            and self.age > MIN_REPRODUCTION_AGE
+            self.energy > REPLICATION_ENERGY and self.health > 70 and self.age > MIN_REPLICATION_AGE
         ):
             self.current_goal = "REPRODUCE"
             self.goal_commitment = 40
@@ -1467,8 +1465,8 @@ class Agent:
         reward += territory_reward_for_agent(self, world)
 
         if stage.get("can_reproduce", True):
-            self._try_reproduce(world, agents)
-        child_traits = self.progress_pregnancy()
+            self._try_replicate(world, agents)
+        spawn_traits = self.progress_pending_spawn()
 
         if tick % 3 == 0:
             reward += social_learning_step(self, agents, tick)
@@ -1581,7 +1579,7 @@ class Agent:
             self.last_loss = loss
 
         self.last_reward = effective_reward
-        self.reproduction_cooldown = max(0, self.reproduction_cooldown - 1)
+        self.replication_cooldown = max(0, self.replication_cooldown - 1)
 
         for other in nearby_agents:
             self.tom.observe_agent(other, tick)
@@ -1597,4 +1595,4 @@ class Agent:
             tick=tick,
         )
 
-        return child_traits
+        return spawn_traits

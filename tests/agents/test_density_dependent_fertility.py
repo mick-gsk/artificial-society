@@ -37,8 +37,8 @@ def _make_pair(sim, x=7, y=6):
         a.sex = sex
         a.age = 200
         a.energy = 120.0
-        a.reproduction_cooldown = 0
-        a.pregnant = False
+        a.replication_cooldown = 0
+        a.pending_spawn = False
         a._cached_nearby_agents = None
     mother.pos = (x, y)
     father.pos = (x, y)
@@ -58,9 +58,9 @@ def test_conceives_when_local_food_is_ample():
     sim.agents = [mother, father]  # sparse: only the couple
     _flood_food(sim.world, 7, 6, radius=2, value=20.0)
 
-    mother._try_reproduce(sim.world, sim.agents)
+    mother._try_replicate(sim.world, sim.agents)
 
-    assert mother.pregnant, "ample local food + no crowding must allow conception"
+    assert mother.pending_spawn, "ample local food + no crowding must allow conception"
 
 
 def test_no_conception_when_crowded_and_food_scarce():
@@ -73,10 +73,10 @@ def test_no_conception_when_crowded_and_food_scarce():
     sim.agents = [mother, father, *crowd]
     _flood_food(sim.world, 7, 6, radius=2, value=0.5)
 
-    result = mother._try_reproduce(sim.world, sim.agents)
+    result = mother._try_replicate(sim.world, sim.agents)
 
     assert result is None
-    assert not mother.pregnant, "a starving, crowded neighbourhood must suppress fertility"
+    assert not mother.pending_spawn, "a starving, crowded neighbourhood must suppress fertility"
 
 
 def test_local_food_per_capita_counts_neighbours_and_food():

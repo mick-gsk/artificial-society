@@ -3,7 +3,7 @@ from artificial_society.agents.traits import derive_traits
 
 
 class EvolutionSystem:
-    def make_child(self, parent, x, y, traits=None, other_parent=None):
+    def make_spawn(self, parent, x, y, traits=None, other_parent=None):
         """
         Erzeugt ein Kind mit korrekter Zwei-Eltern-Vererbung.
 
@@ -27,7 +27,7 @@ class EvolutionSystem:
         else:
             dominant = parent
 
-        child = Agent.spawn_child(
+        spawn = Agent.spawn_agent(
             x=x,
             y=y,
             traits=traits,
@@ -38,17 +38,17 @@ class EvolutionSystem:
         if not getattr(parent, "physics_v2", False):
             # Plan 4: v2-Kinder erben keine gelernten Ressourcen-Erinnerungen.
             # Gate auf parent.physics_v2 — child.physics_v2 wird erst durch das
-            # nachgelagerte attach_body() in spawn_child_from_parent True.
+            # nachgelagerte attach_body() in spawn_agent_from_parent True.
             if parent.memory.resource_memory:
-                child.memory.resource_memory = parent.memory.resource_memory[-3:]
+                spawn.memory.resource_memory = parent.memory.resource_memory[-3:]
             if other_parent and other_parent.memory.resource_memory:
                 extra = other_parent.memory.resource_memory[-2:]
                 for mem in extra:
-                    if mem not in child.memory.resource_memory:
-                        child.memory.resource_memory.append(mem)
+                    if mem not in spawn.memory.resource_memory:
+                        spawn.memory.resource_memory.append(mem)
 
         if parent.tribe_id is not None:
-            child.trust[parent.id] = 0.4
+            spawn.trust[parent.id] = 0.4
         if other_parent is not None:
-            child.trust[other_parent.id] = 0.4
-        return child
+            spawn.trust[other_parent.id] = 0.4
+        return spawn

@@ -1,4 +1,4 @@
-from artificial_society.agents.life_stage import STAGE_ADULT, STAGE_CHILD, STAGE_ELDER
+from artificial_society.agents.life_stage import STAGE_ADULT, STAGE_ELDER, STAGE_SPAWN
 
 
 class StatisticsTracker:
@@ -16,8 +16,8 @@ class StatisticsTracker:
         avg_age = sum(a.age for a in live) / pop if pop else 0
         avg_coop = sum(a.traits["cooperation"] for a in live) / pop if pop else 0
         known_sites = sum(len(a.memory.resource_memory) for a in live)
-        pregnant = sum(1 for a in live if a.pregnant)
-        avg_children = sum(a.children for a in live) / pop if pop else 0
+        pending_spawn = sum(1 for a in live if a.pending_spawn)
+        avg_spawn_count = sum(a.spawn_count for a in live) / pop if pop else 0
         avg_plant = sum(a.plant_eaten for a in live) / pop if pop else 0
         avg_meat = sum(a.meat_eaten for a in live) / pop if pop else 0
         avg_hydration = sum(a.hydration for a in live) / pop if pop else 0
@@ -27,7 +27,7 @@ class StatisticsTracker:
         # Life-stage counts. ``life_stage`` is a *method* on the agent returning
         # 'child'/'adult'/'elder' (== the STAGE_* constants); calling it is required —
         # ``getattr(a, "life_stage", ...)`` returned the bound method, so every count was 0.
-        n_child = sum(1 for a in live if a.life_stage() == STAGE_CHILD)
+        n_spawn = sum(1 for a in live if a.life_stage() == STAGE_SPAWN)
         n_adult = sum(1 for a in live if a.life_stage() == STAGE_ADULT)
         n_elder = sum(1 for a in live if a.life_stage() == STAGE_ELDER)
         avg_energy = sum(a.energy for a in live) / pop if pop else 0
@@ -51,8 +51,8 @@ class StatisticsTracker:
             "technologies": len(technology.capability_map),
             "knowledge": known_sites,
             "cooperation": avg_coop,
-            "pregnant": pregnant,
-            "avg_children": avg_children,
+            "pregnant": pending_spawn,
+            "avg_children": avg_spawn_count,
             "avg_plant": avg_plant,
             "avg_meat": avg_meat,
             "avg_hydration": avg_hydration,
@@ -68,7 +68,7 @@ class StatisticsTracker:
             "world_disturbance": world_means["disturbance"],
             "active_events": world_means["events"],
             # Life-stage breakdown
-            "n_child": n_child,
+            "n_child": n_spawn,
             "n_adult": n_adult,
             "n_elder": n_elder,
         }

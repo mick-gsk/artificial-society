@@ -46,7 +46,7 @@ class TechnologySystem:
         for agent in agents:
             if not agent.alive:
                 continue
-            causal_mem = getattr(agent, 'causal_memory', None)
+            causal_mem = getattr(agent, "causal_memory", None)
             if causal_mem is None:
                 continue
             for seq in causal_mem.sequences:
@@ -56,6 +56,6 @@ class TechnologySystem:
 
     def _current_tick(self, agents):
         for a in agents:
-            if hasattr(a, 'birth_tick'):
-                return getattr(a, 'age', 0)
+            if hasattr(a, "spawn_tick"):
+                return getattr(a, "age", 0)
         return 0

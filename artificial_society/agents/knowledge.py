@@ -351,17 +351,17 @@ class KnowledgeGraph:
                 continue
             if key not in self.facts:
                 self.facts[key] = CausalFact(key)
-            child_fact = self.facts[key]
+            spawn_fact = self.facts[key]
             noise = torch.randn(1).item() * 0.05
-            child_fact.confidence = (
-                strength * fact.confidence + (1.0 - strength) * child_fact.confidence + noise
+            spawn_fact.confidence = (
+                strength * fact.confidence + (1.0 - strength) * spawn_fact.confidence + noise
             )
-            child_fact.confidence = max(-1.0, min(1.0, child_fact.confidence))
+            spawn_fact.confidence = max(-1.0, min(1.0, spawn_fact.confidence))
             for oid in fact.outcome_ids:
-                if oid not in child_fact.outcome_ids:
-                    child_fact.outcome_ids.append(oid)
+                if oid not in spawn_fact.outcome_ids:
+                    spawn_fact.outcome_ids.append(oid)
             # Prerequisites mitübertragen (NEU)
-            child_fact.prerequisites = list(fact.prerequisites)
+            spawn_fact.prerequisites = list(fact.prerequisites)
 
         # Makro-Aktionen vererben (NEU): Nur sehr sichere werden übertragen
         for key, macro in parent.macro_actions.items():

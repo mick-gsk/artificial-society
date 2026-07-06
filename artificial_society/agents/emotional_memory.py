@@ -509,7 +509,7 @@ class EmotionalMemory:
         for t in sorted(parent_em.traces, key=lambda x: -x.strength * x.consolidation)[:8]:
             if t.strength * t.consolidation < 0.35:
                 continue
-            child_trace = EmotionalTrace(
+            spawn_trace = EmotionalTrace(
                 stimulus=t.stimulus,
                 valence=t.valence * 0.6,  # muted but directional
                 arousal=t.arousal * 0.5,
@@ -521,7 +521,7 @@ class EmotionalMemory:
                 context_hormones=[0.2, 0.45, 0.3, 0.05],  # default baseline
                 category=t.category,
             )
-            self._add_trace(child_trace)
+            self._add_trace(spawn_trace)
         # Mood inheritance: very weak
         self.mood = parent_em.mood * 0.15
 

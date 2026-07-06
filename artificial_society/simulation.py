@@ -6,9 +6,9 @@ import pygame
 
 import artificial_society.systems._builtins  # noqa: F401  (registers built-in systems)
 from artificial_society.agents.agent import (
-    BIRTH_ENERGY_FLOOR,
     CORPSE_ENERGY,
     MAX_ENERGY,
+    SPAWN_ENERGY_FLOOR,
     Agent,
     attach_body,
     ensure_fields,
@@ -53,7 +53,7 @@ DERIVE_FIDELITY = 0.70
 DEATH_BROADCAST_FIDELITY = 0.45
 DEATH_BROADCAST_RADIUS = 4
 
-HAMILTON_CHILD_R = 0.50
+HAMILTON_SPAWN_R = 0.50
 HAMILTON_TRIBE_R = 0.10
 HAMILTON_REWARD_SCALE = 0.08
 HAMILTON_TICK_INTERVAL = 20
@@ -195,52 +195,52 @@ class Simulation:
                 attach_body(agent)
             self.agents.append(agent)
 
-    def spawn_child_from_parent(self, parent, traits):
+    def spawn_agent_from_parent(self, parent, traits):
         x, y = self.world.find_free_neighbor(parent.pos)
         if x is None:
             x, y = parent.pos
         other_parent = None
         agent_by_id = {a.id: a for a in self.agents if a.alive}
-        mate_id = getattr(parent, "_last_mate_id", None)
-        if mate_id is not None:
-            other_parent = agent_by_id.get(mate_id)
-        child = self.evolution.make_child(parent, x, y, traits=traits, other_parent=other_parent)
-        child.hidden_state = child.brain.initial_hidden()
-        child.birth_tick = self.tick
+        partner_id = getattr(parent, "_last_partner_id", None)
+        if partner_id is not None:
+            other_parent = agent_by_id.get(partner_id)
+        spawn = self.evolution.make_spawn(parent, x, y, traits=traits, other_parent=other_parent)
+        spawn.hidden_state = spawn.brain.initial_hidden()
+        spawn.spawn_tick = self.tick
         # Birth is an energy TRANSFER from the mother, not minting: the child
         # keeps at most its default start energy, the mother keeps at least
         # BIRTH_ENERGY_FLOOR — a starving mother bears a weak child. (Energy only;
         # the v2 path deliberately inherits no learned state — Plan 4.)
-        transfer = min(child.energy, max(0.0, parent.energy - BIRTH_ENERGY_FLOOR))
-        child.energy = transfer
+        transfer = min(spawn.energy, max(0.0, parent.energy - SPAWN_ENERGY_FLOOR))
+        spawn.energy = transfer
         parent.energy -= transfer
         if self.physics_v2:
             # strength wird über den eigenen v2-Pfad vererbt (inherit_genes
             # überspringt es — Golden), DANN baut attach_body den Body daraus.
             # ALIAS beachten: `inherit_strength` ist in dieser Funktion bereits
             # die lokale Gewichts-Vererbungsstärke — daher inherit_strength_gene.
-            derive_strength_trait(child.traits, parent, other_parent)
-            attach_body(child)
+            derive_strength_trait(spawn.traits, parent, other_parent)
+            attach_body(spawn)
         if not self.physics_v2:
             # Plan 4 (Kultur-Korrektur): im v2-Pfad wird KEIN Gelerntes vererbt —
             # Kind startet mit frischem Netz (attach_body) + leeren Lern-Stores.
             # Nur Gene (inkl. strength) gehen ans Kind. Kultur überlebt allein
             # über soziales Lernen zu Lebzeiten.
             derive_strength = max(
-                0.20, min(0.75, 0.75 - (child.traits["plasticity"] - 0.3) / (1.8 - 0.3) * 0.55)
+                0.20, min(0.75, 0.75 - (spawn.traits["plasticity"] - 0.3) / (1.8 - 0.3) * 0.55)
             )
-            child.brain.derive_weights_from(parent.brain, strength=derive_strength)
+            spawn.brain.derive_weights_from(parent.brain, strength=derive_strength)
             if other_parent is not None:
-                child.brain.derive_weights_from(other_parent.brain, strength=derive_strength * 0.4)
+                spawn.brain.derive_weights_from(other_parent.brain, strength=derive_strength * 0.4)
             parent_mem = getattr(parent, "causal_memory", None)
             if parent_mem:
-                child.causal_memory = CausalMemory(capacity=32)
+                spawn.causal_memory = CausalMemory(capacity=32)
                 for seq in list(parent_mem.sequences.keys())[:DERIVE_SEQUENCES]:
-                    child.causal_memory.receive_transmitted(seq, fidelity=DERIVE_FIDELITY)
+                    spawn.causal_memory.receive_transmitted(seq, fidelity=DERIVE_FIDELITY)
             if parent.remedy_knowledge:
                 for disease, herbs in parent.remedy_knowledge.items():
                     if random.random() < DERIVE_FIDELITY:
-                        child.remedy_knowledge[disease] = list(herbs)
+                        spawn.remedy_knowledge[disease] = list(herbs)
             parent_inv = getattr(parent, "material_inventory", {})
             parent_discoveries = {
                 m: q
@@ -248,14 +248,14 @@ class Simulation:
                 if m.startswith("mat_") and q >= DEATH_MATERIAL_MIN_QTY
             }
             if parent_discoveries:
-                child_inv = getattr(child, "material_inventory", {})
+                spawn_inv = getattr(spawn, "material_inventory", {})
                 for mat_id, qty in parent_discoveries.items():
                     if random.random() < DERIVE_FIDELITY:
-                        child_inv[mat_id] = (
-                            child_inv.get(mat_id, 0.0) + qty * DEATH_MATERIAL_TRANSFER_RATIO
+                        spawn_inv[mat_id] = (
+                            spawn_inv.get(mat_id, 0.0) + qty * DEATH_MATERIAL_TRANSFER_RATIO
                         )
-                child.material_inventory = child_inv
-        return child
+                spawn.material_inventory = spawn_inv
+        return spawn
 
     # Plan 4 (bekannte Abweichung, bewusst belassen): Todes-Broadcast ist KEIN
     # Geburts-Erbgang, sondern horizontaler Transfer an anwesende Sippe — aber
@@ -304,7 +304,7 @@ class Simulation:
         for _ in range(RESPAWN_COUNT):
             x, y = self.world.random_land_position()
             a = Agent.spawn_random(x, y)
-            a.birth_tick = self.tick
+            a.spawn_tick = self.tick
             if self.physics_v2:
                 attach_body(a)
             self.agents.append(a)
@@ -420,7 +420,8 @@ class Simulation:
             if pool <= 0.0:
                 continue
             weights = [
-                (len(members) - 1) * HAMILTON_TRIBE_R + getattr(m, "children", 0) * HAMILTON_CHILD_R
+                (len(members) - 1) * HAMILTON_TRIBE_R
+                + getattr(m, "spawn_count", 0) * HAMILTON_SPAWN_R
                 for m in members
             ]
             total_w = sum(weights)
@@ -521,16 +522,16 @@ class Simulation:
         alive = [a for a in self.agents if a.alive]
         if not alive:
             return
-        from artificial_society.agents.life_stage import STAGE_ADULT, STAGE_CHILD, STAGE_ELDER
+        from artificial_society.agents.life_stage import STAGE_ADULT, STAGE_ELDER, STAGE_SPAWN
 
-        n_child = sum(1 for a in alive if getattr(a, "life_stage", STAGE_ADULT) == STAGE_CHILD)
+        n_spawn = sum(1 for a in alive if getattr(a, "life_stage", STAGE_ADULT) == STAGE_SPAWN)
         n_adult = sum(1 for a in alive if getattr(a, "life_stage", STAGE_ADULT) == STAGE_ADULT)
         n_elder = sum(1 for a in alive if getattr(a, "life_stage", STAGE_ADULT) == STAGE_ELDER)
-        avg_age = sum(self.tick - getattr(a, "birth_tick", self.tick) for a in alive) / len(alive)
+        avg_age = sum(self.tick - getattr(a, "spawn_tick", self.tick) for a in alive) / len(alive)
         avg_hyd = sum(getattr(a, "hydration", 50.0) for a in alive) / len(alive)
         avg_sick = sum(getattr(a, "sick", 0.0) for a in alive) / len(alive)
         avg_rew = sum(getattr(a, "last_reward", 0.0) for a in alive) / len(alive)
-        n_preg = sum(1 for a in alive if getattr(a, "pregnant", False))
+        n_preg = sum(1 for a in alive if getattr(a, "pending_spawn", False))
         n_tribes = len({a.tribe_id for a in alive if a.tribe_id is not None})
         food_vals = [
             self.world.get_cell(x, y)["food"]
@@ -560,7 +561,7 @@ class Simulation:
         self.stats.record(
             {
                 "population": len(alive),
-                "n_child": n_child,
+                "n_child": n_spawn,
                 "n_adult": n_adult,
                 "n_elder": n_elder,
                 "average_age": avg_age,
@@ -597,12 +598,12 @@ class Simulation:
 
         # --- per-agent update ---
         # A non-None return from Agent.update is a completed pregnancy: spawn the
-        # child with full genetic / brain / knowledge inheritance (spawn_child_from_parent).
-        new_children = []
+        # child with full genetic / brain / knowledge inheritance (spawn_agent_from_parent).
+        new_spawns = []
         for agent in list(self.agents):
             if not agent.alive:
                 continue
-            child_traits = agent.update(
+            spawn_traits = agent.update(
                 self.world,
                 self.agents,
                 tick,
@@ -612,9 +613,9 @@ class Simulation:
                 economy=self.economy,
                 technology=self.technology,
             )
-            if child_traits is not None:
-                new_children.append(self.spawn_child_from_parent(agent, child_traits))
-        self.agents.extend(new_children)
+            if spawn_traits is not None:
+                new_spawns.append(self.spawn_agent_from_parent(agent, spawn_traits))
+        self.agents.extend(new_spawns)
 
         # Flag aus: Pre-Filtering unverändert (Golden-Garantie) — Tote erreichen
         # remove_dead() dort wie bisher nicht. Im v2-Modus MÜSSEN Tote

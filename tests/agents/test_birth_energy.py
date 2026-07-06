@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from artificial_society.agents.agent import BIRTH_ENERGY_FLOOR, CHILD_START_ENERGY
+from artificial_society.agents.agent import SPAWN_ENERGY_FLOOR, SPAWN_START_ENERGY
 from artificial_society.simulation import Simulation
 
 
@@ -22,31 +22,31 @@ def _sim(seed):
     )
 
 
-def test_birth_transfers_energy_from_the_mother():
+def test_spawn_transfers_energy_from_the_mother():
     sim = _sim(seed=23)
     mother = sim.agents[0]
     mother.sex = "f"
     mother.energy = 200.0
-    mother._last_mate_id = None
+    mother._last_partner_id = None
 
     total_before = mother.energy
-    child = sim.spawn_child_from_parent(mother, dict(mother.traits))
+    spawn = sim.spawn_agent_from_parent(mother, dict(mother.traits))
 
-    assert child.energy == pytest.approx(CHILD_START_ENERGY)  # rich mother: full start
-    assert child.energy + mother.energy == pytest.approx(total_before), (
+    assert spawn.energy == pytest.approx(SPAWN_START_ENERGY)  # rich mother: full start
+    assert spawn.energy + mother.energy == pytest.approx(total_before), (
         "birth must conserve energy (transfer, not mint)"
     )
 
 
-def test_starving_mother_bears_weak_child():
+def test_starving_mother_bears_weak_spawn():
     sim = _sim(seed=23)
     mother = sim.agents[0]
     mother.sex = "f"
     mother.energy = 40.0
-    mother._last_mate_id = None
+    mother._last_partner_id = None
 
-    child = sim.spawn_child_from_parent(mother, dict(mother.traits))
+    spawn = sim.spawn_agent_from_parent(mother, dict(mother.traits))
 
-    assert child.energy == pytest.approx(40.0 - BIRTH_ENERGY_FLOOR), (
+    assert spawn.energy == pytest.approx(40.0 - SPAWN_ENERGY_FLOOR), (
         "a poor mother can only afford a weak child"
     )
