@@ -777,6 +777,39 @@ class Agent:
                 gain += take
                 self.endocrine.apply_substance("plant_food", take / PLANT_ENERGY)
                 self.endocrine.apply_successful_forage(take)
+            # v2-Kalorien-Fix (Option A): innater roher Handbiss aus einem
+            # ko-lokierten Kadaver-Objekt am selben automatischen forage-Skalar.
+            # Stellt die v1-Fleisch-Zugänglichkeit (Tod→Nahrung) wieder her, ohne
+            # den Brain-Aktionsraum zu berühren, massenerhaltend über do_eat.
+            # G1: STRIKT auf physics_v2 gegatet — der umgebende Zweig dient auch
+            #     v1-Herbivoren (diet<0, physics_v2=False), die kein body/hands
+            #     haben und deren Golden byte-identisch bleiben muss.
+            # G2: nur bei Hunger (energy < MAX) — sonst mahlt do_eat das knappe,
+            #     nicht-nachwachsende Kadaver-Objekt sinnlos in den eaten-Ledger.
+            if self.physics_v2 and self.energy < MAX_ENERGY:
+                layer = world.objects
+                for obj in layer.objects_at((x, y)):
+                    if obj.kind not in ("carcass", "raw_meat"):
+                        continue
+                    result = do_eat(self.body, self.hands, layer, self.pos, obj)
+                    if not result.ok:
+                        continue
+                    # G3: Energie AUSSCHLIESSLICH über den do_eat-Rückgabewert
+                    #     (eine Quelle der Wahrheit für kcal↔Energie, keine zweite
+                    #     Rechnung → keine Doppelgutschrift). Toxin-Health-Kopplung
+                    #     wie im Embodied-Pfad.
+                    if result.energy_delta_sim:
+                        gained = result.energy_delta_sim
+                        self.energy = max(0.0, min(MAX_ENERGY, self.energy + gained))
+                        self.meat_eaten += 1
+                        gain += gained
+                        self.endocrine.apply_substance("raw_meat", gained / MEAT_ENERGY)
+                        self.endocrine.apply_successful_forage(gained)
+                    if result.health_delta:
+                        self.health = max(0.0, self.health + result.health_delta)
+                        if self.health <= 0:
+                            self.alive = False
+                    break  # ein Biss pro Tick, wie der verkörperte eat-Pfad
         else:
             # Carnivore/omnivore: carcasses first (now correctly keyed on the
             # stored `carcasses` field, not the never-present `carcass`), then the
