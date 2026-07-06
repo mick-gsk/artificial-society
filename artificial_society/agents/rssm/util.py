@@ -1,4 +1,5 @@
 """Shared numeric primitives: symlog, fixed twohot support, MLP factory (spec §4.1)."""
+
 from __future__ import annotations
 
 import torch

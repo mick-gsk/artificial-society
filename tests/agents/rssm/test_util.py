@@ -4,7 +4,13 @@ import torch
 
 from artificial_society.agents.rssm.config import RSSMConfig
 from artificial_society.agents.rssm.util import (
-    make_bins, mlp, symexp, symlog, twohot, twohot_mean, zero_init_,
+    make_bins,
+    mlp,
+    symexp,
+    symlog,
+    twohot,
+    twohot_mean,
+    zero_init_,
 )
 
 CFG = RSSMConfig()
