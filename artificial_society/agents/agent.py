@@ -650,6 +650,20 @@ class Agent:
             target = self._nearest_food_cell(world)
         elif self.can_reproduce():
             target = self._nearest_compatible_mate(agents)
+            if target is None:
+                # Allee-Rettung (Populations-Kollaps-Fix). Ohne Suchverhalten
+                # friert ein paarungsbereiter Agent OHNE Partner im
+                # MATE_SEEK_RADIUS an Ort und Stelle ein — die Move-Kopf-Dims
+                # sind welt-inert, also ist innate_locomotion die EINZIGE
+                # Lokomotion. Zwei verstreute Fruchtbare (Abstand > 8) fanden
+                # sich bei geringer Dichte nie -> births_cum gefror, Population
+                # blieb bei 2 gepinnt. Deterministischer Rendezvous-Grundtrieb
+                # (Lek-/Sammelplatz-Analogon): driftet zum Weltzentrum, bis der
+                # Partner in Reichweite kommt. Die EIGENTLICHE Paarung bleibt
+                # perzeptions-/ko-lokations-gebunden (MATE_SEEK_RADIUS=8 und die
+                # ±5-Konzeptionsbox in _try_reproduce sind unverändert) — KEIN
+                # globaler Konzeptionsradius, KEIN Teleport, RNG-frei.
+                target = self._mate_rendezvous_cell(world)
         if target is None:
             return  # gesättigt / kein Gradient im Radius -> Ruhe (kein Schritt)
         x, y = self.pos
@@ -717,6 +731,23 @@ class Agent:
         if best_pos is None or best_pos == (x, y):
             return None
         return best_pos
+
+    def _mate_rendezvous_cell(self, world):
+        """Deterministischer Sammelpunkt für die Partnersuche (Allee-Rettung).
+
+        Feuert nur als Fallback, wenn ein paarungsbereiter Agent KEINEN Partner
+        im MATE_SEEK_RADIUS wahrnimmt. Ziel ist die Weltmitte — ein fixer,
+        rein geometrischer Treffpunkt, sodass verstreute Fruchtbare deterministisch
+        zusammenfinden (Brut-/Sammelplatz-Trieb), ohne dass ein spezifischer
+        Partner ‚global gesehen' werden müsste. Steht der Agent schon in der Mitte
+        -> None (Warten, kein Schritt). Kein Zufall, ko-lokation/Konzeption
+        (±5-Box) unverändert.
+        """
+        cx = world.width // 2
+        cy = world.height // 2
+        if (cx, cy) == self.pos:
+            return None
+        return (cx, cy)
 
     def _forage(self, world, mods):
         x, y = self.pos
