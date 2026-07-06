@@ -46,6 +46,24 @@ SCARCITY_CEILING_FACTOR = 0.35
 # Analog fuer Fleischnachwuchs (Beutetiere sind ohnehin knapper).
 MEAT_CEILING_FACTOR = 0.25
 
+# Live, call-time-patchable multiplier on the STANDING plant carrying capacity
+# (the equilibrium standing stock), NOT the inflow rate.
+#
+# Why this exists (B1 fix): the vectorized regrow path (`regrow_grid`) reads
+# `bio["plant_ceiling"]` — a per-biome array frozen at world construction
+# (world.py `_init_biome_statics`). Patching the module global
+# `SCARCITY_CEILING_FACTOR` after a world is built therefore does NOT move the
+# ceiling the sim actually experiences (silent no-op). And scaling the inflow
+# knob `FOOD_SCARCITY_FACTOR` only changes how FAST cells regrow, not where they
+# plateau: equilibrium is set by `plant_headroom -> 0` at
+# `plant_target = plant_ceiling * capacity`, which is decoupled from inflow.
+#
+# This scale is applied to `plant_ceiling` at CALL TIME in BOTH regrow paths, so
+# a calibration sweep can genuinely raise carrying capacity with a one-liner:
+#   `artificial_society.environment.resources.PLANT_CEILING_SCALE = f`
+# Analogous to how FOOD_SCARCITY_FACTOR is a live inflow knob. 1.0 == default.
+PLANT_CEILING_SCALE = 1.0
+
 # Biome-specific scarcity (Phase 4): harsh biomes plateau at a lower standing
 # stock than fertile ones, so *where* an agent lives is a real selection
 # pressure. These scale the logistic plant ceiling per biome;
@@ -314,7 +332,7 @@ def regrow_cell(world, x, y, biome, season_state, weather_state, tick, event_str
     # leicht an. Ergebnis: eine unberuehrte Zelle waechst nur bis
     # ~SCARCITY_CEILING_FACTOR*capacity und bleibt dort knapp;
     # befressene Zellen erholen sich langsam von unten.
-    plant_ceiling = biome_scarcity_ceiling(biome)
+    plant_ceiling = biome_scarcity_ceiling(biome) * PLANT_CEILING_SCALE
     plant_target = plant_ceiling * capacity + farm_bonus
     meat_target = MEAT_CEILING_FACTOR * capacity
     plant_headroom = max(0.0, 1.0 - cell["plant_food"] / max(1.0, plant_target))
@@ -543,7 +561,7 @@ def regrow_grid(world, season_state, weather_state, tick, event_fields):
         * np.where(bio["is_meat_biome"], 1.1, 0.7)
     )
 
-    plant_ceiling = bio["plant_ceiling"]
+    plant_ceiling = bio["plant_ceiling"] * PLANT_CEILING_SCALE
     plant_target = plant_ceiling * capacity + farm_bonus
     meat_target = MEAT_CEILING_FACTOR * capacity
     plant_headroom = np.maximum(0.0, 1.0 - plant_food0 / np.maximum(1.0, plant_target))

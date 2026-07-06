@@ -37,6 +37,26 @@ from artificial_society.world import World
 EVENT_WARMUP_TICKS = 600
 MIN_POPULATION = 8
 RESPAWN_COUNT = 6
+
+# B2 fix — principled respawn (see emergency_respawn).
+# The old crutch injected fresh age-0 agents at random SCATTERED empty cells;
+# they landed alone, far from any mate, and died before reaching
+# MIN_REPRODUCTION_AGE (~360-tick lifespan), so respawns fired endlessly and
+# never fell to 0. Principled inheritance instead spawns a replacement ADJACENT
+# to a randomly chosen LIVING agent, with inherited genes/traits and a non-zero
+# JUVENILE age head-start, so it lands in a viable spot near a potential mate and
+# can actually reach reproduction.
+#
+# RESPAWN_INHERITANCE is the A/B lever ("crutch off vs inheritance"): set it False
+# (externally patchable, like MIN_POPULATION/RESPAWN_COUNT) to restore the old
+# scattered-from-nothing behavior for a controlled experiment. If no agent is
+# alive at respawn time, we fall back to scattering regardless (there is no living
+# agent to inherit from).
+RESPAWN_INHERITANCE = True
+# Juvenile head-start age for an inherited replacement: old enough to be viable
+# and reach MIN_REPRODUCTION_AGE (=60) well within a lifespan, but still a
+# juvenile (below STAGE_CHILD=120 adulthood). Externally settable.
+RESPAWN_JUVENILE_AGE = 30
 CHECKPOINT_INTERVAL = 500
 CHECKPOINT_PATH = "checkpoint.pkl"
 # C5 (Plan 3b): Format-Version des Pickle-Payloads. v2 führt neue Brain-Formen
@@ -302,6 +322,19 @@ class Simulation:
             recipient.material_inventory = r_inv
 
     def emergency_respawn(self):
+        living = [a for a in self.agents if a.alive]
+        # Fall back to the old scattered spawn when inheritance is disabled (A/B
+        # lever) or when there is simply no living agent to inherit from.
+        if not RESPAWN_INHERITANCE or not living:
+            self._respawn_scattered()
+            return
+        for _ in range(RESPAWN_COUNT):
+            parent = random.choice(living)
+            self._respawn_from_living(parent)
+
+    def _respawn_scattered(self):
+        """OLD crutch: fresh age-0 agents at random empty cells. Kept selectable
+        via RESPAWN_INHERITANCE for the crutch-off A/B experiment."""
         for _ in range(RESPAWN_COUNT):
             x, y = self.world.random_land_position()
             a = Agent.spawn_random(x, y)
@@ -309,6 +342,25 @@ class Simulation:
             if self.physics_v2:
                 attach_body(a)
             self.agents.append(a)
+
+    def _respawn_from_living(self, parent):
+        """Principled inheritance respawn: a juvenile replacement spawned ADJACENT
+        to a living agent, inheriting its genes/traits, with a non-zero juvenile
+        age so it lands near a potential mate and can reach reproduction."""
+        x, y = self.world.find_free_neighbor(parent.pos)
+        if x is None:
+            x, y = parent.pos
+        child = self.evolution.make_child(parent, x, y)
+        child.hidden_state = child.brain.initial_hidden()
+        # Juvenile head-start: born now but aged forward so it needs far fewer
+        # ticks to reach MIN_REPRODUCTION_AGE than a scattered age-0 stranger.
+        child.age = RESPAWN_JUVENILE_AGE
+        child.birth_tick = self.tick - RESPAWN_JUVENILE_AGE
+        if self.physics_v2:
+            inherit_strength_gene(child.genes, parent, None)
+            attach_body(child)
+        self.agents.append(child)
+        return child
 
     def remove_dead(self):
         survivors = []
