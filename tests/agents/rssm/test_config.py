@@ -25,6 +25,8 @@ def test_defaults_match_spec():
     assert cfg.prototype_decay == 0.995
     assert cfg.gene_slice == (17, 21)
     assert cfg.max_slots >= 128
+    assert cfg.policy_mode == "actor"
+    assert (cfg.mpc_candidates, cfg.mpc_horizon) == (12, 2)
 
 
 def test_generator_isolated_from_global():

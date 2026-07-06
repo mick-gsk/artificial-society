@@ -11,6 +11,7 @@ from .actor_critic import ActorCriticSlab
 from .config import make_generator
 from .prototype import PrototypeActor
 from .replay import SharedReplay
+from .util import twohot_mean
 from .world_model import RSSMWorldModel
 
 
@@ -62,17 +63,21 @@ class SharedLearner:
 
     # --- lifecycle ------------------------------------------------------------
     def on_spawn(self, agent, origin: str, tick: int) -> None:
-        agent.rssm_slot = self.slab.acquire_slot(self.prototype.template())
+        if self.cfg.policy_mode == "actor":
+            agent.rssm_slot = self.slab.acquire_slot(self.prototype.template())
+            if self._act_actor is not None:  # newborn slot row must be current in the mirror
+                self.slab.refresh_actor_mirror_slot(self._act_actor, agent.rssm_slot)
+        else:  # mpc (arm C): no slab at all
+            agent.rssm_slot = None
         agent.brain_arch = "rssm"
         agent.spawn_origin = origin
         agent.hidden_state = None
         self.replay.start_episode(agent.id, origin)
-        if self._act_actor is not None:  # newborn slot row must be current in the mirror
-            self.slab.refresh_actor_mirror_slot(self._act_actor, agent.rssm_slot)
 
     def on_death(self, agent) -> None:
         self.replay.end_episode(agent.id)
-        self.slab.release_slot(agent.rssm_slot)
+        if agent.rssm_slot is not None:
+            self.slab.release_slot(agent.rssm_slot)
         self._agent_gens.pop(agent.id, None)
 
     # --- acting (batch-1, CPU, no_grad) ----------------------------------------
@@ -80,19 +85,22 @@ class SharedLearner:
         cfg = self.cfg
         gen = self._gen(agent.id)
         obs = torch.as_tensor(features, dtype=torch.float32).unsqueeze(0)
-        with torch.no_grad():
-            if agent.hidden_state is None:
-                h, z = self._act_wm.initial_state(1, torch.device("cpu"))
-                a_prev = torch.zeros(1, cfg.action_dim)
-            else:
-                h, z = agent.hidden_state
-                a_prev = getattr(agent, "_rssm_last_action", torch.zeros(1, cfg.action_dim))
-            h, z, _, _ = self._act_wm.obs_step(h, z, a_prev, obs, gen)
-            genes = obs[:, cfg.gene_slice[0] : cfg.gene_slice[1]]
-            s_g = self._act_wm.head_input(h, z, genes)
-            action, _ = self.slab.act_single(
-                agent.rssm_slot, s_g, gen, params_override=self._act_actor
-            )
+        if agent.hidden_state is None:
+            h, z = self._act_wm.initial_state(1, torch.device("cpu"))
+            a_prev = torch.zeros(1, cfg.action_dim)
+        else:
+            h, z = agent.hidden_state
+            a_prev = getattr(agent, "_rssm_last_action", torch.zeros(1, cfg.action_dim))
+        if cfg.policy_mode == "mpc":
+            action, h, z = self._act_mpc(agent, obs, h, z, a_prev, gen)
+        else:
+            with torch.no_grad():
+                h, z, _, _ = self._act_wm.obs_step(h, z, a_prev, obs, gen)
+                genes = obs[:, cfg.gene_slice[0] : cfg.gene_slice[1]]
+                s_g = self._act_wm.head_input(h, z, genes)
+                action, _ = self.slab.act_single(
+                    agent.rssm_slot, s_g, gen, params_override=self._act_actor
+                )
         agent._rssm_last_action = action.unsqueeze(0)
         return {
             "action_list": [float(x) for x in action],
@@ -100,6 +108,27 @@ class SharedLearner:
             "obs_tensor": obs.squeeze(0),
             "action_tensor": action,
         }
+
+    def _act_mpc(self, agent, obs, h, z, a_prev, gen):
+        cfg = self.cfg
+        with torch.no_grad():
+            h, z, _, _ = self._act_wm.obs_step(h, z, a_prev, obs, gen)
+            K = cfg.mpc_candidates
+            cand = torch.rand(K, cfg.action_dim, generator=gen) * 2 - 1
+            hh = h.expand(K, -1).contiguous()
+            zz = z.expand(K, -1, -1).contiguous()
+            genes = obs[:, cfg.gene_slice[0] : cfg.gene_slice[1]].expand(K, -1)
+            score = torch.zeros(K)
+            discount = torch.ones(K)
+            a = cand
+            for _ in range(cfg.mpc_horizon):
+                hh, zz, _ = self._act_wm.img_step(hh, zz, a, gen)
+                s_g = self._act_wm.head_input(hh, zz, genes)
+                score += discount * twohot_mean(self._act_wm.reward_logits(s_g), self._act_wm.bins)
+                discount *= cfg.gamma * self._act_wm.cont_prob(s_g)
+                a = torch.rand(K, cfg.action_dim, generator=gen) * 2 - 1
+            best = cand[int(score.argmax())]
+        return best, h, z
 
     def store_transition(self, agent, brain_step, reward: float, done: bool) -> None:
         self.replay.add(
@@ -114,7 +143,7 @@ class SharedLearner:
         batch = self.replay.sample_sequences(self._gen_learner)
         batch = {k: v.to(self.train_device) for k, v in batch.items()}
         metrics = self.wm.train_batch(batch, self._gen_train)
-        if self.wm.wm_updates > cfg.wm_warmup_updates:
+        if cfg.policy_mode == "actor" and self.wm.wm_updates > cfg.wm_warmup_updates:
             img = self._imagination_pass(agents, tick)
             if img:
                 metrics.update(img)

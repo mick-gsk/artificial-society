@@ -83,3 +83,9 @@ class RSSMConfig:
     prototype_decay: float = 0.995
     # devices
     train_device: str = "cuda"  # WM-train + imagination; act path is ALWAYS cpu
+    # policy mode (spec §10.2, arm C): "actor" = slab/imagination/prototype (arm B);
+    # "mpc" = WM-only, no slab — act picks the best of K random action candidates by
+    # imagined return (arm C). WM training is identical in both modes.
+    policy_mode: str = "actor"
+    mpc_candidates: int = 12
+    mpc_horizon: int = 2
