@@ -236,6 +236,12 @@ def cmd_run(a):
     cfg_hash = hashlib.sha1(
         repr((sorted(vars(a).items()), sorted(cfg_dict.items()))).encode()
     ).hexdigest()[:12]
+    # Emergence instrumentation (systems/emergence_metrics.py, passive observer):
+    # dump the sampled series so every A/B run carries tool/structure/language/
+    # culture indicators without any extra run-time cost.
+    em = getattr(sim, "emergence_metrics", None)
+    if em is not None:
+        em.dump_jsonl(out / f"{stub}.emergence.jsonl")
     (out / f"{stub}.summary.json").write_text(
         json.dumps(
             {
