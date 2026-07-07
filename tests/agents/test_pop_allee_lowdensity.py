@@ -23,7 +23,7 @@ import random
 
 import numpy as np
 
-from artificial_society.agents.agent import Agent, MATE_SEEK_RADIUS
+from artificial_society.agents.agent import Agent, PARTNER_SEEK_RADIUS
 
 
 class FakeWorld:
@@ -47,12 +47,12 @@ def _make_agent(x, y, sex, energy=130.0, age=200):
     a.energy = energy
     a.age = age
     a.alive = True
-    a.pregnant = False
-    a.reproduction_cooldown = 0
+    a.pending_spawn = False
+    a.replication_cooldown = 0
     a.is_sleeping = False
     a.physics_v2 = True
     a.trust = {}
-    a.genes["sense_radius"] = 3
+    a.traits["sense_radius"] = 3
     return a
 
 
@@ -85,15 +85,15 @@ def _run(sep, ticks=300, grid=(24, 18)):
         for ag in agents:
             ag._cached_nearby_agents = None
             ag._cached_nearby_radius = None
-            ag._try_reproduce(world, agents)
-            if ag.progress_pregnancy() is not None:
+            ag._try_replicate(world, agents)
+            if ag.progress_pending_spawn() is not None:
                 births += 1
-            if ag.reproduction_cooldown > 0:
-                ag.reproduction_cooldown -= 1
+            if ag.replication_cooldown > 0:
+                ag.replication_cooldown -= 1
     return births, min_sep
 
 
-def test_close_pair_reproduces_baseline():
+def test_close_pair_replicates_baseline():
     """Sanity: within seek range the existing homing already pairs (control)."""
     try:
         births, min_sep = _run(sep=4)
@@ -105,14 +105,14 @@ def test_close_pair_reproduces_baseline():
     assert births >= 1, "a close fertile pair must produce at least one birth"
 
 
-def test_low_density_survivors_still_pair_and_breed():
+def test_low_density_survivors_still_pair_and_replicate():
     """FAILS pre-fix: two fertile survivors 12 cells apart never converge.
 
     12 > MATE_SEEK_RADIUS (8): neither senses the other, so without a search
     drive both freeze and `births` stays 0 forever. The rendezvous fallback must
     bring them together and yield a birth.
     """
-    assert 12 > MATE_SEEK_RADIUS  # precondition: beyond mutual sensing range
+    assert 12 > PARTNER_SEEK_RADIUS  # precondition: beyond mutual sensing range
     try:
         births, min_sep = _run(sep=12)
     finally:
@@ -158,8 +158,8 @@ def test_locomotion_source_still_rng_free():
         for m in (
             Agent.innate_locomotion,
             Agent._nearest_food_cell,
-            Agent._nearest_compatible_mate,
-            Agent._mate_rendezvous_cell,
+            Agent._nearest_compatible_partner,
+            Agent._partner_rendezvous_cell,
         )
     )
     for forbidden in ("random", "np.random", "brain_step", "action_list", "action_tensor"):

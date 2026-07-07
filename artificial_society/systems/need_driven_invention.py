@@ -11,7 +11,7 @@ Das System funktioniert vollstaendig ohne hardcodierte Rezepte:
      Temperatur, Krankheit, etc.) wird ein 12-dimensionaler Vektor
      berechnet, der beschreibt welche physikalischen Eigenschaften
      ein Material haben muesste um zu helfen.
-     z.B. bei Hunger:  edibility=1.0, heat=0.0
+     z.B. bei Energy_need:  edibility=1.0, heat=0.0
           bei Kaelte:  heat_emission=1.0, edibility=0.0
           bei Krankheit: toxicity=-1.0, edibility=0.3
 
@@ -93,12 +93,12 @@ def compute_need_vector(agent, cell: dict) -> np.ndarray:
     health_ratio = agent.health / 100.0
     temperature = cell.get("temperature", 20)
     light = cell.get("light", 1.0)
-    is_sick = getattr(agent, "disease_id", None) is not None
+    is_impaired = getattr(agent, "fault_id", None) is not None
     has_tool = getattr(agent, "tool", None) is not None
 
-    # Hunger -> edibility benoetigt
-    hunger_drive = max(0.0, 1.0 - energy_ratio)
-    need[IDX["edibility"]] += hunger_drive * 1.5
+    # Energy need -> edibility benoetigt
+    energy_need_drive = max(0.0, 1.0 - energy_ratio)
+    need[IDX["edibility"]] += energy_need_drive * 1.5
 
     # Immer: Toxisches meiden
     need[IDX["toxicity"]] -= 2.0
@@ -119,10 +119,10 @@ def compute_need_vector(agent, cell: dict) -> np.ndarray:
         need[IDX["hardness"]] += 0.5
 
     # Krank -> Heilende Eigenschaften (niedrige Toxizitaet + hohe Edibility)
-    if is_sick:
+    if is_impaired:
         need[IDX["edibility"]] += 0.6
         need[IDX["toxicity"]] -= 1.0  # extra toxicity-aversion
-        need[IDX["scent"]] += 0.3  # aromatische Heilpflanzen
+        need[IDX["trail"]] += 0.3  # aromatische Heilpflanzen
 
     # Niedrige Gesundheit (verletzt, nicht unbedingt krank)
     health_drive = max(0.0, 0.6 - health_ratio)
@@ -130,17 +130,17 @@ def compute_need_vector(agent, cell: dict) -> np.ndarray:
     need[IDX["conductivity"]] += health_drive * 0.4  # Waermeleitend = lindernd
 
     # Neugier-Bonus: Agents mit hoher Neugier suchen breitere Eigenschaften
-    curiosity = agent.genes.get("curiosity", 0.5)
-    if curiosity > 0.7 and hunger_drive < 0.3 and cold_drive < 0.3:
+    curiosity = agent.traits.get("curiosity", 0.5)
+    if curiosity > 0.7 and energy_need_drive < 0.3 and cold_drive < 0.3:
         # Kein unmittelbarer Druck -> erkunde interessante Eigenschaften
-        need[IDX["scent"]] += curiosity * 0.4
+        need[IDX["trail"]] += curiosity * 0.4
         need[IDX["conductivity"]] += curiosity * 0.3
         need[IDX["light_emission"]] += curiosity * 0.2
 
-    # Endocrine-Modulation: Cortisol verstaerkt alle Beduerfte
-    if hasattr(agent, "endocrine"):
-        cortisol = getattr(agent.endocrine, "h", [0] * 8)
-        stress = cortisol[1] if len(cortisol) > 1 else 0.0
+    # Modulation-Modulation: Stress verstaerkt alle Beduerfte
+    if hasattr(agent, "modulation"):
+        stress = getattr(agent.modulation, "h", [0] * 8)
+        stress = stress[1] if len(stress) > 1 else 0.0
         need *= 1.0 + stress * 0.4
 
     return need
@@ -243,7 +243,7 @@ def _select_action_by_need(
     heat_need = float(max(need[IDX["heat_emission"]], need[IDX["flammable"]]))
     sharp_need = float(need[IDX["sharpness"]])
     food_need = float(need[IDX["edibility"]])
-    scent_need = float(need[IDX["scent"]])
+    trail_need = float(need[IDX["trail"]])
     light_need = float(need[IDX["light_emission"]])
 
     mat_b_vec_safe = mat_b_vec if mat_b_vec is not None else np.zeros(N_PROPS, dtype=np.float32)
@@ -251,7 +251,7 @@ def _select_action_by_need(
     # rub: gut wenn beide Materialien hart+trocken sind (Feuer) oder weich (Mischen)
     rub_affinity = (
         float(mat_a_vec[IDX["hardness"]]) * float(mat_b_vec_safe[IDX["hardness"]]) * heat_need
-        + float(mat_a_vec[IDX["scent"]]) * scent_need * 0.4
+        + float(mat_a_vec[IDX["trail"]]) * trail_need * 0.4
     )
     action_scores["rub"] = rub_affinity
 
@@ -274,8 +274,8 @@ def _select_action_by_need(
     bundle_affinity = (
         float(mat_a_vec[IDX["flammable"]]) + float(mat_b_vec_safe[IDX["flammable"]])
     ) * heat_need * 0.5 + (
-        float(mat_a_vec[IDX["scent"]]) + float(mat_b_vec_safe[IDX["scent"]])
-    ) * scent_need * 0.6
+        float(mat_a_vec[IDX["trail"]]) + float(mat_b_vec_safe[IDX["trail"]])
+    ) * trail_need * 0.6
     action_scores["bundle"] = bundle_affinity
 
     # blow: gut wenn Glut/Feuer vorhanden
@@ -346,7 +346,7 @@ def agent_invent_from_need(
     # Step 2: Schwellenwert - nur bei echtem Bedarf erfinden
     # (verhindert blindes Zufalls-Experimentieren wenn alles gut ist)
     # Neugierde-Gen kann den Schwellenwert senken
-    curiosity = agent.genes.get("curiosity", 0.5)
+    curiosity = agent.traits.get("curiosity", 0.5)
     eff_threshold = NEED_THRESHOLD * (1.2 - curiosity * 0.4)
     if need_magnitude < eff_threshold:
         return 0.0
@@ -414,8 +414,8 @@ def agent_invent_from_need(
         _maybe_upgrade_tool(agent, mat_id, new_vec)
 
         # Starker Dopamin-Kick wenn Erfindung echten Need loest
-        if emergent_reward > 0.5 and hasattr(agent, "endocrine"):
-            agent.endocrine.apply_discovery(min(1.0, emergent_reward * 0.7))
+        if emergent_reward > 0.5 and hasattr(agent, "modulation"):
+            agent.modulation.apply_discovery(min(1.0, emergent_reward * 0.7))
 
     total_reward = legacy_reward + emergent_reward * EMERGENT_WEIGHT
 

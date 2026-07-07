@@ -23,7 +23,7 @@ PROP_DIMS_V2 = [
     "ignition_temp",
     "melting_point",
     "thermal_conductivity",
-    "nutrition",
+    "resource_value",
     "toxicity",
     "moisture",
     "grain_fineness",

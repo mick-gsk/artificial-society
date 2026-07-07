@@ -213,7 +213,7 @@ def test_tick_spawn_regeneriert_langsam_und_deterministisch():
     assert 5 <= len(a) <= 100
 
 
-def test_verwesung_masse_nutrition_toxicity_und_ledger():
+def test_verwesung_masse_resource_value_toxicity_und_ledger():
     from artificial_society.environment.phys_objects import tick_decay
     from artificial_society.environment.physics.actions import (
         DECAY_RATE,
@@ -225,13 +225,13 @@ def test_verwesung_masse_nutrition_toxicity_und_ledger():
     layer = _layer()
     kadaver = make_object("carcass", 70.0)
     layer.add(kadaver, (2, 2), source="from_carcass")
-    n0 = float(kadaver.props[IDX2["nutrition"]])
+    n0 = float(kadaver.props[IDX2["resource_value"]])
     t0 = float(kadaver.props[IDX2["toxicity"]])
 
     tick_decay(layer)
     assert math.isclose(kadaver.mass, 70.0 * (1.0 - DECAY_RATE), rel_tol=1e-12)
     assert math.isclose(
-        float(kadaver.props[IDX2["nutrition"]]), n0 * (1.0 - DECAY_RATE), rel_tol=1e-6
+        float(kadaver.props[IDX2["resource_value"]]), n0 * (1.0 - DECAY_RATE), rel_tol=1e-6
     )
     assert math.isclose(
         float(kadaver.props[IDX2["toxicity"]]), t0 + TOX_SPOILAGE_PER_TICK, rel_tol=1e-6
@@ -260,9 +260,9 @@ def test_verwesung_verschont_trockene_stoffe():
 
 
 def test_kadaver_rekalibrierung():
-    """Spec B5: dressed yield ~40 % → nutrition 0.35·0.40 = 0.14; frisch fast unbedenklich."""
+    """Spec B5: dressed yield ~40 % → resource_value 0.35·0.40 = 0.14; frisch fast unbedenklich."""
     from artificial_society.environment.physics.materials_v2 import MATERIALS_V2
     from artificial_society.environment.physics.props import IDX2
 
-    assert float(MATERIALS_V2["carcass"][IDX2["nutrition"]]) == pytest.approx(0.14)
+    assert float(MATERIALS_V2["carcass"][IDX2["resource_value"]]) == pytest.approx(0.14)
     assert float(MATERIALS_V2["carcass"][IDX2["toxicity"]]) == pytest.approx(0.02)

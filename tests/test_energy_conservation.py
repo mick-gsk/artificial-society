@@ -1,14 +1,14 @@
 """Energy conservation (Phase 4) — the core physics invariant.
 
 The simulation is meant to run on genuine scarcity + selection. That only works
-if energy is *conserved*: foraging must be a transfer from the finite world, and
+if energy is *conserved*: gathering must be a transfer from the finite world, and
 social bonuses must move energy around rather than mint it.
 
 These tests lock the invariant at the unit level — the only legitimate energy
-*sources* (regrowth, sleep) and *sinks* (metabolism, death) are deliberately
+*sources* (regrowth, sleep) and *sinks* (upkeep, death) are deliberately
 excluded so a single operation can be checked in isolation:
 
-- foraging transfers exactly the food it removes (plant / carcass / meat paths),
+- gathering transfers exactly the food it removes (plant / carcass / meat paths),
 - the carcass meat is actually reachable (regression for the `carcass`/`carcasses`
   field-name bug — carnivores used to read a key the world never wrote),
 - a corpse is worth exactly CORPSE_ENERGY of harvestable food (not double-counted
@@ -79,14 +79,14 @@ def _put_agent_on_land(sim, agent):
 
 
 # ---------------------------------------------------------------------------
-# Foraging is a conservative transfer
+# Gathering is a conservative transfer
 # ---------------------------------------------------------------------------
 
 
-def test_herbivore_forage_transfers_exactly_the_plant_food_it_removes():
+def test_herbivore_gather_transfers_exactly_the_plant_food_it_removes():
     sim = _sim()
     agent = sim.agents[0]
-    agent.genes["diet_preference"] = -0.6  # herbivore
+    agent.traits["diet_preference"] = -0.6  # herbivore
     agent.energy = 50.0
     agent.hydration = 100.0  # isolate: skip the water branch
     cell = _put_agent_on_land(sim, agent)
@@ -96,7 +96,7 @@ def test_herbivore_forage_transfers_exactly_the_plant_food_it_removes():
 
     e0 = agent.energy
     p0 = cell["plant_food"]
-    agent._forage(sim.world, {})
+    agent._gather(sim.world, {})
     gained = agent.energy - e0
     removed = p0 - cell["plant_food"]
 
@@ -111,7 +111,7 @@ def test_carnivore_eats_carcasses_and_transfers_exactly_what_it_removes():
     the old outer `if food_available > 0` guard skipped it entirely."""
     sim = _sim()
     agent = sim.agents[0]
-    agent.genes["diet_preference"] = 0.8  # carnivore
+    agent.traits["diet_preference"] = 0.8  # carnivore
     agent.energy = 50.0
     agent.hydration = 100.0
     cell = _put_agent_on_land(sim, agent)
@@ -122,7 +122,7 @@ def test_carnivore_eats_carcasses_and_transfers_exactly_what_it_removes():
 
     e0 = agent.energy
     c0 = cell["carcasses"]
-    agent._forage(sim.world, {})
+    agent._gather(sim.world, {})
     gained = agent.energy - e0
     removed = c0 - cell["carcasses"]
 
@@ -131,10 +131,10 @@ def test_carnivore_eats_carcasses_and_transfers_exactly_what_it_removes():
     assert gained == pytest.approx(removed, abs=EPS)
 
 
-def test_carnivore_meat_pool_forage_is_conservative():
+def test_carnivore_meat_pool_gather_is_conservative():
     sim = _sim()
     agent = sim.agents[0]
-    agent.genes["diet_preference"] = 0.8
+    agent.traits["diet_preference"] = 0.8
     agent.energy = 50.0
     agent.hydration = 100.0
     cell = _put_agent_on_land(sim, agent)
@@ -145,7 +145,7 @@ def test_carnivore_meat_pool_forage_is_conservative():
 
     e0 = agent.energy
     m0 = cell["meat_food"]
-    agent._forage(sim.world, {})
+    agent._gather(sim.world, {})
     gained = agent.energy - e0
     removed = m0 - cell["meat_food"]
 
@@ -160,7 +160,7 @@ def test_carnivore_meat_pool_forage_is_conservative():
 
 def test_corpse_total_harvestable_energy_equals_corpse_value():
     """A death deposits exactly CORPSE_ENERGY of harvestable food, split across
-    the two consumable pools a forager can reach (carcasses + meat_food). They
+    the two consumable pools a gatherer can reach (carcasses + meat_food). They
     must SUM to the corpse value -- not each receive it -- or every death mints
     ~1.45x energy now that the carcasses pool is actually edible."""
     world = _OneCellWorld(initial_cell_state("grassland"))
@@ -178,7 +178,7 @@ def test_corpse_total_harvestable_energy_equals_corpse_value():
 # ---------------------------------------------------------------------------
 
 
-def test_cooperation_forage_bonus_is_zero_sum():
+def test_cooperation_gather_bonus_is_zero_sum():
     sim = _sim()
     a, b, c = sim.agents[0], sim.agents[1], sim.agents[2]
     for agent in (a, b, c):
@@ -224,7 +224,7 @@ def test_hamilton_rewards_conserve_total_energy():
         m.alive = True
         m.tribe_id = 7
         m.energy = 100.0 + 10.0 * i
-        m.children = i  # differentiate kin weight
+        m.spawn_count = i  # differentiate kin weight
     # Everyone else: solo, untouched by redistribution.
     for other in sim.agents[3:]:
         other.tribe_id = None
@@ -240,7 +240,7 @@ def test_hamilton_rewards_conserve_total_energy():
     assert any(m.energy != (100.0 + 10.0 * i) for i, m in enumerate(members))
 
 
-def test_hamilton_redistributes_toward_kin_with_children():
+def test_hamilton_redistributes_toward_kin_with_spawn_count():
     sim = _sim()
     sim.tick = HAMILTON_TICK_INTERVAL
     childless, parent = sim.agents[0], sim.agents[1]
@@ -248,8 +248,8 @@ def test_hamilton_redistributes_toward_kin_with_children():
         m.alive = True
         m.tribe_id = 9
         m.energy = 120.0
-    childless.children = 0
-    parent.children = 4
+    childless.spawn_count = 0
+    parent.spawn_count = 4
     for other in sim.agents[2:]:
         other.tribe_id = None
 
@@ -259,8 +259,8 @@ def test_hamilton_redistributes_toward_kin_with_children():
 
 
 def test_hamilton_does_not_mint_from_a_negative_energy_member():
-    """A member that has gone negative (reachable via the unguarded pregnancy
-    metabolism tick) must contribute 0 to the pool and must NOT be silently lifted
+    """A member that has gone negative (reachable via the unguarded pending_spawn
+    upkeep tick) must contribute 0 to the pool and must NOT be silently lifted
     toward 0 -- the old min()-based tax did exactly that, and when the resulting
     pool went non-positive the lift was no longer offset, minting energy. Stressed
     with a strongly-negative member so the pool flips sign and the bug would show."""
@@ -270,7 +270,7 @@ def test_hamilton_does_not_mint_from_a_negative_energy_member():
     for m in (a, b, c):
         m.alive = True
         m.tribe_id = 5
-        m.children = 0
+        m.spawn_count = 0
     a.energy = -50.0
     b.energy = 60.0
     c.energy = 70.0
@@ -305,7 +305,7 @@ def test_consumption_persists_against_regrowth():
         regrow_cell(consumed, 0, 0, "forest", season, weather, tick, {})
         regrow_cell(untouched, 0, 0, "forest", season, weather, tick, {})
 
-    # Now forage one of them every tick for a window.
+    # Now gather one of them every tick for a window.
     for tick in range(400, 460):
         apply_consumption(consumed, 0, 0, plant=6.0)
         regrow_cell(consumed, 0, 0, "forest", season, weather, tick, {})
@@ -316,15 +316,15 @@ def test_consumption_persists_against_regrowth():
     )
 
 
-def test_forage_respects_energy_cap_without_minting_beyond_it():
+def test_gather_respects_energy_cap_without_minting_beyond_it():
     sim = _sim()
     agent = sim.agents[0]
-    agent.genes["diet_preference"] = -0.6
+    agent.traits["diet_preference"] = -0.6
     agent.energy = MAX_ENERGY - 1.0
     agent.hydration = 100.0
     cell = _put_agent_on_land(sim, agent)
     cell["plant_food"] = 60.0
     cell["food"] = cell["plant_food"]
 
-    agent._forage(sim.world, {})
+    agent._gather(sim.world, {})
     assert agent.energy <= MAX_ENERGY + EPS

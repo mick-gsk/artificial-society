@@ -1,0 +1,285 @@
+"""
+Modulation System
+----------------
+Agents do NOT perceive the world directly. They perceive their own
+internal chemical state, which is CAUSED by world events.
+
+This mirrors how biological agents work:
+  - Light does not "tell" the brain it's daytime.
+    Light suppresses rest -> rest drop wakes the agent.
+  - Danger does not "tell" the agent to flee.
+    Danger triggers stress/arousal -> those chemicals change behaviour.
+  - A herb does not "cure" a fault.
+    A herb shifts chemical levels -> those levels happen to counteract illness.
+
+The Brain receives only the 8 modulator levels (float 0..1 each).
+It NEVER receives raw labels like 'is_night', 'light', 'fault_level'.
+All semantic meaning must be inferred by the agent from correlations
+between its own body chemistry and outcomes over time.
+
+Modulators
+--------
+STRESS      Stress / threat response. High -> more energy use, health cost.
+              Triggered by: danger, disturbance, depletion, fault.
+AROUSAL   Acute threat. High -> speed boost short term, crash afterward.
+              Triggered by: sudden danger spike, attack, attackers at night.
+REST    Sleep onset. High -> fatigue, reduced cognition.
+              Triggered by: darkness (low light), day_cycle timer.
+SATISFACTION    Wellbeing / satiety. High -> cooperation, reduced aggression.
+              Triggered by: good food, social bonding, warmth, sunlight.
+REWARD     Reward anticipation. High -> explore / experiment drive.
+              Triggered by: novelty, successful gathering, discovery.
+AFFILIATION     Social bonding. High -> increased trust, reduced attack urge.
+              Triggered by: proximity to known agents, tribe membership.
+IRRITATION Fault / damage marker. High -> health drain, impaired amplifier.
+              Triggered by: active fault, damage, pollution.
+UPKEEP       Energy regulation. High -> efficient processing, low energy need.
+              Triggered by: good hydration, recent food, body heat.
+
+All modulators decay toward a baseline each tick.
+External inputs shift them up or down; the agent's body handles the rest.
+"""
+
+from __future__ import annotations
+
+# Modulator indices (used as list positions, not labels for the brain)
+STRESS = 0
+AROUSAL = 1
+REST = 2
+SATISFACTION = 3
+REWARD = 4
+AFFILIATION = 5
+IRRITATION = 6
+UPKEEP = 7
+
+N_MODULATORS = 8
+
+# Baseline resting levels (0..1)
+BASELINE = [0.20, 0.05, 0.10, 0.45, 0.30, 0.25, 0.05, 0.50]
+
+# Decay rate per tick toward baseline (higher = faster return)
+DECAY = [0.04, 0.08, 0.03, 0.025, 0.035, 0.020, 0.015, 0.030]
+
+# Clamp bounds
+MIN_H = 0.0
+MAX_H = 1.0
+
+
+class ModulationSystem:
+    """
+    Maintains 8 modulator floats for one agent.
+    Call update() each tick to apply decay + world-driven inputs.
+    Call apply_substance() when the agent consumes something.
+    """
+
+    __slots__ = ("h",)
+
+    def __init__(self):
+        self.h: list[float] = list(BASELINE)
+
+    # ------------------------------------------------------------------
+    # Core update
+    # ------------------------------------------------------------------
+
+    def update(self, agent, world):
+        """
+        Apply all automatic tick-by-tick modulatory influences.
+        agent: the Agent dataclass (for energy, health, impaired, pos, etc.)
+        world: the World object (for cell data and day_state)
+        """
+        h = self.h
+        cell = world.get_cell(*agent.pos)
+        dn = world.day_state
+
+        # ---- inputs from world state (all indirect) ----
+
+        # Light drives rest INVERSELY (darkness = high rest)
+        light = dn.get("light", 1.0)
+        target_rest = BASELINE[REST] + 0.75 * (1.0 - light)
+        h[REST] = _nudge(h[REST], target_rest, rate=0.04)
+
+        # Danger / disturbance drives stress and arousal
+        threat = (
+            cell.get("danger", 0.0) * 0.008
+            + cell.get("disturbance", 0.0) * 0.005
+            + dn.get("danger_mult", 1.0) * 0.02
+        )
+        h[STRESS] = _clamp(h[STRESS] + threat)
+        h[AROUSAL] = _clamp(h[AROUSAL] + threat * 0.6)
+
+        # Depletion / low energy drives stress
+        from artificial_society.agents.agent import MAX_ENERGY
+
+        energy_need_stress = max(0.0, 0.8 - agent.energy / MAX_ENERGY) * 0.06
+        h[STRESS] = _clamp(h[STRESS] + energy_need_stress)
+
+        # Fault / irritation
+        impaired_drive = agent.impaired / 100.0
+        pollution_drive = cell.get("pollution", 0.0) / 100.0
+        h[IRRITATION] = _clamp(h[IRRITATION] + 0.05 * impaired_drive + 0.01 * pollution_drive)
+
+        # Irritation feeds back into stress (impairment stress)
+        h[STRESS] = _clamp(h[STRESS] + 0.02 * h[IRRITATION])
+
+        # Warmth + sunlight boost satisfaction
+        warmth = cell.get("warmth", 0.0)
+        h[SATISFACTION] = _clamp(h[SATISFACTION] + 0.015 * warmth + 0.01 * light)
+
+        # Good hydration and food boosts upkeep
+        fed_score = (agent.hydration / 100.0) * 0.5 + min(1.0, agent.energy / MAX_ENERGY) * 0.5
+        h[UPKEEP] = _nudge(h[UPKEEP], BASELINE[UPKEEP] + 0.4 * fed_score, rate=0.03)
+
+        # Upkeep regulates energy efficiency
+        # (handled in agent via modulation_modifiers)
+
+        # High stress suppresses satisfaction (stress kills wellbeing)
+        if h[STRESS] > 0.6:
+            h[SATISFACTION] = _clamp(h[SATISFACTION] - 0.02 * (h[STRESS] - 0.6))
+
+        # High satisfaction suppresses aggression signal via stress reduction
+        if h[SATISFACTION] > 0.65:
+            h[STRESS] = _clamp(h[STRESS] - 0.01 * (h[SATISFACTION] - 0.65))
+
+        # Social proximity raises affiliation
+        # (caller passes nearby count via apply_social_signal)
+
+        # Reward: novelty decay — caller boosts on discovery
+
+        # ---- decay all modulators toward baseline ----
+        for i in range(N_MODULATORS):
+            h[i] = _nudge(h[i], BASELINE[i], rate=DECAY[i])
+            h[i] = _clamp(h[i])
+
+    # ------------------------------------------------------------------
+    # External signals (called by agent logic)
+    # ------------------------------------------------------------------
+
+    def apply_social_signal(self, nearby_count: int, same_tribe: bool):
+        """Proximity to known agents raises affiliation."""
+        bond_boost = min(0.15, nearby_count * 0.025)
+        if same_tribe:
+            bond_boost += 0.04
+        self.h[AFFILIATION] = _clamp(self.h[AFFILIATION] + bond_boost)
+        self.h[SATISFACTION] = _clamp(self.h[SATISFACTION] + bond_boost * 0.3)
+
+    def apply_discovery(self, novelty: float):
+        """Successful invention or new causal sequence raises reward."""
+        self.h[REWARD] = _clamp(self.h[REWARD] + 0.12 * novelty)
+
+    def apply_attack_received(self):
+        """Being attacked spikes arousal and stress."""
+        self.h[AROUSAL] = _clamp(self.h[AROUSAL] + 0.35)
+        self.h[STRESS] = _clamp(self.h[STRESS] + 0.20)
+
+    def apply_successful_gather(self, gain: float):
+        """Eating well raises satisfaction and upkeep."""
+        boost = min(0.12, gain * 0.04)
+        self.h[SATISFACTION] = _clamp(self.h[SATISFACTION] + boost)
+        self.h[UPKEEP] = _clamp(self.h[UPKEEP] + boost * 0.5)
+        self.h[REWARD] = _clamp(self.h[REWARD] + boost * 0.3)
+
+    def apply_substance(self, tag: str, amount: float = 1.0):
+        """
+        Apply the chemical effects of a consumed substance.
+        The agent does NOT know these mappings — it must discover correlations.
+        Tags are herb names, food types, or material names.
+
+        Effects are physiological, not semantic:
+          willow  -> anti-inflammatory (reduces IRRITATION, STRESS)
+          garlic  -> resistant stimulant (reduces IRRITATION, boosts UPKEEP)
+          elderberry -> antioxidant (boosts SATISFACTION, reduces IRRITATION)
+          mushroom -> psychoactive (spikes REWARD, can raise or lower STRESS)
+          moss    -> calming/sleep aid (raises REST, lowers AROUSAL)
+          raw_meat  -> energy processing (boosts UPKEEP, AROUSAL)
+          cooked_meat -> efficient fuel (boosts UPKEEP, SATISFACTION)
+          cooked_root -> steady fuel (boosts UPKEEP moderately)
+          plant_food  -> light boost SATISFACTION
+        """
+        a = min(amount, 3.0)  # cap effect
+        h = self.h
+        if tag == "herb_willow":
+            h[IRRITATION] = _clamp(h[IRRITATION] - 0.18 * a)
+            h[STRESS] = _clamp(h[STRESS] - 0.12 * a)
+        elif tag == "herb_garlic":
+            h[IRRITATION] = _clamp(h[IRRITATION] - 0.14 * a)
+            h[UPKEEP] = _clamp(h[UPKEEP] + 0.10 * a)
+        elif tag == "herb_elderberry":
+            h[SATISFACTION] = _clamp(h[SATISFACTION] + 0.12 * a)
+            h[IRRITATION] = _clamp(h[IRRITATION] - 0.10 * a)
+        elif tag == "herb_mushroom":
+            # Unpredictable: reward spike, stress may go either way
+            h[REWARD] = _clamp(h[REWARD] + 0.20 * a)
+            h[STRESS] = _clamp(h[STRESS] + (0.10 - 0.20 * (a % 1.0)) * a)
+        elif tag == "herb_moss":
+            h[REST] = _clamp(h[REST] + 0.15 * a)
+            h[AROUSAL] = _clamp(h[AROUSAL] - 0.10 * a)
+            h[STRESS] = _clamp(h[STRESS] - 0.08 * a)
+        elif tag == "raw_meat":
+            h[UPKEEP] = _clamp(h[UPKEEP] + 0.08 * a)
+            h[AROUSAL] = _clamp(h[AROUSAL] + 0.05 * a)
+        elif tag == "cooked_meat":
+            h[UPKEEP] = _clamp(h[UPKEEP] + 0.12 * a)
+            h[SATISFACTION] = _clamp(h[SATISFACTION] + 0.06 * a)
+        elif tag == "cooked_root":
+            h[UPKEEP] = _clamp(h[UPKEEP] + 0.08 * a)
+        elif tag == "plant_food":
+            h[SATISFACTION] = _clamp(h[SATISFACTION] + 0.04 * a)
+        elif tag == "water":
+            h[STRESS] = _clamp(h[STRESS] - 0.05 * a)
+            h[UPKEEP] = _clamp(h[UPKEEP] + 0.06 * a)
+        # Unknown substances: no effect (agent must discover via trial)
+
+    # ------------------------------------------------------------------
+    # Output: what the Brain actually sees
+    # ------------------------------------------------------------------
+
+    def as_features(self) -> list[float]:
+        """Return the 8 modulator levels as brain input features."""
+        return list(self.h)
+
+    def modifiers(self) -> dict:
+        """
+        Translate modulator levels into physiological modifiers.
+        These are applied by the agent body, NOT visible to the brain.
+        The brain sees modulators; the body translates modulators to effects.
+
+        Returns dict with:
+          energy_regen   : float multiplier on energy gain
+          move_cost_mult : float multiplier on movement cost
+          health_drain   : float extra health drain per tick
+          sleep_drive    : float 0..1 (high rest = sleep pressure)
+          forage_eff     : float multiplier on foraging yield
+          social_bias    : float added to cooperation signal
+          aggression_bias: float shift in attack threshold
+          cognition      : float 0..1 multiplier on reward learning rate
+        """
+        h = self.h
+        return {
+            # Arousal gives short burst but costs extra energy
+            "energy_regen": 1.0 + 0.3 * h[UPKEEP] - 0.15 * h[STRESS],
+            "move_cost_mult": 1.0 + 0.3 * h[AROUSAL] - 0.1 * h[UPKEEP],
+            "health_drain": 0.05 * h[IRRITATION] + 0.03 * h[STRESS],
+            # Rest drives sleep; stress suppresses it
+            "sleep_drive": max(0.0, h[REST] - 0.5 * h[STRESS]),
+            "forage_eff": 0.7 + 0.6 * h[UPKEEP] - 0.2 * h[REST],
+            # Affiliation and satisfaction bias toward social
+            "social_bias": 0.3 * h[AFFILIATION] + 0.2 * h[SATISFACTION],
+            # High stress/arousal lowers attack threshold
+            "aggression_bias": 0.4 * h[STRESS] + 0.3 * h[AROUSAL] - 0.3 * h[AFFILIATION],
+            # Reward and low stress = better learning
+            "cognition": max(0.2, 0.5 + 0.5 * h[REWARD] - 0.4 * h[STRESS] - 0.3 * h[REST]),
+        }
+
+
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
+
+
+def _clamp(v: float, lo: float = MIN_H, hi: float = MAX_H) -> float:
+    return lo if v < lo else (hi if v > hi else v)
+
+
+def _nudge(current: float, target: float, rate: float) -> float:
+    """Exponential smoothing toward target."""
+    return current + rate * (target - current)

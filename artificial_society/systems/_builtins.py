@@ -14,8 +14,8 @@ from __future__ import annotations
 
 from artificial_society.environment.seasons import SeasonCycle
 from artificial_society.environment.weather import WeatherSystem
+from artificial_society.systems.adaptation import AdaptationSystem
 from artificial_society.systems.economy import EconomySystem
-from artificial_society.systems.evolution import EvolutionSystem
 from artificial_society.systems.registry import register_system
 from artificial_society.systems.technology import TechnologySystem
 from artificial_society.systems.tribes import TribeSystem
@@ -70,12 +70,12 @@ def _tick_stats(sim, tick: int) -> None:
 
 # `order` preserves the original __init__ construction sequence and the
 # seasons -> weather -> world_regrowth dependency chain (world_regrowth is order 25).
-# disease (order 35) is a new self-registering module (systems/disease.py), sitting between
-# tribes and economy so the same tick's stats/prices reflect new infections.
+# fault (order 35) is a new self-registering module (systems/fault.py), sitting between
+# tribes and economy so the same tick's stats/prices reflect new propagation.
 register_system("seasons", lambda sim: SeasonCycle(), order=10, tick=_tick_seasons)
 register_system("weather", lambda sim: WeatherSystem(), order=20, tick=_tick_weather)
 register_system("tribes", lambda sim: TribeSystem(), order=30, tick=_tick_tribes)
 register_system("economy", lambda sim: EconomySystem(), order=40, tick=_tick_economy)
 register_system("technology", lambda sim: TechnologySystem(), order=50, tick=_tick_technology)
-register_system("evolution", lambda sim: EvolutionSystem(), order=60)
+register_system("adaptation", lambda sim: AdaptationSystem(), order=60)
 register_system("stats", lambda sim: StatisticsTracker(), order=70, tick=_tick_stats)

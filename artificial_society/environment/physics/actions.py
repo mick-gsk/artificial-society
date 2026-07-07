@@ -2,7 +2,7 @@
 
 Dieses Modul bindet Body/Hands/Prozesse/ObjectLayer — es kennt weder Gehirn
 noch Belohnung. Alle Konstanten sind real geankert (cal-Einträge unten,
-Gate-pflichtig über CALIBRATED_ACTION_PARAMS). Energie-Konvention: nutrition
+Gate-pflichtig über CALIBRATED_ACTION_PARAMS). Energie-Konvention: resource_value
 ist kcal/100 g ÷ 400 (raw_meat 0.35 ≙ 140 kcal/100 g), gekoppelt an die
 v1-Energieskala über SIM_ENERGY_PER_KCAL (1-kg-Fleischmahlzeit ≙ MEAT_ENERGY 45).
 """
@@ -23,7 +23,7 @@ from .props import IDX2
 
 # --- Energie-Kopplung kcal ↔ Sim-Energie (B5) --------------------------------
 SIM_ENERGY_PER_KCAL = 0.032
-KCAL_PER_KG_PER_NUTRITION = 4000.0  # nutrition 1.0 ≙ 400 kcal/100 g = 4000 kcal/kg
+KCAL_PER_KG_PER_RESOURCE_VALUE = 4000.0  # resource_value 1.0 ≙ 400 kcal/100 g = 4000 kcal/kg
 MUSCLE_EFFICIENCY = 0.25
 JOULE_PER_KCAL = 4184.0
 # Spec B5 (Rev. 4): energy -= joules / MUSCLE_EFFICIENCY / 4184 * SIM_ENERGY_PER_KCAL
@@ -41,7 +41,7 @@ CUT_WORK_J_PER_EFFORT = 35.0  # CUT_WORK_J = 15 + 35·effort
 
 # --- Essen (B4/B5) --------------------------------------------------------------
 BITE_MASS_KG = 0.3
-MIN_NUTRITION_EDIBLE = 0.02  # darunter wirkungslos (Steinbeißen = No-op)
+MIN_RESOURCE_VALUE_EDIBLE = 0.02  # darunter wirkungslos (Steinbeißen = No-op)
 TOX_DAMAGE_PER_KG = 20.0
 
 # --- Verwesung (B3.4; Vollzug in phys_objects.tick_decay) ----------------------
@@ -347,22 +347,22 @@ def do_cut(
 
 def do_eat(body: Body, hands: Hands, layer, pos, target: PhysObject) -> ActionResult:
     """Ein Biss pro Tick: bite = min(BITE_MASS_KG, Restmasse). Energie-Kopplung
-    (B5): energy += nutrition·4000·bite·SIM_ENERGY_PER_KCAL; Toxin-Schaden:
-    health −= toxicity·bite·TOX_DAMAGE_PER_KG. Objekte mit nutrition ≤ 0.02
+    (B5): energy += resource_value·4000·bite·SIM_ENERGY_PER_KCAL; Toxin-Schaden:
+    health −= toxicity·bite·TOX_DAMAGE_PER_KG. Objekte mit resource_value ≤ 0.02
     sind wirkungslos (Steinbeißen = No-op). Gegessene Masse fließt bilanziert
     in ledger['eaten']; vollständig verzehrte Objekte verschwinden."""
     pos = (int(pos[0]), int(pos[1]))
     target_held = target in hands.held
     if not target_held and layer.position_of(target) != pos:
         return ActionResult(ok=False, verb="eat", reason="target_out_of_reach")
-    nutrition = float(target.props[IDX2["nutrition"]])
-    if nutrition <= MIN_NUTRITION_EDIBLE:
+    resource_value = float(target.props[IDX2["resource_value"]])
+    if resource_value <= MIN_RESOURCE_VALUE_EDIBLE:
         return ActionResult(ok=False, verb="eat", reason="not_edible")
 
     bite = min(BITE_MASS_KG, target.mass)
     if target.mass - bite <= 1e-9:
         bite = target.mass  # Krümel-Reste mitessen statt Masse zu verlieren
-    energy_gain = nutrition * KCAL_PER_KG_PER_NUTRITION * bite * SIM_ENERGY_PER_KCAL
+    energy_gain = resource_value * KCAL_PER_KG_PER_RESOURCE_VALUE * bite * SIM_ENERGY_PER_KCAL
     toxicity = float(target.props[IDX2["toxicity"]])
     health_delta = -(toxicity * bite * TOX_DAMAGE_PER_KG)
 
@@ -376,7 +376,7 @@ def do_eat(body: Body, hands: Hands, layer, pos, target: PhysObject) -> ActionRe
     layer.ledger["eaten"] += bite
     kcal_by_kind = layer.metrics["kcal_eaten_by_kind"]
     kcal_by_kind[target.kind] = (
-        kcal_by_kind.get(target.kind, 0.0) + nutrition * KCAL_PER_KG_PER_NUTRITION * bite
+        kcal_by_kind.get(target.kind, 0.0) + resource_value * KCAL_PER_KG_PER_RESOURCE_VALUE * bite
     )
     return ActionResult(
         ok=True, verb="eat", energy_delta_sim=energy_gain, health_delta=health_delta, bite_kg=bite

@@ -43,7 +43,7 @@ def test_auto_kadaver_biss_ist_massenerhaltend():
     masse_vorher = carcass.mass
     eaten_vorher = sim.world.objects.ledger["eaten"]
 
-    agent._forage(sim.world, {})
+    agent._gather(sim.world, {})
 
     assert masse_vorher - carcass.mass == pytest.approx(BITE_MASS_KG)
     assert sim.world.objects.ledger["eaten"] - eaten_vorher == pytest.approx(BITE_MASS_KG)
@@ -62,7 +62,7 @@ def test_hungriger_v2_agent_gewinnt_energie_aus_fleisch():
 
     agent.energy = 100.0
     meat_vorher = agent.meat_eaten
-    gain = agent._forage(sim.world, {})
+    gain = agent._gather(sim.world, {})
 
     assert agent.energy > 100.0
     assert agent.meat_eaten == meat_vorher + 1
@@ -75,14 +75,14 @@ def test_g1_v1_agent_macht_keinen_kadaver_objekt_biss():
     Golden-Schutz)."""
     sim = Simulation(seed=42, physics_v2=False, **_PARAMS)
     agent = sim.agents[0]
-    agent.genes["diet_preference"] = -1.0  # Herbivore → betritt `if diet < 0 or ...`
+    agent.traits["diet_preference"] = -1.0  # Herbivore → betritt `if diet < 0 or ...`
     assert not agent.physics_v2
     x, y = agent.pos
     carcass = make_object("carcass", 70.0)
     sim.world.objects.add(carcass, (x, y), source="from_carcass")
     eaten_vorher = sim.world.objects.ledger["eaten"]
 
-    agent._forage(sim.world, {})
+    agent._gather(sim.world, {})
 
     assert carcass.mass == pytest.approx(70.0)  # unangetastet
     assert sim.world.objects.ledger["eaten"] == pytest.approx(eaten_vorher)
@@ -99,7 +99,7 @@ def test_g2_satter_agent_macht_keinen_biss():
     eaten_vorher = sim.world.objects.ledger["eaten"]
 
     agent.energy = MAX_ENERGY
-    agent._forage(sim.world, {})
+    agent._gather(sim.world, {})
 
     assert carcass.mass == pytest.approx(70.0)  # kein Biss
     assert sim.world.objects.ledger["eaten"] == pytest.approx(eaten_vorher)
@@ -116,7 +116,7 @@ def test_determinismus_gleicher_seed_gleiches_ergebnis():
         agent.energy = 100.0
         energies = []
         for _ in range(6):
-            agent._forage(sim.world, {})
+            agent._gather(sim.world, {})
             energies.append(agent.energy)
         return energies
 

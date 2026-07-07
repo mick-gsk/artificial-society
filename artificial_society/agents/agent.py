@@ -10,8 +10,8 @@ import torch
 from artificial_society.agents.brain import INPUT_SIZE, V1_HEAD_DIMS, Brain
 from artificial_society.agents.communication import CommunicationSystem
 from artificial_society.agents.emotional_memory import EmotionalMemory
-from artificial_society.agents.endocrine import EndocrineSystem
-from artificial_society.agents.genetics import ensure_strength_gene, inherit_genes, random_genes
+from artificial_society.agents.modulation import ModulationSystem
+from artificial_society.agents.traits import ensure_strength_trait, derive_traits, random_traits
 from artificial_society.agents.knowledge import KnowledgeGraph
 from artificial_society.agents.life_stage import get_stage_stats
 from artificial_society.agents.memory import EpisodicMemory
@@ -40,7 +40,7 @@ from artificial_society.environment.structures import (
     structure_feature_vector,
 )
 from artificial_society.environment.territory import (
-    get_home_forage_bonus,
+    get_home_gather_bonus,
     territory_reward_for_agent,
 )
 from artificial_society.systems.causal_model import CausalModelV2
@@ -68,15 +68,15 @@ from artificial_society.systems.social_learning import social_learning_step
 
 MAX_ENERGY = 240.0
 INITIAL_ENERGY = 120.0
-CHILD_START_ENERGY = 100.0
+SPAWN_START_ENERGY = 100.0
 # A newborn's start energy is TRANSFERRED from the mother at birth (capped so
 # she keeps this floor), not minted: the old +70 net mint per birth (100 start
 # vs ~30 parental conception cost) subsidised population overshoot far past
 # the world's food-regrowth carrying capacity, ending in mass starvation.
-BIRTH_ENERGY_FLOOR = 10.0
-REPRODUCTION_ENERGY = 60.0
-REPRODUCTION_COST = 20.0
-REPRODUCTION_COOLDOWN = 100
+SPAWN_ENERGY_FLOOR = 10.0
+REPLICATION_ENERGY = 60.0
+REPLICATION_COST = 20.0
+REPLICATION_COOLDOWN = 100
 # Density-dependent fertility. Personal energy alone (>= REPRODUCTION_ENERGY) is
 # a poor breeding cue: agents hoard up to MAX_ENERGY (240) and so breed off fat
 # reserves banked when food was plentiful, blind to how crowded the ground has
@@ -86,8 +86,8 @@ REPRODUCTION_COOLDOWN = 100
 # mouths already nearby, to clear a floor — the logistic negative feedback of a
 # real ecosystem: as local density rises, per-capita food falls and fertility
 # drops, so the population settles near carrying capacity instead of crashing.
-REPRODUCTION_SENSE_RADIUS = 2
-REPRODUCTION_MIN_FOOD_PER_CAPITA = 6.0
+REPLICATION_SENSE_RADIUS = 2
+REPLICATION_MIN_FOOD_PER_CAPITA = 6.0
 # Angeborene Grund-Taxis (Chemotaxis-Analogon, Architektur A2): symmetrischer
 # Nahrungs- & Partner-GRUNDTRIEB, der im physics_v2-Pfad die Welt-Wirkung des
 # Move-Kopfs (Dims 0/1) ersetzt. Rein deterministisch, KEIN random.* — der
@@ -104,16 +104,16 @@ REPRODUCTION_MIN_FOOD_PER_CAPITA = 6.0
 # 80 (~0.33*MAX_ENERGY=240) hält einen echten Hunger-Boden und lässt zugleich
 # das breite Energieband [80,240] aktiv Partner suchen, sodass paarungsbereite
 # Agenten (energy>=60) realistisch zur Partnersuche kommen.
-TAXIS_HUNGER_THRESHOLD = 80.0
+TAXIS_ENERGY_NEED_THRESHOLD = 80.0
 # Partner-Wahrnehmungsradius (Chebyshev), > ±5-Konzeptionsbox in _try_reproduce
 # (die NICHT geändert wird), damit Agenten die letzte Lücke ins Konzeptions-
 # fenster aktiv schließen. Bewusst flacher Konstant-Radius (andere Modalität als
 # der per-Agent-`sense_radius` der Nahrungs-Taxis) — im Review als vertretbare
 # Asymmetrie benannt.
-MATE_SEEK_RADIUS = 8
+PARTNER_SEEK_RADIUS = 8
 # Tuned values previously applied at import by emergence_runtime; now the source of truth.
-MIN_REPRODUCTION_AGE = 60  # int(life_stage.CHILD_MAX * 0.5)
-GESTATION_TIME = 40
+MIN_REPLICATION_AGE = 60  # int(life_stage.CHILD_MAX * 0.5)
+SPAWN_DELAY_TIME = 40
 AGE_LIMIT = 5000
 ELDER_AGE = 3500  # life_stage.ADULT_MAX
 AGE_HEALTH_DECAY_START = 3500  # life_stage.ADULT_MAX
@@ -122,18 +122,18 @@ PLANT_ENERGY = 30.0
 MEAT_ENERGY = 45.0
 CORPSE_ENERGY = 36.0
 
-SHARP_STONE_FORAGE_BONUS = 0.30
+SHARP_STONE_GATHER_BONUS = 0.30
 SHARP_STONE_COLLECT_BONUS = 0.20
 
 SLEEP_DRIVE_THRESHOLD = 0.45
 SLEEP_ENERGY_REGEN = 0.40
 SLEEP_HEALTH_REGEN = 0.25
 
-STAGE_CHILD = 120  # life_stage.CHILD_MAX
+STAGE_SPAWN = 120  # life_stage.CHILD_MAX
 STAGE_ELDER = ELDER_AGE  # life_stage.ADULT_MAX (3500)
 
-COOP_FORAGE_BONUS_PER_MEMBER = 0.14
-COOP_FORAGE_MAX_BONUS = 0.65
+COOP_GATHER_BONUS_PER_MEMBER = 0.14
+COOP_GATHER_MAX_BONUS = 0.65
 COOP_DEFENSE_HEALTH_BONUS = 0.08
 COOP_SHARE_THRESHOLD_DONOR = 160.0
 COOP_SHARE_THRESHOLD_RECV = 60.0
@@ -184,16 +184,16 @@ def ensure_fields(agent) -> None:
         agent.causal_memory = CausalMemory(capacity=32)
     if not hasattr(agent, "material_inventory") or agent.material_inventory is None:
         agent.material_inventory = {}
-    if not hasattr(agent, "endocrine") or agent.endocrine is None:
-        agent.endocrine = EndocrineSystem()
+    if not hasattr(agent, "modulation") or agent.modulation is None:
+        agent.modulation = ModulationSystem()
     if not hasattr(agent, "is_sleeping"):
         agent.is_sleeping = False
     if not hasattr(agent, "tool"):
         agent.tool = None
     if agent.tool is None and getattr(agent, "material_inventory", {}).get("sharp_stone", 0) > 0.1:
         agent.tool = "sharp_stone"
-    if not hasattr(agent, "_last_mate_id"):
-        agent._last_mate_id = None
+    if not hasattr(agent, "_last_partner_id"):
+        agent._last_partner_id = None
     if not hasattr(agent, "_need_inv_cooldown"):
         agent._need_inv_cooldown = 0
     if not hasattr(agent, "tom") or agent.tom is None:
@@ -232,7 +232,7 @@ def ensure_fields(agent) -> None:
     if not hasattr(agent, "_cached_nearby_radius"):
         agent._cached_nearby_radius = 2
     if not hasattr(agent, "_disease_immunity"):
-        agent._disease_immunity = {}
+        agent._fault_resistance = {}
     # --- Physik v2 (Plan 3a) ---
     if not hasattr(agent, "physics_v2"):
         agent.physics_v2 = False
@@ -241,7 +241,7 @@ def ensure_fields(agent) -> None:
     if not hasattr(agent, "hands"):
         agent.hands = None
     if agent.physics_v2 and agent.body is None:
-        agent.body = Body(body_mass=BODY_MASS_DEFAULT_KG, strength=agent.genes.get("strength", 0.5))
+        agent.body = Body(body_mass=BODY_MASS_DEFAULT_KG, strength=agent.traits.get("strength", 0.5))
     if agent.physics_v2 and agent.hands is None:
         agent.hands = Hands()
     if agent.physics_v2:
@@ -249,10 +249,10 @@ def ensure_fields(agent) -> None:
         # (Checkpoint-geladene Agenten; frisch gebaute sind schon komplett).
         if not getattr(agent.brain, "physics_v2", False):
             print(f"[compat] Agent {agent.id}: v1-Brain im v2-Modus, rebuilding.")
-            agent.brain = Brain(plasticity=agent.genes.get("plasticity", 1.0), physics_v2=True)
+            agent.brain = Brain(plasticity=agent.traits.get("plasticity", 1.0), physics_v2=True)
             agent.hidden_state = agent.brain.initial_hidden()
         if getattr(agent, "causal_model", None) is None:
-            agent.causal_model = CausalModelV2(plasticity=agent.genes.get("plasticity", 1.0))
+            agent.causal_model = CausalModelV2(plasticity=agent.traits.get("plasticity", 1.0))
         if getattr(agent, "_novelty_buckets", None) is None:
             agent._novelty_buckets = NoveltyBuckets()
         if not hasattr(agent, "_causal_pending"):
@@ -271,10 +271,10 @@ def attach_body(agent) -> None:
     ruft attach_body zuerst) — Eltern- und Kind-Brain sind dann form-gleich.
     """
     agent.physics_v2 = True
-    ensure_strength_gene(agent.genes)
-    agent.body = Body(body_mass=BODY_MASS_DEFAULT_KG, strength=agent.genes["strength"])
+    ensure_strength_trait(agent.traits)
+    agent.body = Body(body_mass=BODY_MASS_DEFAULT_KG, strength=agent.traits["strength"])
     agent.hands = Hands()
-    plast = agent.genes.get("plasticity", 1.0)
+    plast = agent.traits.get("plasticity", 1.0)
     agent.brain = Brain(plasticity=plast, physics_v2=True)
     agent.hidden_state = agent.brain.initial_hidden()
     agent.causal_model = CausalModelV2(plasticity=plast)
@@ -363,11 +363,11 @@ class Agent:
     hydration: float = 100.0
     age: int = 0
     pos: tuple = (0, 0)
-    genes: dict = field(default_factory=random_genes)
+    traits: dict = field(default_factory=random_traits)
     memory: EpisodicMemory = field(default_factory=lambda: EpisodicMemory(10))
     brain: Brain = field(default_factory=Brain)
     communication: CommunicationSystem = field(default_factory=CommunicationSystem)
-    endocrine: EndocrineSystem = field(default_factory=EndocrineSystem)
+    modulation: ModulationSystem = field(default_factory=ModulationSystem)
     message_vector: list = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
     trust: dict = field(default_factory=dict)
     tribe_id: int | None = None
@@ -375,23 +375,23 @@ class Agent:
     tool: str | None = None
     alive: bool = True
     learning_score: float = 0.0
-    reproduction_cooldown: int = 0
+    replication_cooldown: int = 0
     hidden_state: object = None
     last_reward: float = 0.0
     last_loss: float = 0.0
     sex: str = "m"
-    pregnant: bool = False
-    gestation: float = 0.0
-    stored_child_genes: dict | None = None
-    children: int = 0
+    pending_spawn: bool = False
+    spawn_delay: float = 0.0
+    stored_spawn_traits: dict | None = None
+    spawn_count: int = 0
     generation: int = 0
     parent_id: int | None = None
     plant_eaten: int = 0
     meat_eaten: int = 0
-    birth_tick: int = 0
-    sick: float = 0.0
+    spawn_tick: int = 0
+    impaired: float = 0.0
     last_action_mode: str = "idle"
-    disease_id: str | None = None
+    fault_id: str | None = None
     remedy_knowledge: dict = field(default_factory=dict)
     herbs_carried: dict = field(default_factory=dict)
     causal_memory: CausalMemory = field(default_factory=lambda: CausalMemory(capacity=32))
@@ -402,7 +402,7 @@ class Agent:
     last_goal_change: int = 0
     goal_commitment: int = 0
     is_sleeping: bool = False
-    _last_mate_id: int | None = None
+    _last_partner_id: int | None = None
     _need_inv_cooldown: int = 0
     tom: TheoryOfMind = field(default_factory=lambda: TheoryOfMind(0))
     knowledge: KnowledgeGraph = field(default_factory=KnowledgeGraph)
@@ -419,19 +419,19 @@ class Agent:
     # setzt diese Klassen-Attribute vor dem Sim-Bau. Die Schwellen sind zur
     # Laufzeit über `self.<attr>` lesbar (Sweep-Knobs).
     taxis_enabled: ClassVar[bool] = False
-    taxis_hunger_threshold: ClassVar[float] = TAXIS_HUNGER_THRESHOLD
-    mate_seek_radius: ClassVar[int] = MATE_SEEK_RADIUS
+    taxis_energy_need_threshold: ClassVar[float] = TAXIS_ENERGY_NEED_THRESHOLD
+    partner_seek_radius: ClassVar[int] = PARTNER_SEEK_RADIUS
 
     @classmethod
     def spawn_random(cls, x, y):
         cls.id_counter += 1
-        genes = random_genes()
-        brain = Brain(plasticity=genes.get("plasticity", 1.0))
+        traits = random_traits()
+        brain = Brain(plasticity=traits.get("plasticity", 1.0))
         agent = cls(
             id=cls.id_counter,
             pos=(x, y),
-            genes=genes,
-            memory=EpisodicMemory(genes["memory_capacity"]),
+            traits=traits,
+            memory=EpisodicMemory(traits["memory_capacity"]),
             brain=brain,
             sex=random.choice(["m", "f"]),
         )
@@ -444,31 +444,31 @@ class Agent:
         return agent
 
     @classmethod
-    def spawn_child(cls, x, y, genes, generation=1, parent_id=None, tribe_id=None, parent=None):
+    def spawn_agent(cls, x, y, traits, generation=1, parent_id=None, tribe_id=None, parent=None):
         cls.id_counter += 1
-        brain = Brain(plasticity=genes.get("plasticity", 1.0))
+        brain = Brain(plasticity=traits.get("plasticity", 1.0))
         agent = cls(
             id=cls.id_counter,
             pos=(x, y),
-            genes=genes,
-            memory=EpisodicMemory(genes["memory_capacity"]),
+            traits=traits,
+            memory=EpisodicMemory(traits["memory_capacity"]),
             brain=brain,
-            energy=CHILD_START_ENERGY,
+            energy=SPAWN_START_ENERGY,
             sex=random.choice(["m", "f"]),
             generation=generation,
             parent_id=parent_id,
             tribe_id=tribe_id,
         )
         agent.hidden_state = brain.initial_hidden()
-        agent.reproduction_cooldown = REPRODUCTION_COOLDOWN
+        agent.replication_cooldown = REPLICATION_COOLDOWN
         agent.tom = TheoryOfMind(agent.id)
         agent.knowledge = KnowledgeGraph()
         agent.emotional_memory = EmotionalMemory()
         agent._recent_action_seq = []
         if parent is not None:
-            agent.tom.inherit_from(parent.tom, strength=0.4)
-            agent.knowledge.inherit_from(parent.knowledge, strength=0.7)
-            agent.emotional_memory.inherit_from(parent.emotional_memory, strength_factor=0.30)
+            agent.tom.derive_from(parent.tom, strength=0.4)
+            agent.knowledge.derive_from(parent.knowledge, strength=0.7)
+            agent.emotional_memory.derive_from(parent.emotional_memory, strength_factor=0.30)
             known_places = list(parent.world_memory.items())
             random.shuffle(known_places)
             for pos, info in known_places[:50]:
@@ -510,33 +510,33 @@ class Agent:
         return nearby
 
     def life_stage(self):
-        if self.age < STAGE_CHILD:
+        if self.age < STAGE_SPAWN:
             return "child"
         if self.age >= STAGE_ELDER:
             return "elder"
         return "adult"
 
     def display_color(self):
-        meat_bias = max(0.0, min(1.0, (self.genes["diet_preference"] + 1.0) * 0.5))
-        plant_bias = max(0.0, min(1.0, (-self.genes["diet_preference"] + 1.0) * 0.5))
+        meat_bias = max(0.0, min(1.0, (self.traits["diet_preference"] + 1.0) * 0.5))
+        plant_bias = max(0.0, min(1.0, (-self.traits["diet_preference"] + 1.0) * 0.5))
         g = max(
             70,
             min(
-                255, int(80 + 120 * self.genes["cooperation"] + 35 * self.genes["memory_retention"])
+                255, int(80 + 120 * self.traits["cooperation"] + 35 * self.traits["memory_retention"])
             ),
         )
-        r = max(70, min(255, int(80 + 100 * meat_bias + 60 * self.genes["aggression"])))
-        b = max(70, min(255, int(80 + 100 * plant_bias + 50 * self.genes["plasticity"] / 1.8)))
+        r = max(70, min(255, int(80 + 100 * meat_bias + 60 * self.traits["aggression"])))
+        b = max(70, min(255, int(80 + 100 * plant_bias + 50 * self.traits["plasticity"] / 1.8)))
         return (r, g, b)
 
-    def can_reproduce(self):
+    def can_replicate(self):
         return (
             self.alive
-            and self.age >= MIN_REPRODUCTION_AGE
+            and self.age >= MIN_REPLICATION_AGE
             and self.age < ELDER_AGE
-            and self.energy >= REPRODUCTION_ENERGY
-            and self.reproduction_cooldown <= 0
-            and not self.pregnant
+            and self.energy >= REPLICATION_ENERGY
+            and self.replication_cooldown <= 0
+            and not self.pending_spawn
         )
 
     def local_features(self, world, agents):
@@ -547,8 +547,8 @@ class Agent:
             a
             for a in agents
             if a is not self
-            and abs(a.pos[0] - x) <= int(self.genes["sense_radius"])
-            and abs(a.pos[1] - y) <= int(self.genes["sense_radius"])
+            and abs(a.pos[0] - x) <= int(self.traits["sense_radius"])
+            and abs(a.pos[1] - y) <= int(self.traits["sense_radius"])
             and a.alive
         ]
         friends = sum(1 for a in near if self.trust.get(a.id, 0.0) > 0.2)
@@ -559,7 +559,7 @@ class Agent:
         mat_count = min(1.0, len(cell.get("materials", {})) / 6.0)
         causal_f = self.causal_memory.feature_vector()
         inv_size = min(1.0, sum(self.material_inventory.values()) / 5.0)
-        hormones = self.endocrine.as_features()
+        modulators = self.modulation.as_features()
         struct_f = structure_feature_vector(cell)
         return [
             self.energy / MAX_ENERGY,
@@ -579,10 +579,10 @@ class Agent:
             cell["disturbance"] / 100.0,
             min(1.0, len(near) / 10.0),
             min(1.0, friends / 6.0),
-            self.genes["curiosity"],
-            self.genes["aggression"],
-            self.genes["cooperation"],
-            self.genes["sociality"],
+            self.traits["curiosity"],
+            self.traits["aggression"],
+            self.traits["cooperation"],
+            self.traits["sociality"],
             1.0 if self.tool else 0.0,
             avg_trust * 0.5 + 0.5,
             min(1.0, self.resources["wood"] / 4.0),
@@ -596,30 +596,30 @@ class Agent:
             *struct_f,
             *causal_f,
             *retrieval,
-            *hormones,
+            *modulators,
         ]
 
     def visible_cells(self, world):
         x, y = self.pos
-        melatonin = self.endocrine.h[2]
-        vision_mult = max(0.4, 1.0 - 0.6 * melatonin)
+        rest = self.modulation.h[2]
+        vision_mult = max(0.4, 1.0 - 0.6 * rest)
         radius = max(
-            1, int(round((self.genes["vision"] + 0.35 * self.genes["sense_radius"]) * vision_mult))
+            1, int(round((self.traits["vision"] + 0.35 * self.traits["sense_radius"]) * vision_mult))
         )
         return world.neighbors(x, y, radius)
 
-    def progress_pregnancy(self):
-        child = None
-        if self.pregnant:
-            self.gestation -= 1
+    def progress_pending_spawn(self):
+        spawn = None
+        if self.pending_spawn:
+            self.spawn_delay -= 1
             self.energy -= 0.03
-            if self.gestation <= 0 and self.stored_child_genes is not None:
-                child = self.stored_child_genes
-                self.pregnant = False
-                self.gestation = 0
-                self.stored_child_genes = None
+            if self.spawn_delay <= 0 and self.stored_spawn_traits is not None:
+                spawn = self.stored_spawn_traits
+                self.pending_spawn = False
+                self.spawn_delay = 0
+                self.stored_spawn_traits = None
 
-        return child
+        return spawn
 
     def primitive_move(self, world, action):
         if self.is_sleeping:
@@ -646,10 +646,10 @@ class Agent:
         if self.is_sleeping:
             return
         target = None
-        if self.energy < self.taxis_hunger_threshold:
+        if self.energy < self.taxis_energy_need_threshold:
             target = self._nearest_food_cell(world)
-        elif self.can_reproduce():
-            target = self._nearest_compatible_mate(agents)
+        elif self.can_replicate():
+            target = self._nearest_compatible_partner(agents)
             if target is None:
                 # Allee-Rettung (Populations-Kollaps-Fix). Ohne Suchverhalten
                 # friert ein paarungsbereiter Agent OHNE Partner im
@@ -663,7 +663,7 @@ class Agent:
                 # perzeptions-/ko-lokations-gebunden (MATE_SEEK_RADIUS=8 und die
                 # ±5-Konzeptionsbox in _try_reproduce sind unverändert) — KEIN
                 # globaler Konzeptionsradius, KEIN Teleport, RNG-frei.
-                target = self._mate_rendezvous_cell(world)
+                target = self._partner_rendezvous_cell(world)
         if target is None:
             return  # gesättigt / kein Gradient im Radius -> Ruhe (kein Schritt)
         x, y = self.pos
@@ -682,7 +682,7 @@ class Agent:
         Standzelle -> None (bleiben & foragen). Kein Zufall.
         """
         x, y = self.pos
-        r = max(1, int(self.genes["sense_radius"]))
+        r = max(1, int(self.traits["sense_radius"]))
         best_key = None
         best_pos = None
         for tx in range(x - r, x + r + 1):
@@ -701,7 +701,7 @@ class Agent:
             return None
         return best_pos
 
-    def _nearest_compatible_mate(self, agents):
+    def _nearest_compatible_partner(self, agents):
         """Nächster kompatibler fruchtbarer Gegen-Sex-Partner in MATE_SEEK_RADIUS.
 
         Kompatibilität spiegelt `_try_reproduce`: lebendig, anderes Geschlecht,
@@ -710,13 +710,13 @@ class Agent:
         kein Zufall.
         """
         x, y = self.pos
-        r = self.mate_seek_radius
+        r = self.partner_seek_radius
         best_key = None
         best_pos = None
         for a in agents:
             if a is self or not a.alive or a.sex == self.sex:
                 continue
-            if not a.can_reproduce():
+            if not a.can_replicate():
                 continue
             if self.trust.get(a.id, 0.0) < -0.2:
                 continue
@@ -732,7 +732,7 @@ class Agent:
             return None
         return best_pos
 
-    def _mate_rendezvous_cell(self, world):
+    def _partner_rendezvous_cell(self, world):
         """Deterministischer Sammelpunkt für die Partnersuche (Allee-Rettung).
 
         Feuert nur als Fallback, wenn ein paarungsbereiter Agent KEINEN Partner
@@ -749,14 +749,14 @@ class Agent:
             return None
         return (cx, cy)
 
-    def _forage(self, world, mods):
+    def _gather(self, world, mods):
         x, y = self.pos
         cell = world.get_cell(x, y)
         gain = 0.0
-        tool_bonus = SHARP_STONE_FORAGE_BONUS if self.tool == "sharp_stone" else 0.0
-        home_bonus = get_home_forage_bonus(self, world)
+        tool_bonus = SHARP_STONE_GATHER_BONUS if self.tool == "sharp_stone" else 0.0
+        home_bonus = get_home_gather_bonus(self, world)
         eff = mods.get("forage_eff", 1.0) * (1.0 + tool_bonus + home_bonus)
-        diet = self.genes.get("diet_preference", 0.0)
+        diet = self.traits.get("diet_preference", 0.0)
         # Energy conservation (Phase 4): consumption debits the cell's *source*
         # pools (plant_food / meat_food / carcasses) through apply_consumption /
         # the World façade, not the derived `food` aggregate, which regrow_cell
@@ -775,8 +775,8 @@ class Agent:
                 self.energy = min(MAX_ENERGY, self.energy + take)
                 self.plant_eaten += 1
                 gain += take
-                self.endocrine.apply_substance("plant_food", take / PLANT_ENERGY)
-                self.endocrine.apply_successful_forage(take)
+                self.modulation.apply_substance("plant_food", take / PLANT_ENERGY)
+                self.modulation.apply_successful_gather(take)
             # v2-Kalorien-Fix (Option A): innater roher Handbiss aus einem
             # ko-lokierten Kadaver-Objekt am selben automatischen forage-Skalar.
             # Stellt die v1-Fleisch-Zugänglichkeit (Tod→Nahrung) wieder her, ohne
@@ -803,8 +803,8 @@ class Agent:
                         self.energy = max(0.0, min(MAX_ENERGY, self.energy + gained))
                         self.meat_eaten += 1
                         gain += gained
-                        self.endocrine.apply_substance("raw_meat", gained / MEAT_ENERGY)
-                        self.endocrine.apply_successful_forage(gained)
+                        self.modulation.apply_substance("raw_meat", gained / MEAT_ENERGY)
+                        self.modulation.apply_successful_gather(gained)
                     if result.health_delta:
                         self.health = max(0.0, self.health + result.health_delta)
                         if self.health <= 0:
@@ -823,31 +823,31 @@ class Agent:
                 self.energy = min(MAX_ENERGY, self.energy + take)
                 self.meat_eaten += 1
                 gain += take
-                self.endocrine.apply_substance("raw_meat", take / MEAT_ENERGY)
-                self.endocrine.apply_successful_forage(take)
+                self.modulation.apply_substance("raw_meat", take / MEAT_ENERGY)
+                self.modulation.apply_successful_gather(take)
             elif meat_available > 0:
                 take = min(meat_available, MEAT_ENERGY * eff)
                 apply_consumption(world, x, y, meat=take)
                 self.energy = min(MAX_ENERGY, self.energy + take)
                 self.meat_eaten += 1
                 gain += take
-                self.endocrine.apply_substance("raw_meat", take / MEAT_ENERGY)
-                self.endocrine.apply_successful_forage(take)
+                self.modulation.apply_substance("raw_meat", take / MEAT_ENERGY)
+                self.modulation.apply_successful_gather(take)
             elif plant_available > 0:
                 take = min(plant_available, PLANT_ENERGY * eff)
                 apply_consumption(world, x, y, plant=take)
                 self.energy = min(MAX_ENERGY, self.energy + take)
                 self.plant_eaten += 1
                 gain += take
-                self.endocrine.apply_substance("plant_food", take / PLANT_ENERGY)
-                self.endocrine.apply_successful_forage(take)
+                self.modulation.apply_substance("plant_food", take / PLANT_ENERGY)
+                self.modulation.apply_successful_gather(take)
         water_available = cell.get("water", 0.0)
         if water_available > 0 and self.hydration < 100.0:
             take = min(water_available, 8.0 * eff)
             world.set_cell(x, y, "water", max(0.0, water_available - take))
             self.hydration = min(100.0, self.hydration + take)
             gain += take * 0.3
-            self.endocrine.apply_substance("water", take / 8.0)
+            self.modulation.apply_substance("water", take / 8.0)
         return gain
 
     def _collect_herbs(self, world):
@@ -859,18 +859,18 @@ class Agent:
         herb = random.choice(herbs)
         if collect_herb(world, x, y, herb):
             self.herbs_carried[herb] = self.herbs_carried.get(herb, 0) + 1
-            self.endocrine.apply_substance(f"herb_{herb}", 1.0)
+            self.modulation.apply_substance(f"herb_{herb}", 1.0)
 
     def _try_remedy(self):
-        if self.disease_id is None or not self.herbs_carried:
+        if self.fault_id is None or not self.herbs_carried:
             return
-        result = evaluate_remedy(self, self.disease_id)
+        result = evaluate_remedy(self, self.fault_id)
         if result == "cured":
-            record_cure_discovery(self, self.disease_id)
-            self.disease_id = None
-            self.sick = max(0.0, self.sick - 40.0)
+            record_cure_discovery(self, self.fault_id)
+            self.fault_id = None
+            self.impaired = max(0.0, self.impaired - 40.0)
         elif result == "partial":
-            self.sick = max(0.0, self.sick - 15.0)
+            self.impaired = max(0.0, self.impaired - 15.0)
 
     def _share_remedy(self, agents):
         if not self.remedy_knowledge:
@@ -887,7 +887,7 @@ class Agent:
     def _attack(self, agents, mods):
         x, y = self.pos
         agg_bias = mods.get("aggression_bias", 0.0)
-        threshold = max(0.05, self.genes["aggression"] + agg_bias - 0.3)
+        threshold = max(0.05, self.traits["aggression"] + agg_bias - 0.3)
         if random.random() > threshold:
             return 0.0
         targets = [
@@ -902,9 +902,9 @@ class Agent:
         if not targets:
             return 0.0
         target = random.choice(targets)
-        dmg = max(1.0, 8.0 * self.genes["aggression"] + agg_bias * 5.0)
+        dmg = max(1.0, 8.0 * self.traits["aggression"] + agg_bias * 5.0)
         target.health -= dmg
-        target.endocrine.apply_attack_received()
+        target.modulation.apply_attack_received()
         if target.health <= 0:
             target.alive = False
             if self.physics_v2:
@@ -915,7 +915,7 @@ class Agent:
             loot = target.energy * 0.3
             self.energy = min(MAX_ENERGY, self.energy + loot)
             return loot
-        self.endocrine.apply_attack_received()
+        self.modulation.apply_attack_received()
         return 0.5
 
     def _cooperate(self, agents, mods, tick):
@@ -935,16 +935,16 @@ class Agent:
         same_tribe = [
             a for a in nearby if a.tribe_id == self.tribe_id and self.tribe_id is not None
         ]
-        self.endocrine.apply_social_signal(len(nearby), bool(same_tribe))
+        self.modulation.apply_social_signal(len(nearby), bool(same_tribe))
         # Redistributive group-foraging bonus (Phase 4): instead of minting
         # `forage_bonus` energy from nothing, the better-off nearby members pool a
         # little energy for the active cooperator. Zero-sum: self gains exactly what
         # the donors actually give (the MAX_ENERGY clamp can only lose energy, never
         # create it).
-        forage_bonus = min(COOP_FORAGE_MAX_BONUS, len(nearby) * COOP_FORAGE_BONUS_PER_MEMBER)
+        gather_bonus = min(COOP_GATHER_MAX_BONUS, len(nearby) * COOP_GATHER_BONUS_PER_MEMBER)
         donors = [a for a in nearby if a.energy > self.energy]
-        if forage_bonus > 0.0 and donors:
-            per = forage_bonus / len(donors)
+        if gather_bonus > 0.0 and donors:
+            per = gather_bonus / len(donors)
             pooled = 0.0
             for donor in donors:
                 contrib = min(per, donor.energy)
@@ -986,7 +986,7 @@ class Agent:
         neighbour snapshot at the shared radius 2 so it costs no extra scan.
         """
         x, y = self.pos
-        r = REPRODUCTION_SENSE_RADIUS
+        r = REPLICATION_SENSE_RADIUS
         total_food = 0.0
         for cx in range(x - r, x + r + 1):
             for cy in range(y - r, y + r + 1):
@@ -995,10 +995,10 @@ class Agent:
         nearby = len(self._nearby_cached(agents, r))
         return total_food / (nearby + 1.0)
 
-    def _try_reproduce(self, world, agents):
-        if not self.can_reproduce() or self.sex != "f":
+    def _try_replicate(self, world, agents):
+        if not self.can_replicate() or self.sex != "f":
             return None
-        if self._local_food_per_capita(world, agents) < REPRODUCTION_MIN_FOOD_PER_CAPITA:
+        if self._local_food_per_capita(world, agents) < REPLICATION_MIN_FOOD_PER_CAPITA:
             # The ground here can't feed another mouth right now — hold off.
             return None
         x, y = self.pos
@@ -1008,35 +1008,35 @@ class Agent:
             if a is not self
             and a.alive
             and a.sex == "m"
-            and a.can_reproduce()
+            and a.can_replicate()
             and abs(a.pos[0] - x) <= 5
             and abs(a.pos[1] - y) <= 5
             and self.trust.get(a.id, 0.0) >= -0.2
         ]
         if not males:
             return None
-        mate = max(
+        partner = max(
             males,
             key=lambda a: (
-                a.genes.get("cooperation", 0.5)
-                + a.genes.get("plasticity", 1.0) / 1.8
+                a.traits.get("cooperation", 0.5)
+                + a.traits.get("plasticity", 1.0) / 1.8
                 + self.trust.get(a.id, 0.0)
             ),
         )
-        child_genes = inherit_genes(self, mate)
-        self.energy -= REPRODUCTION_COST
-        mate.energy -= REPRODUCTION_COST * 0.5
-        self.reproduction_cooldown = REPRODUCTION_COOLDOWN
-        mate.reproduction_cooldown = REPRODUCTION_COOLDOWN
-        self.pregnant = True
-        eff = self.genes.get("gestation_efficiency", 1.0)
+        spawn_traits = derive_traits(self, partner)
+        self.energy -= REPLICATION_COST
+        partner.energy -= REPLICATION_COST * 0.5
+        self.replication_cooldown = REPLICATION_COOLDOWN
+        partner.replication_cooldown = REPLICATION_COOLDOWN
+        self.pending_spawn = True
+        eff = self.traits.get("gestation_efficiency", 1.0)
 
-        self.gestation = max(20, int(GESTATION_TIME / eff))
-        self.stored_child_genes = child_genes
-        self._last_mate_id = mate.id
-        mate._last_mate_id = self.id
-        self.children += 1
-        mate.children += 1
+        self.spawn_delay = max(20, int(SPAWN_DELAY_TIME / eff))
+        self.stored_spawn_traits = spawn_traits
+        self._last_partner_id = partner.id
+        partner._last_partner_id = self.id
+        self.spawn_count += 1
+        partner.spawn_count += 1
         return None
 
     def _collect_resources(self, world):
@@ -1088,16 +1088,16 @@ class Agent:
                 else:
                     self.resources["stone"] = max(0, self.resources.get("stone", 0) - 1)
 
-    def _disease_tick(self, world):
-        if self.disease_id is None:
+    def _fault_tick(self, world):
+        if self.fault_id is None:
             return
-        rec = REMEDY_REGISTRY.get(self.disease_id, {})
+        rec = REMEDY_REGISTRY.get(self.fault_id, {})
         severity = rec.get("severity", 0.5)
         biome = world.get_biome(*self.pos)
         biome_mult = 1.3 if biome in rec.get("worse_in", []) else 1.0
         drain = severity * biome_mult
         self.health -= drain
-        self.sick = min(100.0, self.sick + drain)
+        self.impaired = min(100.0, self.impaired + drain)
         if self.health <= 0:
             self.alive = False
 
@@ -1380,9 +1380,9 @@ class Agent:
             self.goal_commitment = 30
 
         elif (
-            self.energy > REPRODUCTION_ENERGY
+            self.energy > REPLICATION_ENERGY
             and self.health > 70
-            and self.age > MIN_REPRODUCTION_AGE
+            and self.age > MIN_REPLICATION_AGE
         ):
             self.current_goal = "REPRODUCE"
             self.goal_commitment = 40
@@ -1489,12 +1489,12 @@ class Agent:
             # Schlaf-Regeneration, Koop-Transfers — alles Physiologie).
             e_start, h_start = self.energy, self.health
 
-        self.endocrine.update(self, world)
-        mods = self.endocrine.modifiers()
+        self.modulation.update(self, world)
+        mods = self.modulation.modifiers()
         stage = get_stage_stats(self.age)
 
         self._age_tick()
-        self._disease_tick(world)
+        self._fault_tick(world)
         if not self.alive:
             return None
 
@@ -1636,7 +1636,7 @@ class Agent:
 
         if not self.is_sleeping:
             if action["forage"] > 0.0:
-                gained = self._forage(
+                gained = self._gather(
                     world,
                     {
                         **mods,
@@ -1670,8 +1670,8 @@ class Agent:
         reward += territory_reward_for_agent(self, world)
 
         if stage.get("can_reproduce", True):
-            self._try_reproduce(world, agents)
-        child_genes = self.progress_pregnancy()
+            self._try_replicate(world, agents)
+        spawn_traits = self.progress_pending_spawn()
 
         if tick % 3 == 0:
             reward += social_learning_step(self, agents, tick)
@@ -1684,23 +1684,23 @@ class Agent:
                 inv_result = agent_invent_from_need(self, world, *self.pos, tick)
                 if inv_result:
                     reward += 0.5
-                    self.endocrine.apply_discovery(1.0)
+                    self.modulation.apply_discovery(1.0)
                 self._need_inv_cooldown = NEED_INVENTION_INTERVAL
             else:
                 self._need_inv_cooldown -= 1
 
-        inv_prob = INVENTION_BASE_PROB + INVENTION_CURIOSITY_MULT * self.genes.get("curiosity", 0.5)
+        inv_prob = INVENTION_BASE_PROB + INVENTION_CURIOSITY_MULT * self.traits.get("curiosity", 0.5)
         if not self.physics_v2 and tick % 3 == 0 and random.random() < inv_prob:
             invented = agent_try_invention(self, world, *self.pos)
             if invented:
                 reward += 1.0
-                self.endocrine.apply_discovery(1.0)
+                self.modulation.apply_discovery(1.0)
 
         if not self.physics_v2 and tick % 4 == 0 and random.random() < 0.18:
             cooked = agent_try_cook(self, world, *self.pos)
             if cooked:
                 reward += 0.3
-                self.endocrine.apply_substance("cooked_meat", 1.0)
+                self.modulation.apply_substance("cooked_meat", 1.0)
 
         if economy is not None:
             economy.maybe_trade(self, agents)
@@ -1782,20 +1782,20 @@ class Agent:
             self.last_loss = loss
 
         self.last_reward = effective_reward
-        self.reproduction_cooldown = max(0, self.reproduction_cooldown - 1)
+        self.replication_cooldown = max(0, self.replication_cooldown - 1)
 
         for other in self._nearby_cached(agents, 2):
             self.tom.observe_agent(other, tick)
 
-        h = self.endocrine.h
+        h = self.modulation.h
         arousal = min(1.0, max(0.0, (h[0] + h[1]) / 2))
-        context_hormones = [h[0], h[3], h[4], h[1]]
+        context_modulators = [h[0], h[3], h[4], h[1]]
         self.emotional_memory.encode_experience(
             stimulus=mode,
             valence=min(1.0, max(-1.0, reward * 0.1)),
             arousal=arousal,
-            context_hormones=context_hormones,
+            context_modulators=context_modulators,
             tick=tick,
         )
 
-        return child_genes
+        return spawn_traits

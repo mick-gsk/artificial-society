@@ -2,7 +2,7 @@ import numpy as np
 
 from artificial_society.environment.biomes import BIOME_BASE
 
-DISEASE_POLLUTION_THRESHOLD = 36.0
+FAULT_POLLUTION_THRESHOLD = 36.0
 MEAT_SPOIL_RATE = 0.04
 CARCASS_DECAY = 0.14
 
@@ -376,7 +376,7 @@ def regrow_cell(world, x, y, biome, season_state, weather_state, tick, event_str
         "disease",
         clamp(
             cell["disease"]
-            + max(0.0, pollution - DISEASE_POLLUTION_THRESHOLD) * 0.025
+            + max(0.0, pollution - FAULT_POLLUTION_THRESHOLD) * 0.025
             + cell["spoilage"] * 0.03
             + cell["carcasses"] * 0.012
             - 0.05 * rain
@@ -513,7 +513,7 @@ def regrow_grid(world, season_state, weather_state, tick, event_fields):
     meat_food0 = F["meat_food"].copy()
     ash0 = F["ash"].copy()
     water0 = F["water"].copy()
-    disease0 = F["disease"].copy()
+    fault0 = F["disease"].copy()
     carcasses0 = F["carcasses"].copy()
 
     farm = S["farm"]
@@ -586,8 +586,8 @@ def regrow_grid(world, season_state, weather_state, tick, event_fields):
         spoilage + decayed_meat * 0.85 - 0.05 * rain - 0.04 * camp, 0.0, 100.0
     )
     F["disease"] = np.clip(
-        disease0
-        + np.maximum(0.0, pollution - DISEASE_POLLUTION_THRESHOLD) * 0.025
+        fault0
+        + np.maximum(0.0, pollution - FAULT_POLLUTION_THRESHOLD) * 0.025
         + F["spoilage"] * 0.03
         + F["carcasses"] * 0.012
         - 0.05 * rain

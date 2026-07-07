@@ -1,15 +1,15 @@
-"""Aging / senescence thresholds (Phase 4).
+"""Aging / decay thresholds (Phase 4).
 
-`_age_tick` ramps health decay in two stages and then hard-caps lifespan:
+`_age_tick` ramps health decay in two stages and then hard-caps max_age:
 
     START (3500) <  HARD (4500) <  LIMIT (5000)
-    age > START : -0.04 health/tick   (soft senescence)
-    age >= HARD : -0.12 health/tick   (steep senescence)
+    age > START : -0.04 health/tick   (soft decay)
+    age >= HARD : -0.12 health/tick   (steep decay)
     age >= LIMIT: death
 
 These tests lock the ordering and prove the steep ramp is actually *reachable
 while the agent is still alive* (i.e. death-by-old-age does not pre-empt the
-senescence curve), which is the consistency the roadmap asks Phase 4 to verify.
+decay curve), which is the consistency the roadmap asks Phase 4 to verify.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ def test_threshold_ordering_is_consistent():
     assert AGE_HEALTH_DECAY_START < AGE_HEALTH_DECAY_HARD < AGE_LIMIT
 
 
-def test_no_senescence_decay_before_start():
+def test_no_decay_before_start():
     a = _agent()
     a.age = AGE_HEALTH_DECAY_START - 100
     a.health = 100.0
@@ -95,7 +95,7 @@ def test_steep_ramp_is_reachable_while_alive():
 def test_death_at_age_limit():
     a = _agent()
     a.age = AGE_LIMIT - 1
-    a.health = 100.0  # healthy: death here is purely the lifespan cap
+    a.health = 100.0  # healthy: death here is purely the max_age cap
     a.alive = True
     a._age_tick()
     assert a.age == AGE_LIMIT

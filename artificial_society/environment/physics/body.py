@@ -3,7 +3,7 @@
 Der Körper gehört zur Weltphysik: reale Grenzen (Tragkraft, Kraft, Ermüdung)
 erzeugen den Erfindungsdruck — ein Werkzeug lohnt sich genau deshalb, weil der
 nackte Körper an diesen Grenzen scheitert. Vollständig deterministisch, kein
-Zufall. Sim-Integration (Gene→strength, Energie-Kopplung) kommt im
+Zufall. Sim-Integration (Trait→strength, Energie-Kopplung) kommt im
 Lern-Kopplungs-Plan.
 """
 

@@ -18,7 +18,7 @@ def test_v2_sim_embodied_alle_agenten():
         assert isinstance(a.body, Body)
         assert a.body.body_mass == BODY_MASS_DEFAULT_KG
         # Plan 3b (Spec C5): strength kommt aus dem Gen, nicht mehr 3a-Default 0.5.
-        assert a.body.strength == a.genes["strength"]
+        assert a.body.strength == a.traits["strength"]
         assert 0.1 <= a.body.strength <= 0.9
         assert isinstance(a.hands, Hands) and a.hands.held == []
 
@@ -53,7 +53,7 @@ def test_ueberlast_drop_laeuft_im_sim_tick():
 
 
 def test_respawns_werden_embodied():
-    """Deckt den emergency_respawn-Pfad; spawn_child_from_parent nutzt dasselbe
+    """Deckt den emergency_respawn-Pfad; spawn_agent_from_parent nutzt dasselbe
     attach_body-Muster (Code-identisch, im Sozial-RNG schwer deterministisch erzwingbar)."""
     sim = Simulation(seed=42, physics_v2=True, **_PARAMS)
     sim.agents = sim.agents[:1]  # unter MIN_POPULATION → Respawn im nächsten Tick

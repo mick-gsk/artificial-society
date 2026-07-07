@@ -24,17 +24,17 @@ RUNTIME_FIELDS = (
     "_inventory_cap",
     "_cached_nearby_agents",
     "_cached_nearby_radius",
-    "_disease_immunity",
+    "_fault_resistance",
 )
 NEW_FIELDS = (
     "_brain_device",
     "causal_memory",
     "material_inventory",
-    "endocrine",
+    "modulation",
     "is_sleeping",
     "brain",
     "tool",
-    "_last_mate_id",
+    "_last_partner_id",
     "_need_inv_cooldown",
     "tom",
     "knowledge",
@@ -70,7 +70,7 @@ def test_ensure_fields_restores_old_checkpoint_agent():
     seed_all(1)
     agent = Agent.spawn_random(0, 0)
     # Simulate a stale checkpoint: drop a representative field from each old group.
-    for fname in ("goal_stack", "_disease_immunity", "_brain_device", "remedy_knowledge"):
+    for fname in ("goal_stack", "_fault_resistance", "_brain_device", "remedy_knowledge"):
         if hasattr(agent, fname):
             delattr(agent, fname)
 

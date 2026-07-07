@@ -26,7 +26,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GOLDEN_PATH = os.path.join(os.path.dirname(__file__), "golden_trajectory.json")
 
 _SENTINEL = "@@@TRAJ@@@"
-_CHILD = (
+_SPAWN = (
     "import sys, json; sys.path.insert(0, '.'); "
     "from tests._util import compute_trajectory; "
     f"print('{_SENTINEL}' + json.dumps(compute_trajectory()) + '{_SENTINEL}')"
@@ -40,7 +40,7 @@ def _trajectory_in_pinned_subprocess():
         SDL_VIDEODRIVER="dummy",
         SDL_AUDIODRIVER="dummy",
     )
-    out = subprocess.check_output([sys.executable, "-c", _CHILD], cwd=REPO_ROOT, env=env, text=True)
+    out = subprocess.check_output([sys.executable, "-c", _SPAWN], cwd=REPO_ROOT, env=env, text=True)
     payload = out.split(_SENTINEL)[1]
     return json.loads(payload)
 

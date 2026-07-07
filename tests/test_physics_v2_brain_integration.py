@@ -48,10 +48,10 @@ def test_attach_body_ruestet_v2_brain_und_causal_model():
 def test_v2_kind_erbt_gewichte_vom_v2_eltern_brain():
     sim = _sim_v2()
     eltern = sim.agents[0]
-    kind = sim.spawn_child_from_parent(eltern, dict(eltern.genes))
+    kind = sim.spawn_agent_from_parent(eltern, dict(eltern.traits))
     assert kind.brain.physics_v2 is True
     assert kind.brain.gru.input_size == 192
-    assert "strength" in kind.genes
+    assert "strength" in kind.traits
 
 
 def test_verb_mapping_grasp_und_release():

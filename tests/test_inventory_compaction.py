@@ -19,7 +19,7 @@ class _Agent:
 
 def _register_high_value_material() -> str:
     # A nutritious discovered material (high edibility) -> high material_reward.
-    vec = get_vector("raw_meat").copy()  # edibility 0.5, scent 0.4
+    vec = get_vector("raw_meat").copy()  # edibility 0.5, trail 0.4
     return DISCOVERY_REGISTRY.register(
         vec, discoverer_id=1, tick=0, recipe=("eat", "raw_meat", None)
     )
@@ -28,7 +28,7 @@ def _register_high_value_material() -> str:
 def test_high_value_discovered_material_kept_over_low_value_scripted():
     mat_id = _register_high_value_material()
     assert mat_id.startswith("mat_")
-    # Hungry agent -> nutrition is highly valued; wood/stone are ~worthless here.
+    # Depleted agent -> resource_value is highly valued; wood/stone are ~worthless here.
     agent = _Agent(energy=20.0, inventory={"wood": 5.0, "stone": 5.0, mat_id: 1.0})
 
     _compact_material_inventory(agent, max_entries=2)

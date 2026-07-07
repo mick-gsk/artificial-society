@@ -21,17 +21,18 @@ Aus diesem System emergieren:
   - Soziale Hierarchie: Agenten mit seltenen Gutern haben Macht
 """
 
-import numpy as np
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
+import numpy as np
+
 from artificial_society.environment.materials import (
-    IDX, N_PROPS, get_vector, material_reward, DISCOVERY_REGISTRY
+    get_vector,
+    material_reward,
 )
 
-
-MAX_TRADE_RADIUS = 2   # Zellen Abstand fuer Tausch
-MIN_TRADE_QTY    = 0.1  # Mindestmenge fuer Tausch
+MAX_TRADE_RADIUS = 2  # Zellen Abstand fuer Tausch
+MIN_TRADE_QTY = 0.1  # Mindestmenge fuer Tausch
 
 
 # ---------------------------------------------------------------------------
@@ -40,14 +41,14 @@ MIN_TRADE_QTY    = 0.1  # Mindestmenge fuer Tausch
 def compute_value(mat_id: str, qty: float, agent_state: dict) -> float:
     """
     Subjektiver Wert eines Materials fuer einen Agenten.
-    Hohe Nachfrage (Hunger, Kaelte) = hoher Wert.
+    Hohe Nachfrage (Energy_need, Kaelte) = hoher Wert.
     Viel davon im Inventar = niedrigerer Wert (Grenznutzen).
     """
-    vec       = get_vector(mat_id)
-    base_val  = material_reward(vec, agent_state)
-    own_qty   = agent_state.get('inv_' + mat_id, 0.0)
+    vec = get_vector(mat_id)
+    base_val = material_reward(vec, agent_state)
+    own_qty = agent_state.get("inv_" + mat_id, 0.0)
     # Grenznutzen: je mehr man hat, desto weniger wert
-    margin    = max(0.1, 1.0 - own_qty * 0.4)
+    margin = max(0.1, 1.0 - own_qty * 0.4)
     return float(base_val * qty * margin)
 
 
@@ -56,25 +57,29 @@ def compute_value(mat_id: str, qty: float, agent_state: dict) -> float:
 # ---------------------------------------------------------------------------
 @dataclass
 class TradeProposal:
-    proposer_id:  int
-    receiver_id:  int
-    offer_mat:    str    # Was Proposer anbietet
-    offer_qty:    float
-    request_mat:  str    # Was Proposer haben moechte
-    request_qty:  float
-    tick:         int
-    accepted:     bool   = False
+    proposer_id: int
+    receiver_id: int
+    offer_mat: str  # Was Proposer anbietet
+    offer_qty: float
+    request_mat: str  # Was Proposer haben moechte
+    request_qty: float
+    tick: int
+    accepted: bool = False
 
     def proposer_surplus(self, agent_states: dict) -> float:
         """Netto-Gewinn fuer Proposer wenn Tausch angenommen."""
-        give = compute_value(self.offer_mat,   self.offer_qty,   agent_states.get(self.proposer_id, {}))
-        get  = compute_value(self.request_mat, self.request_qty, agent_states.get(self.proposer_id, {}))
+        give = compute_value(self.offer_mat, self.offer_qty, agent_states.get(self.proposer_id, {}))
+        get = compute_value(
+            self.request_mat, self.request_qty, agent_states.get(self.proposer_id, {})
+        )
         return get - give
 
     def receiver_surplus(self, agent_states: dict) -> float:
         """Netto-Gewinn fuer Receiver wenn Tausch angenommen."""
-        give = compute_value(self.request_mat, self.request_qty, agent_states.get(self.receiver_id, {}))
-        get  = compute_value(self.offer_mat,   self.offer_qty,   agent_states.get(self.receiver_id, {}))
+        give = compute_value(
+            self.request_mat, self.request_qty, agent_states.get(self.receiver_id, {})
+        )
+        get = compute_value(self.offer_mat, self.offer_qty, agent_states.get(self.receiver_id, {}))
         return get - give
 
 
@@ -83,13 +88,13 @@ class TradeProposal:
 # ---------------------------------------------------------------------------
 @dataclass
 class TradeRecord:
-    partner_id:  int
-    gave_mat:    str
-    gave_qty:    float
-    got_mat:     str
-    got_qty:     float
-    net_reward:  float  # ex-post Reward nach dem Tausch
-    tick:        int
+    partner_id: int
+    gave_mat: str
+    gave_qty: float
+    got_mat: str
+    got_qty: float
+    net_reward: float  # ex-post Reward nach dem Tausch
+    tick: int
 
 
 class TradeMemory:
@@ -97,14 +102,15 @@ class TradeMemory:
     Agenten erinnern sich an Tausche und ihre Ergebnisse.
     Basis fuer Spezialisierung und Reputations-System.
     """
+
     def __init__(self):
-        self.records:    list[TradeRecord]      = []
+        self.records: list[TradeRecord] = []
         # partner_id -> avg_net_reward
-        self.partner_score: dict[int, float]    = {}
+        self.partner_score: dict[int, float] = {}
         # mat_id -> wie oft angeboten
-        self.offer_freq:   dict[str, int]       = {}
+        self.offer_freq: dict[str, int] = {}
         # mat_id -> wie oft nachgefragt
-        self.request_freq: dict[str, int]       = {}
+        self.request_freq: dict[str, int] = {}
 
     def record(self, trade: TradeRecord):
         self.records.append(trade)
@@ -115,8 +121,8 @@ class TradeMemory:
         prev = self.partner_score.get(trade.partner_id, 0.0)
         self.partner_score[trade.partner_id] = prev * 0.8 + trade.net_reward * 0.2
         # Frequenzen
-        self.offer_freq[trade.gave_mat]     = self.offer_freq.get(trade.gave_mat, 0) + 1
-        self.request_freq[trade.got_mat]    = self.request_freq.get(trade.got_mat, 0) + 1
+        self.offer_freq[trade.gave_mat] = self.offer_freq.get(trade.gave_mat, 0) + 1
+        self.request_freq[trade.got_mat] = self.request_freq.get(trade.got_mat, 0) + 1
 
     def best_partner(self) -> Optional[int]:
         """Wen soll ich als naechstes ansprechen?"""
@@ -131,8 +137,8 @@ class TradeMemory:
         """
         if not self.offer_freq:
             return 0.0
-        total  = sum(self.offer_freq.values())
-        top    = max(self.offer_freq.values())
+        total = sum(self.offer_freq.values())
+        top = max(self.offer_freq.values())
         return top / max(1, total)
 
     def most_offered(self) -> Optional[str]:
@@ -149,10 +155,11 @@ class TradeEngine:
     Verwaltet alle aktiven Tausch-Vorschlaege und deren Ausfuehrung.
     Wird pro Tick vom World-Step aufgerufen.
     """
+
     def __init__(self):
-        self.pending:  list[TradeProposal] = []
-        self.history:  list[TradeProposal] = []
-        self.tick_log: list[dict]          = []
+        self.pending: list[TradeProposal] = []
+        self.history: list[TradeProposal] = []
+        self.tick_log: list[dict] = []
 
         # Emergenter Preisspiegel: mat_pair -> ratio-Liste
         # Aus Wiederholungen entsteht ein stabiler 'Preis'
@@ -169,18 +176,18 @@ class TradeEngine:
         tick: int,
     ) -> Optional[TradeProposal]:
         """Agent schlaegt Tausch vor. Prueft Inventar-Verfuegbarkeit."""
-        prop_inv = getattr(proposer, 'material_inventory', {})
+        prop_inv = getattr(proposer, "material_inventory", {})
         if prop_inv.get(offer_mat, 0.0) < offer_qty:
             return None  # Nicht genug zum Anbieten
 
         proposal = TradeProposal(
-            proposer_id = proposer.id,
-            receiver_id = receiver.id,
-            offer_mat   = offer_mat,
-            offer_qty   = offer_qty,
-            request_mat = request_mat,
-            request_qty = request_qty,
-            tick        = tick,
+            proposer_id=proposer.id,
+            receiver_id=receiver.id,
+            offer_mat=offer_mat,
+            offer_qty=offer_qty,
+            request_mat=request_mat,
+            request_qty=request_qty,
+            tick=tick,
         )
         self.pending.append(proposal)
         return proposal
@@ -196,14 +203,14 @@ class TradeEngine:
         Entscheidung: Receiver-Surplus > 0 und Inventar ausreichend.
         Vertrauen moduliert den Schwellwert.
         """
-        recv_inv = getattr(receiver, 'material_inventory', {})
+        recv_inv = getattr(receiver, "material_inventory", {})
         if recv_inv.get(proposal.request_mat, 0.0) < proposal.request_qty:
             return False  # Kann nicht liefern
 
         surplus = proposal.receiver_surplus(agent_states)
 
         # Vertrauens-Modulation
-        trust = getattr(receiver, 'trust', {}).get(proposal.proposer_id, 0.3)
+        trust = getattr(receiver, "trust", {}).get(proposal.proposer_id, 0.3)
         threshold = -0.1 + (1.0 - trust) * 0.3  # Misstrauen = hoehere Huerde
 
         return surplus > threshold
@@ -216,20 +223,26 @@ class TradeEngine:
         tick: int,
     ) -> dict:
         """Fuehrt den Tausch aus. Transferiert Materialien."""
-        prop_inv = getattr(proposer, 'material_inventory', {})
-        recv_inv = getattr(receiver, 'material_inventory', {})
+        prop_inv = getattr(proposer, "material_inventory", {})
+        recv_inv = getattr(receiver, "material_inventory", {})
 
         # Transfer
-        prop_inv[proposal.offer_mat]    = max(0.0, prop_inv.get(proposal.offer_mat,   0.0) - proposal.offer_qty)
-        recv_inv[proposal.offer_mat]    = recv_inv.get(proposal.offer_mat, 0.0)   + proposal.offer_qty
-        recv_inv[proposal.request_mat]  = max(0.0, recv_inv.get(proposal.request_mat, 0.0) - proposal.request_qty)
-        prop_inv[proposal.request_mat]  = prop_inv.get(proposal.request_mat, 0.0) + proposal.request_qty
+        prop_inv[proposal.offer_mat] = max(
+            0.0, prop_inv.get(proposal.offer_mat, 0.0) - proposal.offer_qty
+        )
+        recv_inv[proposal.offer_mat] = recv_inv.get(proposal.offer_mat, 0.0) + proposal.offer_qty
+        recv_inv[proposal.request_mat] = max(
+            0.0, recv_inv.get(proposal.request_mat, 0.0) - proposal.request_qty
+        )
+        prop_inv[proposal.request_mat] = (
+            prop_inv.get(proposal.request_mat, 0.0) + proposal.request_qty
+        )
 
         proposal.accepted = True
         self.history.append(proposal)
 
         # Preis-Memory aktualisieren
-        pair  = (proposal.offer_mat, proposal.request_mat)
+        pair = (proposal.offer_mat, proposal.request_mat)
         ratio = proposal.offer_qty / max(0.01, proposal.request_qty)
         if pair not in self.price_memory:
             self.price_memory[pair] = []
@@ -238,31 +251,31 @@ class TradeEngine:
             self.price_memory[pair] = self.price_memory[pair][-30:]
 
         event = {
-            'type':          'TRADE',
-            'tick':          tick,
-            'proposer':      proposal.proposer_id,
-            'receiver':      proposal.receiver_id,
-            'gave':          (proposal.offer_mat, proposal.offer_qty),
-            'got':           (proposal.request_mat, proposal.request_qty),
+            "type": "TRADE",
+            "tick": tick,
+            "proposer": proposal.proposer_id,
+            "receiver": proposal.receiver_id,
+            "gave": (proposal.offer_mat, proposal.offer_qty),
+            "got": (proposal.request_mat, proposal.request_qty),
         }
         self.tick_log.append(event)
 
         # Specialization logging
-        if not hasattr(proposer, 'trade_memory'):
+        if not hasattr(proposer, "trade_memory"):
             proposer.trade_memory = TradeMemory()
-        if not hasattr(receiver, 'trade_memory'):
+        if not hasattr(receiver, "trade_memory"):
             receiver.trade_memory = TradeMemory()
 
-        print(f'[TRADE] tick={tick} '
-              f'agent_{proposal.proposer_id} gave {proposal.offer_qty:.2f}x{proposal.offer_mat} '
-              f'for {proposal.request_qty:.2f}x{proposal.request_mat} '
-              f'from agent_{proposal.receiver_id}')
+        print(
+            f"[TRADE] tick={tick} "
+            f"agent_{proposal.proposer_id} gave {proposal.offer_qty:.2f}x{proposal.offer_mat} "
+            f"for {proposal.request_qty:.2f}x{proposal.request_mat} "
+            f"from agent_{proposal.receiver_id}"
+        )
 
         return event
 
-    def get_market_price(
-        self, mat_a: str, mat_b: str
-    ) -> Optional[float]:
+    def get_market_price(self, mat_a: str, mat_b: str) -> Optional[float]:
         """
         Gibt den emergenten 'Preis' zurueck (Tauschverhaeltnis).
         None wenn noch kein Tausch stattgefunden hat.
@@ -288,11 +301,11 @@ class TradeEngine:
         for i, agent_a in enumerate(agents):
             if agent_a.id in paired:
                 continue
-            inv_a = getattr(agent_a, 'material_inventory', {})
+            inv_a = getattr(agent_a, "material_inventory", {})
             if not inv_a:
                 continue
 
-            for agent_b in agents[i+1:]:
+            for agent_b in agents[i + 1 :]:
                 if agent_b.id in paired:
                     continue
                 # Distanz-Check
@@ -300,7 +313,7 @@ class TradeEngine:
                 if dist > MAX_TRADE_RADIUS:
                     continue
 
-                inv_b = getattr(agent_b, 'material_inventory', {})
+                inv_b = getattr(agent_b, "material_inventory", {})
                 if not inv_b:
                     continue
 
@@ -331,8 +344,8 @@ class TradeEngine:
         Proposer bietet das an was Receiver am meisten braucht
         und bittet um das was er selbst am meisten braucht.
         """
-        prop_inv  = getattr(proposer, 'material_inventory', {})
-        recv_inv  = getattr(receiver, 'material_inventory', {})
+        prop_inv = getattr(proposer, "material_inventory", {})
+        recv_inv = getattr(receiver, "material_inventory", {})
         prop_state = agent_states.get(proposer.id, {})
         recv_state = agent_states.get(receiver.id, {})
 
@@ -363,17 +376,17 @@ class TradeEngine:
             return None
 
         # Mengen proportional zum relativen Wert
-        offer_qty   = min(prop_inv[best_offer_mat] * 0.4, 1.0)
-        request_qty = min(recv_inv[best_req_mat]   * 0.4, 1.0)
+        offer_qty = min(prop_inv[best_offer_mat] * 0.4, 1.0)
+        request_qty = min(recv_inv[best_req_mat] * 0.4, 1.0)
 
         return self.propose(
-            proposer    = proposer,
-            receiver    = receiver,
-            offer_mat   = best_offer_mat,
-            offer_qty   = offer_qty,
-            request_mat = best_req_mat,
-            request_qty = request_qty,
-            tick        = tick,
+            proposer=proposer,
+            receiver=receiver,
+            offer_mat=best_offer_mat,
+            offer_qty=offer_qty,
+            request_mat=best_req_mat,
+            request_qty=request_qty,
+            tick=tick,
         )
 
 

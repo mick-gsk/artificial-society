@@ -100,7 +100,7 @@ cal(
 )
 cal(
     "dim",
-    "nutrition",
+    "resource_value",
     "verwertbare Energie / 400 kcal pro 100 g (mageres Rohfleisch ≈ 140 → 0.35, Beeren ≈ 50 → 0.13)",
     "Nährwerttabellen (USDA)",
 )

@@ -85,17 +85,17 @@ def territory_reward_for_agent(agent, world) -> float:
     # Eindringling-Malus: fremder Stamm hat starken Claim hier
     if strongest_foreign > CLAIM_THRESHOLD and own_strength < strongest_foreign:
         # Erhoeht Gefahrenwahrnehmung -> Adrenalin -> Flucht oder Kampf
-        if hasattr(agent, "endocrine"):
-            agent.endocrine.h[1] = min(1.0, agent.endocrine.h[1] + 0.08 * strongest_foreign)
+        if hasattr(agent, "modulation"):
+            agent.modulation.h[1] = min(1.0, agent.modulation.h[1] + 0.08 * strongest_foreign)
         reward -= 0.06 * strongest_foreign
 
     return reward
 
 
-def get_home_forage_bonus(agent, world) -> float:
+def get_home_gather_bonus(agent, world) -> float:
     """
     Gibt den Sammel-Effizienz-Bonus auf eigenem Territorium zurueck.
-    Wird in agent.forage() als Multiplikator addiert.
+    Wird in agent._gather() als Multiplikator addiert.
     Biologisch: Tiere kennen ihr Revier besser und sammeln effizienter.
     """
     if agent.tribe_id is None:

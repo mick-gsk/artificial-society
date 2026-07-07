@@ -35,7 +35,7 @@ def test_predict_world_v2_formen():
 
 
 def test_selbstbezuegliche_dims_nicht_im_nextslot_target():
-    """D3 (a): last_reward (26), Causal (34–36), Episodic (37–48), Hormone (49–56)
+    """D3 (a): last_reward (26), Causal (34–36), Episodic (37–48), Modulator (49–56)
     ändern den Fehler NICHT — sie sind nachweislich nicht im Target."""
     brain = _brain()
     step = _step(brain)

@@ -9,7 +9,7 @@ nobody has ever defined upfront.
 Property dimensions (PROP_DIMS):
   0  flammable       -- ignition susceptibility   [0..1]
   1  hardness        -- structural rigidity        [0..1]
-  2  edibility       -- caloric/nutritional value  [0..1]
+  2  edibility       -- caloric/resource value        [0..1]
   3  toxicity        -- harm when ingested         [0..1]
   4  heat_emission   -- radiated warmth            [0..1]
   5  light_emission  -- luminance                  [0..1]
@@ -18,7 +18,7 @@ Property dimensions (PROP_DIMS):
   8  sharpness       -- cutting ability            [0..1]
   9  solubility      -- dissolves in liquid        [0..1]
   10 conductivity    -- heat/energy transfer       [0..1]
-  11 scent           -- volatile aroma strength    [0..1]
+  11 trail           -- volatile aroma strength    [0..1]
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ PROP_DIMS = [
     "sharpness",
     "solubility",
     "conductivity",
-    "scent",
+    "trail",
 ]
 IDX = {name: i for i, name in enumerate(PROP_DIMS)}
 N_PROPS = len(PROP_DIMS)  # 12
@@ -77,7 +77,7 @@ MATERIALS: dict[str, np.ndarray] = {
         conductivity=0.3,
     ),
     "bone": _v(flammable=0.2, hardness=0.6, edibility=0.1, mass=0.3, dryness=0.6, sharpness=0.3),
-    "raw_meat": _v(flammable=0.1, hardness=0.1, edibility=0.5, mass=0.4, dryness=0.3, scent=0.4),
+    "raw_meat": _v(flammable=0.1, hardness=0.1, edibility=0.5, mass=0.4, dryness=0.3, trail=0.4),
     "raw_root": _v(
         flammable=0.05, hardness=0.2, edibility=0.4, mass=0.2, dryness=0.3, solubility=0.2
     ),
@@ -110,16 +110,16 @@ MATERIALS: dict[str, np.ndarray] = {
         solubility=0.3,
     ),
     "cooked_meat": _v(
-        flammable=0.0, hardness=0.2, edibility=0.95, mass=0.35, dryness=0.7, scent=0.55
+        flammable=0.0, hardness=0.2, edibility=0.95, mass=0.35, dryness=0.7, trail=0.55
     ),
     "cooked_root": _v(
-        flammable=0.0, hardness=0.1, edibility=0.85, mass=0.15, dryness=0.5, scent=0.2
+        flammable=0.0, hardness=0.1, edibility=0.85, mass=0.15, dryness=0.5, trail=0.2
     ),
     "sharp_stone": _v(
         flammable=0.0, hardness=0.95, edibility=0.0, mass=0.5, dryness=0.8, sharpness=0.8
     ),
     "fiber": _v(flammable=0.5, hardness=0.05, edibility=0.0, mass=0.1, dryness=0.5),
-    # ── Scent / solubility group ─────────────────────────────────────────────
+    # ── Trail / solubility group ─────────────────────────────────────────────
     "flower_petals": _v(
         flammable=0.2,
         hardness=0.02,
@@ -127,7 +127,7 @@ MATERIALS: dict[str, np.ndarray] = {
         mass=0.05,
         dryness=0.4,
         solubility=0.7,
-        scent=0.9,
+        trail=0.9,
     ),
     "tree_resin": _v(
         flammable=0.6,
@@ -136,7 +136,7 @@ MATERIALS: dict[str, np.ndarray] = {
         mass=0.3,
         dryness=0.6,
         solubility=0.45,
-        scent=0.7,
+        trail=0.7,
         conductivity=0.2,
     ),
     "crushed_herb": _v(
@@ -147,7 +147,7 @@ MATERIALS: dict[str, np.ndarray] = {
         mass=0.08,
         dryness=0.4,
         solubility=0.55,
-        scent=0.6,
+        trail=0.6,
     ),
     # ── Keramik / Werkzeug-Gruppe ────────────────────────────────────────────
     "clay": _v(
@@ -176,7 +176,7 @@ MATERIALS: dict[str, np.ndarray] = {
         mass=0.25,
         dryness=0.5,
         solubility=0.4,
-        scent=0.3,
+        trail=0.3,
     ),
     # ── Biologie / Wachstum (Phase A) ────────────────────────────────────────
     "seed_grain": _v(
@@ -189,7 +189,7 @@ MATERIALS: dict[str, np.ndarray] = {
         mass=0.03,
         dryness=0.4,
         solubility=0.3,
-        scent=0.2,
+        trail=0.2,
     ),
     "soil": _v(
         flammable=0.0,
@@ -286,7 +286,7 @@ class DiscoveryRegistry:
             f"edibility={vector[IDX['edibility']]:.2f} "
             f"heat={vector[IDX['heat_emission']]:.2f} "
             f"sharpness={vector[IDX['sharpness']]:.2f} "
-            f"scent={vector[IDX['scent']]:.2f}"
+            f"trail={vector[IDX['trail']]:.2f}"
         )
         self._known_ids_cache = None
         return new_id
@@ -338,7 +338,7 @@ def _thermal_reaction(vec_a: np.ndarray, vec_b: np.ndarray, env: dict) -> np.nda
     if vec_a[IDX["edibility"]] > 0.1:
         result[IDX["edibility"]] = min(1.0, vec_a[IDX["edibility"]] * (1.0 + 0.8 * effective_heat))
         result[IDX["toxicity"]] = max(0.0, vec_a[IDX["toxicity"]] * (1.0 - 0.7 * effective_heat))
-        result[IDX["scent"]] = min(1.0, vec_a[IDX["scent"]] + 0.25 * effective_heat)
+        result[IDX["trail"]] = min(1.0, vec_a[IDX["trail"]] + 0.25 * effective_heat)
         result[IDX["mass"]] *= max(0.7, 1.0 - 0.15 * effective_heat)
     if vec_a[IDX["flammable"]] > 0.5 and effective_heat > 0.6:
         result[IDX["flammable"]] = max(0.0, vec_a[IDX["flammable"]] - 0.5)
@@ -350,8 +350,8 @@ def _thermal_reaction(vec_a: np.ndarray, vec_b: np.ndarray, env: dict) -> np.nda
         result[IDX["hardness"]] = min(1.0, vec_a[IDX["hardness"]] + 0.55 * effective_heat)
         result[IDX["solubility"]] = max(0.0, vec_a[IDX["solubility"]] - 0.5)
         result[IDX["dryness"]] = 1.0
-    if vec_a[IDX["scent"]] > 0.3 and effective_heat < 0.7:
-        result[IDX["scent"]] = min(1.0, vec_a[IDX["scent"]] * (1.0 + 0.3 * effective_heat))
+    if vec_a[IDX["trail"]] > 0.3 and effective_heat < 0.7:
+        result[IDX["trail"]] = min(1.0, vec_a[IDX["trail"]] * (1.0 + 0.3 * effective_heat))
     result[IDX["dryness"]] = min(1.0, vec_a[IDX["dryness"]] + 0.3 * effective_heat)
     if np.linalg.norm(result - vec_a) < 0.05:
         return None
@@ -370,7 +370,7 @@ def _mechanical_reaction(vec_a: np.ndarray, vec_b: np.ndarray, action: str) -> n
         if vec_a[IDX["hardness"]] < 0.3 and vec_b[IDX["hardness"]] > 0.7:
             result = vec_a.copy()
             result[IDX["solubility"]] = min(1.0, vec_a[IDX["solubility"]] + 0.4)
-            result[IDX["scent"]] = min(1.0, vec_a[IDX["scent"]] + 0.2)
+            result[IDX["trail"]] = min(1.0, vec_a[IDX["trail"]] + 0.2)
             result[IDX["mass"]] *= 0.8
             result[IDX["hardness"]] *= 0.3
             return result
@@ -383,19 +383,19 @@ def _mechanical_reaction(vec_a: np.ndarray, vec_b: np.ndarray, action: str) -> n
             result[IDX["mass"]] = vec_a[IDX["mass"]] + vec_b[IDX["mass"]]
             result[IDX["sharpness"]] = vec_b[IDX["sharpness"]]
             result[IDX["flammable"]] = vec_a[IDX["flammable"]] * 0.5
-            if vec_a[IDX["scent"]] > 0.4 and vec_a[IDX["solubility"]] > 0.3:
+            if vec_a[IDX["trail"]] > 0.4 and vec_a[IDX["solubility"]] > 0.3:
                 result[IDX["hardness"]] = min(1.0, result[IDX["hardness"]] + 0.1)
-                result[IDX["scent"]] = vec_a[IDX["scent"]] * 0.4
+                result[IDX["trail"]] = vec_a[IDX["trail"]] * 0.4
             return result
     elif action == "bundle":
         combined_flamm = (vec_a[IDX["flammable"]] + vec_b[IDX["flammable"]]) * 0.6
         combined_dry = (vec_a[IDX["dryness"]] + vec_b[IDX["dryness"]]) * 0.5
-        combined_scent = (vec_a[IDX["scent"]] + vec_b[IDX["scent"]]) * 0.7
-        if combined_flamm > 0.4 or combined_dry > 0.55 or combined_scent > 0.5:
+        combined_trail = (vec_a[IDX["trail"]] + vec_b[IDX["trail"]]) * 0.7
+        if combined_flamm > 0.4 or combined_dry > 0.55 or combined_trail > 0.5:
             result = (vec_a + vec_b) * 0.5
             result[IDX["flammable"]] = combined_flamm
             result[IDX["dryness"]] = combined_dry
-            result[IDX["scent"]] = min(1.0, combined_scent)
+            result[IDX["trail"]] = min(1.0, combined_trail)
             result[IDX["mass"]] = vec_a[IDX["mass"]] + vec_b[IDX["mass"]]
             return result
     return None
@@ -410,8 +410,8 @@ def _solvent_reaction(vec_a: np.ndarray, vec_b: np.ndarray, env: dict) -> np.nda
         return None
     effective_moisture = max(moisture, vec_b[IDX["solubility"]])
     result = vec_b.copy()
-    result[IDX["scent"]] = min(
-        1.0, vec_b[IDX["scent"]] + vec_a[IDX["scent"]] * solubility_a * 1.6 * effective_moisture
+    result[IDX["trail"]] = min(
+        1.0, vec_b[IDX["trail"]] + vec_a[IDX["trail"]] * solubility_a * 1.6 * effective_moisture
     )
     result[IDX["edibility"]] = min(1.0, (vec_a[IDX["edibility"]] + vec_b[IDX["edibility"]]) * 0.55)
     result[IDX["toxicity"]] = max(vec_a[IDX["toxicity"]], vec_b[IDX["toxicity"]])
@@ -421,7 +421,7 @@ def _solvent_reaction(vec_a: np.ndarray, vec_b: np.ndarray, env: dict) -> np.nda
         result[IDX["conductivity"]] = min(
             1.0, max(vec_a[IDX["conductivity"]], vec_b[IDX["conductivity"]]) + 0.15
         )
-        result[IDX["light_emission"]] = min(0.3, result[IDX["scent"]] * 0.2)
+        result[IDX["light_emission"]] = min(0.3, result[IDX["trail"]] * 0.2)
     if np.linalg.norm(result - vec_b) < 0.05:
         return None
     return result
@@ -457,9 +457,9 @@ def combine_vectors(
             result[IDX["mass"]] = 0.05
         else:
             result = _mechanical_reaction(vec_a, vec_b, "bundle")
-            if result is None and (vec_a[IDX["scent"]] > 0.3 or vec_b[IDX["scent"]] > 0.3):
+            if result is None and (vec_a[IDX["trail"]] > 0.3 or vec_b[IDX["trail"]] > 0.3):
                 result = vec_a.copy()
-                result[IDX["scent"]] = min(1.0, vec_a[IDX["scent"]] + 0.15)
+                result[IDX["trail"]] = min(1.0, vec_a[IDX["trail"]] + 0.15)
                 result[IDX["solubility"]] = min(1.0, vec_a[IDX["solubility"]] + 0.1)
                 result[IDX["hardness"]] *= 0.5
                 result[IDX["mass"]] *= 0.85
@@ -572,7 +572,7 @@ def material_reward(vector: np.ndarray, agent_state: dict) -> float:
     if dark:
         reward += vector[IDX["light_emission"]] * 1.2
     reward += vector[IDX["sharpness"]] * 0.6
-    reward += vector[IDX["scent"]] * 0.25
+    reward += vector[IDX["trail"]] * 0.25
     utility = (
         vector[IDX["edibility"]]
         + vector[IDX["sharpness"]]

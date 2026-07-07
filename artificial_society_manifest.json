@@ -8,7 +8,7 @@
   "artificial_society\\agents\\brain.py",
   "artificial_society\\agents\\communication.py",
   "artificial_society\\agents\\culture.py",
-  "artificial_society\\agents\\genetics.py",
+  "artificial_society\\agents\\traits.py",
   "artificial_society\\agents\\memory.py",
   "artificial_society\\agents\\__init__.py",
   "artificial_society\\environment\\biomes.py",

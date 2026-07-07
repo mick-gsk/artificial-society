@@ -19,7 +19,7 @@ import numpy as np
 import torch
 
 from artificial_society.agents.agent import (
-    TAXIS_HUNGER_THRESHOLD,
+    TAXIS_ENERGY_NEED_THRESHOLD,
     Agent,
 )
 
@@ -52,11 +52,11 @@ def _make_agent(x, y, sex="f", energy=100.0, age=100, sense_radius=3):
     a.energy = energy
     a.age = age
     a.alive = True
-    a.pregnant = False
-    a.reproduction_cooldown = 0
+    a.pending_spawn = False
+    a.replication_cooldown = 0
     a.is_sleeping = False
     a.trust = {}
-    a.genes["sense_radius"] = sense_radius
+    a.traits["sense_radius"] = sense_radius
     return a
 
 
@@ -78,12 +78,12 @@ def test_food_taxis_step():
     assert a.pos == (6, 6), "genau ein diagonaler Schritt Richtung Food"
 
 
-def test_mate_taxis_step():
+def test_partner_taxis_step():
     """Satt + paarungsbereit, ein kompatibler Partner in MATE_SEEK_RADIUS -> Annäherung."""
     a = _make_agent(5, 5, sex="f", energy=100.0, age=100)  # >= TAXIS_HUNGER_THRESHOLD
     b = _make_agent(5, 9, sex="m", energy=100.0, age=100)
     world = FakeWorld(20, 20)  # keine Food-Zellen
-    assert a.can_reproduce() and b.can_reproduce()
+    assert a.can_replicate() and b.can_replicate()
     before = _cheby(a.pos, b.pos)
     a.innate_locomotion(world, [a, b])
     after = _cheby(a.pos, b.pos)
@@ -94,20 +94,20 @@ def test_mate_taxis_step():
 
 def test_sated_rests():
     """Satt (energy >= Schwelle) und NICHT paarungsbereit -> pos unverändert."""
-    a = _make_agent(5, 5, energy=TAXIS_HUNGER_THRESHOLD + 10.0, age=10)  # age<repro
-    assert not a.can_reproduce()
+    a = _make_agent(5, 5, energy=TAXIS_ENERGY_NEED_THRESHOLD + 10.0, age=10)  # age<repro
+    assert not a.can_replicate()
     world = FakeWorld(20, 20, food={(7, 7): 25.0})  # Food da, aber nicht hungrig
     a.innate_locomotion(world, [a])
     assert a.pos == (5, 5)
 
 
-def test_priority_food_over_mate():
+def test_priority_food_over_partner():
     """Hungrig UND paarungsbereit (energy in [60,80)) -> bewegt sich zur Nahrung."""
     # energy=70: hungrig (70 < 80) UND can_reproduce (70 >= 60)
     a = _make_agent(5, 5, sex="f", energy=70.0, age=100, sense_radius=3)
     b = _make_agent(5, 1, sex="m", energy=100.0, age=100)  # Partner im Süden
     world = FakeWorld(20, 20, food={(8, 5): 25.0})  # Food im Osten
-    assert a.can_reproduce()
+    assert a.can_replicate()
     a.innate_locomotion(world, [a, b])
     # Food-Priorität: Schritt nach Osten (+x), nicht nach Süden (-y) zum Partner
     assert a.pos == (6, 5), f"erwartet Food-Schritt (6,5), war {a.pos}"
@@ -137,7 +137,7 @@ def test_determinism_no_rng():
     assert t1[-1] == (9, 9)  # erreicht die Food-Zelle
 
 
-def test_mate_tie_break_deterministic():
+def test_partner_tie_break_deterministic():
     """Bei Distanzgleichstand gewinnt der kleinere agent.id (deterministisch)."""
     a = _make_agent(5, 5, sex="f", energy=100.0, age=100)
     left = _make_agent(3, 5, sex="m", energy=100.0, age=100)  # dist 2
@@ -259,7 +259,7 @@ def test_innate_locomotion_signature_and_no_rng():
         for m in (
             Agent.innate_locomotion,
             Agent._nearest_food_cell,
-            Agent._nearest_compatible_mate,
+            Agent._nearest_compatible_partner,
         )
     )
     for forbidden in ("random", "np.random", "brain_step", "action_list", "action_tensor"):

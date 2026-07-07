@@ -357,7 +357,7 @@ def _age_structure_founders(sim) -> None:
     for a in sim.agents:
         age = random.randint(0, 1999)
         a.age = age
-        a.birth_tick = sim.tick - age
+        a.spawn_tick = sim.tick - age
 
 
 # Review-Finding I-1 (Etappe 1a, review-report-etappe1.md): `_scale_regrowth`
@@ -479,7 +479,7 @@ def _set_min_food_per_capita(value: float) -> None:
     """
     import artificial_society.agents.agent as agent_mod
 
-    agent_mod.REPRODUCTION_MIN_FOOD_PER_CAPITA = value
+    agent_mod.REPLICATION_MIN_FOOD_PER_CAPITA = value
 
 
 # --------------------------------------------------------------------------
@@ -491,29 +491,29 @@ def _set_min_food_per_capita(value: float) -> None:
 # Original beim ersten Install ein, damit wiederholte Installs im selben Prozess
 # (Batterie-Runner) das Original NICHT verschachteln (idempotent). `run_one`
 # setzt `_MATE_SEEK_STATE["count"]` je Lauf auf 0 zurück.
-_MATE_SEEK_STATE: dict = {"count": 0}
-_MATE_SEEK_ORIG = None
+_PARTNER_SEEK_STATE: dict = {"count": 0}
+_PARTNER_SEEK_ORIG = None
 
 
-def _install_mate_seek_counter() -> None:
+def _install_partner_seek_counter() -> None:
     """Zählt, wie oft die Partner-Taxis tatsächlich einen Partner verfolgt
     (non-None-Rückgabe von `_nearest_compatible_mate`). Transparent (delegiert
     unverändert, kein RNG) ⇒ determinismus-neutral. Siehe Modul-Docstring
     (`mate_seek_fired`)."""
     from artificial_society.agents.agent import Agent
 
-    global _MATE_SEEK_ORIG
-    if _MATE_SEEK_ORIG is None:
-        _MATE_SEEK_ORIG = Agent._nearest_compatible_mate
-    orig = _MATE_SEEK_ORIG
+    global _PARTNER_SEEK_ORIG
+    if _PARTNER_SEEK_ORIG is None:
+        _PARTNER_SEEK_ORIG = Agent._nearest_compatible_partner
+    orig = _PARTNER_SEEK_ORIG
 
     def _counting(self, agents):
         target = orig(self, agents)
         if target is not None:
-            _MATE_SEEK_STATE["count"] += 1
+            _PARTNER_SEEK_STATE["count"] += 1
         return target
 
-    Agent._nearest_compatible_mate = _counting
+    Agent._nearest_compatible_partner = _counting
 
 
 def _instrument_mortality(sim):
@@ -567,7 +567,7 @@ def _demography_fields(sim) -> dict:
     n = len(agents)
     sex_m = sum(1 for a in agents if getattr(a, "sex", None) == "m")
     sex_f = sum(1 for a in agents if getattr(a, "sex", None) == "f")
-    fertile = [a for a in agents if a.can_reproduce()]
+    fertile = [a for a in agents if a.can_replicate()]
     fert_m = [a for a in fertile if getattr(a, "sex", None) == "m"]
     fert_f = [a for a in fertile if getattr(a, "sex", None) == "f"]
     sex_ratio_fertile = round(len(fert_m) / len(fert_f), 3) if fert_f else None
@@ -718,7 +718,7 @@ def _snapshot(
     deaths: int,
     births_cum: int,
     deaths_removedead: int = 0,
-    mate_seek_fired: int = 0,
+    partner_seek_fired: int = 0,
 ) -> dict:
     """Baut den Snapshot-/Final-Record.
 
@@ -766,7 +766,7 @@ def _snapshot(
         # Team C: alte remove_dead-Kreuzprobe (v1-blind ≈ 0; siehe Docstring).
         "deaths_removedead": deaths_removedead,
         # Team C: Allee-Signal — verfolgte Partner-Taxis (nur mit --taxis).
-        "mate_seek_fired": mate_seek_fired,
+        "mate_seek_fired": partner_seek_fired,
         "mean_age": round(mean_age, 2),
     }
     # Team C: Demografie-/Allee-Momentaufnahme (Geschlechtsverhältnis, paarweise
@@ -792,8 +792,8 @@ def run_one(
     plant_ceiling_scale: float = 1.0,
     physics: str = "v2",
     taxis: bool = False,
-    taxis_hunger_threshold: float = 80.0,
-    mate_seek_radius: int = 8,
+    taxis_energy_need_threshold: float = 80.0,
+    partner_seek_radius: int = 8,
     respawn_mode: str = "scatter",
 ) -> str:
     conf = EXPERIMENTS[exp]
@@ -853,8 +853,8 @@ def run_one(
     from artificial_society.agents.agent import Agent as _Agent
 
     _Agent.taxis_enabled = bool(taxis)
-    _Agent.taxis_hunger_threshold = float(taxis_hunger_threshold)
-    _Agent.mate_seek_radius = int(mate_seek_radius)
+    _Agent.taxis_energy_need_threshold = float(taxis_energy_need_threshold)
+    _Agent.partner_seek_radius = int(partner_seek_radius)
 
     sim = Simulation(
         headless=True,
@@ -900,8 +900,8 @@ def run_one(
 
     # Team C: Allee-Signal `mate_seek_fired` (Klassen-Wrapper, idempotent, je
     # Lauf zurückgesetzt). Nur mit --taxis wirksam (sonst nie aufgerufen ⇒ 0).
-    _MATE_SEEK_STATE["count"] = 0
-    _install_mate_seek_counter()
+    _PARTNER_SEEK_STATE["count"] = 0
+    _install_partner_seek_counter()
 
     # Etappe 1: `spawn_child_from_parent` auf der INSTANZ (nicht der Klasse)
     # durch eine zählende Wrapper-Closure ersetzen (gleiches Bound-Method-
@@ -913,13 +913,13 @@ def run_one(
     # durch spätere Tode untererfasster Geburtenzähler (siehe `_snapshot`-
     # Docstring zu `births_cum` vs. `births`).
     _births_state = {"count": 0}
-    _orig_spawn_child = sim.spawn_child_from_parent
+    _orig_spawn_agent = sim.spawn_agent_from_parent
 
-    def _counting_spawn_child(parent, genes):
+    def _counting_spawn_agent(parent, traits):
         _births_state["count"] += 1
-        return _orig_spawn_child(parent, genes)
+        return _orig_spawn_agent(parent, traits)
 
-    sim.spawn_child_from_parent = _counting_spawn_child
+    sim.spawn_agent_from_parent = _counting_spawn_agent
 
     ids_seen: set = set()
     path = os.path.join(out_dir, f"{exp}_seed{seed}.jsonl")
@@ -956,8 +956,8 @@ def run_one(
             # + seine Kalibrierung (sweepbare Knobs). Default AUS = bisheriges
             # Verhalten. Wirkt nur im physics_v2-Pfad.
             "taxis": bool(taxis),
-            "taxis_hunger_threshold": float(taxis_hunger_threshold),
-            "mate_seek_radius": int(mate_seek_radius),
+            "taxis_hunger_threshold": float(taxis_energy_need_threshold),
+            "mate_seek_radius": int(partner_seek_radius),
             "patched": dict(conf["patched"], CHECKPOINT_INTERVAL=0),
         }
         f.write(json.dumps(meta) + "\n")
@@ -972,7 +972,7 @@ def run_one(
                     _mortality_state["count"],
                     _births_state["count"],
                     _removedead_state["count"],
-                    _MATE_SEEK_STATE["count"],
+                    _PARTNER_SEEK_STATE["count"],
                 )
                 rec["record"] = "snap"
                 f.write(json.dumps(rec) + "\n")
@@ -985,7 +985,7 @@ def run_one(
             _mortality_state["count"],
             _births_state["count"],
             _removedead_state["count"],
-            _MATE_SEEK_STATE["count"],
+            _PARTNER_SEEK_STATE["count"],
         )
         final["record"] = "final"
         final["walltime_s"] = round(time.time() - t0, 1)
@@ -1142,8 +1142,8 @@ def main() -> None:
         args.plant_ceiling_scale,
         args.physics,
         args.taxis,
-        args.taxis_hunger_threshold,
-        args.mate_seek_radius,
+        args.taxis_energy_need_threshold,
+        args.partner_seek_radius,
         args.respawn_mode,
     )
 

@@ -6,7 +6,7 @@ EpisodicMemory  – NGU-style k-NN novelty score (state-space distance,
 KnowledgeGraph  – Persistent causal fact store.  Agents record which
                    (action, mat_a, mat_b) combinations succeeded or
                    failed, accumulate confidence, and share knowledge
-                   via inheritance and imitation.
+                   via derivation and imitation.
 
 Emergenz-Erweiterungen (v3):
   - CompositeAction: Erfolgreiche Aktionssequenzen werden als neue Makro-
@@ -16,9 +16,9 @@ Emergenz-Erweiterungen (v3):
     kann Voraussetzungen haben – Agenten ohne Feuer-Wissen "denken" nicht
     an Töpfern.
 """
+
 from __future__ import annotations
 
-import math
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque
@@ -43,7 +43,7 @@ class EpisodicMemory:
         self.epsilon = epsilon
         self.buffer: Deque[torch.Tensor] = deque(maxlen=capacity)
         # --- Tier-3 perf: cache the stacked buffer; rebuild only when it changes.
-        # `_version` bumps on every mutation; `stacked()` rebuilds lazily on a miss,
+        # `_version` bumps on every perturbation; `stacked()` rebuilds lazily on a miss,
         # so the per-rollout re-stack (and, on GPU, the host->device upload) happens
         # at most once per buffer change instead of on every read.
         self._version: int = 0
@@ -59,7 +59,7 @@ class EpisodicMemory:
         """Buffer stacked into one ``(N, D)`` tensor, cached across reads.
 
         Identical to ``torch.stack(list(self.buffer))`` (optionally moved to
-        ``device``); rebuilt only when the buffer mutates. Returns ``None`` for
+        ``device``); rebuilt only when the buffer perturbs. Returns ``None`` for
         an empty buffer. When the cache already lives on ``device`` the ``.to``
         is a no-op, which is what removes the repeated GPU re-upload.
         """
@@ -84,7 +84,7 @@ class EpisodicMemory:
             self._remember(obs)
             return 1.0
 
-        stack = self.stacked(obs.device)                # (N, D)
+        stack = self.stacked(obs.device)  # (N, D)
         dists = torch.norm(stack - obs.unsqueeze(0), dim=-1)  # (N,)
         k_actual = min(self.k, len(dists))
         knn_dist = dists.topk(k_actual, largest=False).values.mean()
@@ -133,8 +133,9 @@ class CompositeAction:
     Makro-Aktionen entstehen nicht durch explizite Programmierung, sondern
     durch wiederholte erfolgreiche Verkettung.
     """
-    action_id: str                            # z.B. "macro_0007"
-    steps: list[str]                          # ['rub', 'blow', 'bundle']
+
+    action_id: str  # z.B. "macro_0007"
+    steps: list[str]  # ['rub', 'blow', 'bundle']
     context_materials: list[str] = field(default_factory=list)  # Materialkontext
     confidence: float = 0.0
     uses: int = 0
@@ -150,8 +151,10 @@ class CompositeAction:
         return self.total_reward / self.uses if self.uses > 0 else 0.0
 
     def __repr__(self) -> str:
-        return (f"CompositeAction({self.action_id}, steps={self.steps}, "
-                f"conf={self.confidence:.2f}, uses={self.uses})")
+        return (
+            f"CompositeAction({self.action_id}, steps={self.steps}, "
+            f"conf={self.confidence:.2f}, uses={self.uses})"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -160,12 +163,12 @@ class CompositeAction:
 class CausalFact:
     """One learned causal association: (action, mat_a, mat_b) -> outcome."""
 
-    __slots__ = ('key', 'outcome_ids', 'confidence', 'tries', 'successes', 'prerequisites')
+    __slots__ = ("key", "outcome_ids", "confidence", "tries", "successes", "prerequisites")
 
     def __init__(self, key: tuple):
-        self.key: tuple = key              # (action, mat_a, mat_b | None)
-        self.outcome_ids: list[str] = []   # material IDs produced
-        self.confidence: float = 0.0       # in [-1, 1]
+        self.key: tuple = key  # (action, mat_a, mat_b | None)
+        self.outcome_ids: list[str] = []  # material IDs produced
+        self.confidence: float = 0.0  # in [-1, 1]
         self.tries: int = 0
         self.successes: int = 0
         # NEU: Voraussetzungen (andere CausalFact-Keys die bekannt sein müssen)
@@ -196,8 +199,10 @@ class CausalFact:
         return True
 
     def __repr__(self) -> str:
-        return (f"CausalFact({self.key}, conf={self.confidence:.2f}, "
-                f"tries={self.tries}, outcomes={self.outcome_ids})")
+        return (
+            f"CausalFact({self.key}, conf={self.confidence:.2f}, "
+            f"tries={self.tries}, outcomes={self.outcome_ids})"
+        )
 
 
 class KnowledgeGraph:
@@ -221,13 +226,13 @@ class KnowledgeGraph:
     best_macro = kg.best_macro_action(min_confidence=0.3)
     # -> CompositeAction or None
 
-    Inheritance / Imitation
+    Derivation / Imitation
     -----------------------
-    child_kg.inherit_from(parent_kg)  – copies high-confidence facts with noise
-    child_kg.imitate_from(other_kg)   – blends in another agent's knowledge
+    spawn_kg.derive_from(parent_kg)  – copies high-confidence facts with noise
+    spawn_kg.imitate_from(other_kg)   – blends in another agent's knowledge
     """
 
-    ACTIONS = ('rub', 'strike', 'bind', 'bundle', 'place_on_heat', 'blow', 'eat')
+    ACTIONS = ("rub", "strike", "bind", "bundle", "place_on_heat", "blow", "eat")
 
     def __init__(self):
         self.facts: dict[tuple, CausalFact] = {}
@@ -284,10 +289,7 @@ class KnowledgeGraph:
 
     def known_material_uses(self, mat_id: str) -> list[CausalFact]:
         """All facts involving a given material."""
-        return [
-            f for f in self.facts.values()
-            if mat_id in (f.key[1], f.key[2])
-        ]
+        return [f for f in self.facts.values() if mat_id in (f.key[1], f.key[2])]
 
     # ------------------------------------------------------------------
     # CompositeAction API (NEU)
@@ -321,27 +323,21 @@ class KnowledgeGraph:
         Gibt die best bewertete Makro-Aktion zurueck, die zuverlaessig genug ist.
         Wird vom Brain genutzt um neue zusammengesetzte Aktionen auszuführen.
         """
-        candidates = [
-            m for m in self.macro_actions.values()
-            if m.confidence >= min_confidence
-        ]
+        candidates = [m for m in self.macro_actions.values() if m.confidence >= min_confidence]
         if not candidates:
             return None
         return max(candidates, key=lambda m: m.avg_reward * m.confidence)
 
     def all_macro_actions(self, min_confidence: float = 0.0) -> list[CompositeAction]:
         """Alle bekannten Makro-Aktionen, optional gefiltert nach Confidence."""
-        return [
-            m for m in self.macro_actions.values()
-            if m.confidence >= min_confidence
-        ]
+        return [m for m in self.macro_actions.values() if m.confidence >= min_confidence]
 
     # ------------------------------------------------------------------
     # Cultural transmission
     # ------------------------------------------------------------------
-    def inherit_from(
+    def derive_from(
         self,
-        parent: 'KnowledgeGraph',
+        parent: KnowledgeGraph,
         strength: float = 0.7,
         confidence_threshold: float = 0.25,
     ) -> None:
@@ -355,19 +351,17 @@ class KnowledgeGraph:
                 continue
             if key not in self.facts:
                 self.facts[key] = CausalFact(key)
-            child_fact = self.facts[key]
-            noise = (torch.randn(1).item() * 0.05)
-            child_fact.confidence = (
-                strength * fact.confidence
-                + (1.0 - strength) * child_fact.confidence
-                + noise
+            spawn_fact = self.facts[key]
+            noise = torch.randn(1).item() * 0.05
+            spawn_fact.confidence = (
+                strength * fact.confidence + (1.0 - strength) * spawn_fact.confidence + noise
             )
-            child_fact.confidence = max(-1.0, min(1.0, child_fact.confidence))
+            spawn_fact.confidence = max(-1.0, min(1.0, spawn_fact.confidence))
             for oid in fact.outcome_ids:
-                if oid not in child_fact.outcome_ids:
-                    child_fact.outcome_ids.append(oid)
+                if oid not in spawn_fact.outcome_ids:
+                    spawn_fact.outcome_ids.append(oid)
             # Prerequisites mitübertragen (NEU)
-            child_fact.prerequisites = list(fact.prerequisites)
+            spawn_fact.prerequisites = list(fact.prerequisites)
 
         # Makro-Aktionen vererben (NEU): Nur sehr sichere werden übertragen
         for key, macro in parent.macro_actions.items():
@@ -383,12 +377,12 @@ class KnowledgeGraph:
 
     def imitate_from(
         self,
-        other: 'KnowledgeGraph',
+        other: KnowledgeGraph,
         strength: float = 0.15,
     ) -> None:
         """
         Blend in another agent's knowledge during social observation.
-        Weaker than inheritance – cultural learning is noisier.
+        Weaker than derivation – cultural learning is noisier.
         Überträgt jetzt auch Makro-Aktionen (NEU).
         """
         for key, fact in other.facts.items():
@@ -397,10 +391,7 @@ class KnowledgeGraph:
             if key not in self.facts:
                 self.facts[key] = CausalFact(key)
             my_fact = self.facts[key]
-            my_fact.confidence = (
-                (1.0 - strength) * my_fact.confidence
-                + strength * fact.confidence
-            )
+            my_fact.confidence = (1.0 - strength) * my_fact.confidence + strength * fact.confidence
             my_fact.confidence = max(-1.0, min(1.0, my_fact.confidence))
             for oid in fact.outcome_ids:
                 if oid not in my_fact.outcome_ids:
@@ -423,22 +414,22 @@ class KnowledgeGraph:
     def summary(self) -> list[dict]:
         facts_summary = [
             {
-                'key': f.key,
-                'confidence': round(f.confidence, 3),
-                'tries': f.tries,
-                'success_rate': round(f.success_rate, 3),
-                'outcomes': f.outcome_ids,
-                'prerequisites': f.prerequisites,
+                "key": f.key,
+                "confidence": round(f.confidence, 3),
+                "tries": f.tries,
+                "success_rate": round(f.success_rate, 3),
+                "outcomes": f.outcome_ids,
+                "prerequisites": f.prerequisites,
             }
             for f in sorted(self.facts.values(), key=lambda x: -x.confidence)
         ]
         macros_summary = [
             {
-                'action_id': m.action_id,
-                'steps': m.steps,
-                'confidence': round(m.confidence, 3),
-                'uses': m.uses,
-                'avg_reward': round(m.avg_reward, 3),
+                "action_id": m.action_id,
+                "steps": m.steps,
+                "confidence": round(m.confidence, 3),
+                "uses": m.uses,
+                "avg_reward": round(m.avg_reward, 3),
             }
             for m in sorted(self.macro_actions.values(), key=lambda x: -x.confidence)
         ]

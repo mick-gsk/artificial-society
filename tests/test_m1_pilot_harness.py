@@ -41,8 +41,8 @@ def _restore_global_state():
     names = ["MIN_POPULATION", "RESPAWN_COUNT", "RESPAWN_MODE", "CHECKPOINT_INTERVAL"]
     saved = {n: getattr(sim_mod, n, None) for n in names}
     had = {n: hasattr(sim_mod, n) for n in names}
-    saved_mate = Agent._nearest_compatible_mate
-    saved_mate_orig = m1_pilot._MATE_SEEK_ORIG
+    saved_partner = Agent._nearest_compatible_partner
+    saved_partner_orig = m1_pilot._PARTNER_SEEK_ORIG
     try:
         yield
     finally:
@@ -51,8 +51,8 @@ def _restore_global_state():
                 setattr(sim_mod, n, saved[n])
             elif hasattr(sim_mod, n):
                 delattr(sim_mod, n)
-        Agent._nearest_compatible_mate = saved_mate
-        m1_pilot._MATE_SEEK_ORIG = saved_mate_orig
+        Agent._nearest_compatible_partner = saved_partner
+        m1_pilot._PARTNER_SEEK_ORIG = saved_partner_orig
 
 
 def _read(path):
@@ -204,26 +204,26 @@ def test_respawn_mode_records_hook_global():
 # --------------------------------------------------------------------------
 
 
-def test_mate_seek_counter_counts_pursued_targets():
+def test_partner_seek_counter_counts_pursued_targets():
     from artificial_society.agents.agent import Agent
 
-    saved_orig = m1_pilot._MATE_SEEK_ORIG
-    saved_method = Agent._nearest_compatible_mate
+    saved_orig = m1_pilot._PARTNER_SEEK_ORIG
+    saved_method = Agent._nearest_compatible_partner
     try:
         # Frozen stub original: returns a target (pursued) then None (no target).
-        m1_pilot._MATE_SEEK_ORIG = lambda self, agents: agents  # truthy -> counted
-        m1_pilot._MATE_SEEK_STATE["count"] = 0
-        m1_pilot._install_mate_seek_counter()
+        m1_pilot._PARTNER_SEEK_ORIG = lambda self, agents: agents  # truthy -> counted
+        m1_pilot._PARTNER_SEEK_STATE["count"] = 0
+        m1_pilot._install_partner_seek_counter()
         dummy = object.__new__(Agent)
-        Agent._nearest_compatible_mate(dummy, (1, 1))  # non-None -> +1
-        assert m1_pilot._MATE_SEEK_STATE["count"] == 1
-        m1_pilot._MATE_SEEK_ORIG = lambda self, agents: None
-        m1_pilot._install_mate_seek_counter()
-        Agent._nearest_compatible_mate(dummy, None)  # None -> no increment
-        assert m1_pilot._MATE_SEEK_STATE["count"] == 1
+        Agent._nearest_compatible_partner(dummy, (1, 1))  # non-None -> +1
+        assert m1_pilot._PARTNER_SEEK_STATE["count"] == 1
+        m1_pilot._PARTNER_SEEK_ORIG = lambda self, agents: None
+        m1_pilot._install_partner_seek_counter()
+        Agent._nearest_compatible_partner(dummy, None)  # None -> no increment
+        assert m1_pilot._PARTNER_SEEK_STATE["count"] == 1
     finally:
-        m1_pilot._MATE_SEEK_ORIG = saved_orig
-        Agent._nearest_compatible_mate = saved_method
+        m1_pilot._PARTNER_SEEK_ORIG = saved_orig
+        Agent._nearest_compatible_partner = saved_method
 
 
 # --------------------------------------------------------------------------

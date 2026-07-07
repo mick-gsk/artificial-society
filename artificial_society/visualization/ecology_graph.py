@@ -31,7 +31,7 @@ def _split_history(history: Sequence | None) -> tuple[list[float], list[float]]:
 
     Entries are normally ``(tick, value)`` tuples (as stored by
     :class:`StatisticsTracker`), but plain scalars are tolerated and indexed
-    positionally. Read-only: the input is never mutated.
+    positionally. Read-only: the input is never perturbed.
     """
     ticks: list[float] = []
     values: list[float] = []
@@ -59,7 +59,7 @@ def build_ecology_figure(
 
     Plots population (left axis) together with mean world food and mean agent
     energy (right axis) over the recorded tick history. The tracker is only
-    read from, never mutated.
+    read from, never perturbed.
 
     Returns a freshly created :class:`matplotlib.figure.Figure`; the caller is
     responsible for saving or closing it.

@@ -59,18 +59,18 @@ def test_v2_reward_ohne_cognition_skalierung(monkeypatch):
     ``modifiers`` scheitert daher an 'attribute is read-only"; das Klassen-
     attribut ist dagegen ganz normal patchbar (kein Slot-Konflikt) und deckt
     denselben Zweck ab (cognition-Wert künstlich hochsetzen)."""
-    from artificial_society.agents.endocrine import EndocrineSystem
+    from artificial_society.agents.modulation import ModulationSystem
 
     sim = _sim(physics_v2=True)
     agent = sim.agents[0]
-    original_modifiers = EndocrineSystem.modifiers  # VOR dem Patch binden (sonst Rekursion)
+    original_modifiers = ModulationSystem.modifiers  # VOR dem Patch binden (sonst Rekursion)
 
     def gepatcht(self):
         d = original_modifiers(self)
         d["cognition"] = 3.0
         return d
 
-    monkeypatch.setattr(EndocrineSystem, "modifiers", gepatcht)
+    monkeypatch.setattr(ModulationSystem, "modifiers", gepatcht)
     e0, h0 = agent.energy, agent.health
     agent.update(
         sim.world,

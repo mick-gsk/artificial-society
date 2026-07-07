@@ -9,7 +9,7 @@ Sondern:   'Welche Sequenz hat zum Erfolg geführt?'
 Format:
   Episode = {
       'goal':    str,          # z.B. 'EAT'
-      'actions': list[str],    # ['forage', 'forage', 'cooperate']
+      'actions': list[str],    # ['gather', 'gather', 'cooperate']
       'outcome': str,          # 'success' | 'partial' | 'failure'
       'reward':  float,
       'tick':    int,
@@ -19,7 +19,9 @@ Format:
 Biologisches Vorbild: Hippocampus-basiertes episodisches Gedächtnis.
 Menschen erinnern sich an konkrete Ereignisse, nicht nur an abstrakte Fakten.
 """
+
 from __future__ import annotations
+
 import random
 from collections import deque
 from dataclasses import dataclass, field
@@ -30,14 +32,14 @@ from typing import Deque, List, Optional
 class Episode:
     goal: str
     actions: List[str]
-    outcome: str   # 'success' | 'partial' | 'failure'
+    outcome: str  # 'success' | 'partial' | 'failure'
     reward: float
     tick: int
     context: dict = field(default_factory=dict)
 
     @property
     def is_success(self) -> bool:
-        return self.outcome == 'success'
+        return self.outcome == "success"
 
 
 class EpisodicStrategyMemory:
@@ -53,9 +55,10 @@ class EpisodicStrategyMemory:
         self._goal_success: dict = {}
         self._goal_count: dict = {}
 
-    def record(self, goal: str, actions: list, reward: float, tick: int,
-               context: dict = None) -> None:
-        outcome = 'success' if reward > 0.5 else ('partial' if reward > 0.1 else 'failure')
+    def record(
+        self, goal: str, actions: list, reward: float, tick: int, context: dict = None
+    ) -> None:
+        outcome = "success" if reward > 0.5 else ("partial" if reward > 0.1 else "failure")
         ep = Episode(
             goal=goal,
             actions=list(actions[-4:]),  # last 4 actions
@@ -74,10 +77,7 @@ class EpisodicStrategyMemory:
         Retrieve the action sequence from the most successful episode
         with the given goal. Returns None if no successful episode found.
         """
-        successes = [
-            ep for ep in self.buffer
-            if ep.goal == goal and ep.is_success
-        ]
+        successes = [ep for ep in self.buffer if ep.goal == goal and ep.is_success]
         if not successes:
             return None
         best = max(successes, key=lambda e: e.reward)
@@ -95,10 +95,11 @@ class EpisodicStrategyMemory:
             return 0.0
         return sum(e.reward for e in recent) / len(recent)
 
-    def inherit_from(self, parent: 'EpisodicStrategyMemory',
-                     strength: float = 0.4, n: int = 16) -> None:
+    def derive_from(
+        self, parent: EpisodicStrategyMemory, strength: float = 0.4, n: int = 16
+    ) -> None:
         """
-        Child inherits some successful episodes from parent.
+        Spawn derives some successful episodes from parent.
         Biological analogue: learned behavioral templates passed down.
         """
         successes = [ep for ep in parent.buffer if ep.is_success]

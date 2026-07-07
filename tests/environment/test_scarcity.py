@@ -24,7 +24,7 @@ from artificial_society.simulation import Simulation
 
 class _OneCellWorld:
     """Minimal World stand-in holding a single cell, exposing the same
-    get_cell / set_cell mutation façade regrow_cell now routes through.
+    get_cell / set_cell perturbation façade regrow_cell now routes through.
 
     Phase 3 made World the authoritative cell-state owner, so regrow_cell takes
     (world, x, y, ...) instead of a bare cell. These unit tests exercise the
@@ -114,7 +114,7 @@ def test_depleted_cell_recovers_slowly():
     # Bring it to its natural equilibrium first.
     for tick in range(800):
         regrow_cell(world, 0, 0, "forest", {"food_factor": 1.0}, {"rain_map": 0.4}, tick, {})
-    # Forage everything.
+    # Gather everything.
     world.set_cell(0, 0, "plant_food", 0.0)
     world.set_cell(0, 0, "meat_food", 0.0)
     world.set_cell(0, 0, "food", 0.0)
