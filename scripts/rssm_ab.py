@@ -57,7 +57,50 @@ def wilcoxon_exact(deltas):
     return min(1.0, extreme / len(ws))
 
 
-def _arm_sim(arm, seed, cpu):
+def _cast_like(default, raw):
+    """Cast a CLI string `raw` to the runtime type of `default` (int/float/else str)."""
+    if isinstance(default, bool):
+        return raw.lower() in ("1", "true", "yes", "on")
+    if isinstance(default, int):
+        return int(raw)
+    if isinstance(default, float):
+        return float(raw)
+    return raw
+
+
+def parse_cfg_overrides(pairs):
+    """Parse repeated `--cfg key=value` into a dict, typed off RSSMConfig's own fields."""
+    from artificial_society.agents.rssm.config import RSSMConfig
+
+    template = RSSMConfig()
+    valid = {f.name for f in dataclasses.fields(RSSMConfig)}
+    overrides = {}
+    for pair in pairs or []:
+        key, sep, raw = pair.partition("=")
+        if not sep:
+            raise ValueError(f"--cfg expects key=value, got {pair!r}")
+        if key not in valid:
+            raise ValueError(f"unknown RSSMConfig field: {key!r}")
+        overrides[key] = _cast_like(getattr(template, key), raw)
+    return overrides
+
+
+def parse_v1_consts(pairs):
+    """Parse repeated `--v1-const KEY=value` into a dict, typed off the current module attr."""
+    import artificial_society.agents.brain as brain_mod
+
+    consts = {}
+    for pair in pairs or []:
+        key, sep, raw = pair.partition("=")
+        if not sep:
+            raise ValueError(f"--v1-const expects KEY=value, got {pair!r}")
+        if not hasattr(brain_mod, key):
+            raise ValueError(f"unknown artificial_society.agents.brain constant: {key!r}")
+        consts[key] = _cast_like(getattr(brain_mod, key), raw)
+    return consts
+
+
+def _arm_sim(arm, seed, cpu, cfg_overrides=None, v1_consts=None):
     from artificial_society.agents.rssm.config import RSSMConfig
     from artificial_society.simulation import Simulation
 
@@ -70,11 +113,27 @@ def _arm_sim(arm, seed, cpu):
         initial_population=36,
     )
     if arm == "A":
+        if cfg_overrides:
+            raise ValueError("--cfg overrides only apply to arms B/C, not arm A")
+        if v1_consts:
+            # Runtime-patch module constants BEFORE Simulation construction — brain.py
+            # reads these as module globals inside function bodies at call time (not
+            # baked into defaults at import), so setattr here takes effect for the
+            # whole run. Exception: PLAN_CANDIDATES, which is only read as a bound
+            # default argument value (`plan_action(..., n_candidates=PLAN_CANDIDATES)`)
+            # and the sole call site never passes n_candidates explicitly — patching
+            # it here has NO effect on the actual planning call.
+            import artificial_society.agents.brain as brain_mod
+
+            for key, val in v1_consts.items():
+                setattr(brain_mod, key, val)
         # Pin explicitly (review fix, Important 5): a bare Simulation(**kw) falls
         # back to AS_BRAIN_ARCH from the environment, so an ambient env var left
         # set from a prior rssm shell session would silently promote arm A to
         # the rssm substrate — pin v1 unconditionally.
         return Simulation(brain_arch="v1", **kw)
+    if v1_consts:
+        raise ValueError("--v1-const overrides only apply to arm A, not arms B/C")
     dev = "cpu" if cpu else "cuda"
     if not cpu:
         assert os.environ.get("CUDA_VISIBLE_DEVICES") != "-1", (
@@ -86,6 +145,8 @@ def _arm_sim(arm, seed, cpu):
     cfg = dataclasses.replace(
         RSSMConfig(), train_device=dev, policy_mode=("actor" if arm == "B" else "mpc")
     )
+    if cfg_overrides:
+        cfg = dataclasses.replace(cfg, **cfg_overrides)
     return Simulation(brain_arch="rssm", rssm_config=cfg, **kw)
 
 
@@ -97,9 +158,13 @@ def cmd_run(a):
     import artificial_society.simulation as sim_mod
 
     sim_mod.CHECKPOINT_INTERVAL = 0
-    sim = _arm_sim(a.arm, a.seed, a.cpu)
+    cfg_overrides = parse_cfg_overrides(getattr(a, "cfg", None))
+    v1_consts = parse_v1_consts(getattr(a, "v1_const", None))
+    sim = _arm_sim(a.arm, a.seed, a.cpu, cfg_overrides=cfg_overrides, v1_consts=v1_consts)
     out = pathlib.Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
+    tag = getattr(a, "tag", None)
+    stub = f"{a.arm}_{tag}_s{a.seed}" if tag else f"{a.arm}_s{a.seed}"
     known = {}  # id -> (birth_tick, origin)
     agent_ticks = 0  # cumulative sum(len(sim.agents)) — arm A's transitions-axis proxy
 
@@ -122,7 +187,7 @@ def cmd_run(a):
             ev.write(json.dumps({"e": "death", "id": aid, "t": tick}) + "\n")
             known[aid] = None
 
-    with open(out / f"{a.arm}_s{a.seed}.events.jsonl", "w") as ev:
+    with open(out / f"{stub}.events.jsonl", "w") as ev:
         scan(ev, 0)
         for t in range(1, a.ticks + 1):
             sim.step()
@@ -159,24 +224,30 @@ def cmd_run(a):
     # actual resolved RSSMConfig for rssm arms (B/C) alongside the CLI args — a
     # bare args-hash can't tell two runs with different hyperparameters apart.
     # Arm A has no RSSMConfig at all; a stable marker keeps the hash's shape
-    # (and its "did the config change" semantics) consistent across arms.
+    # (and its "did the config change" semantics) consistent across arms. The
+    # v1-const overrides are folded into arm A's marker so a tuning round on
+    # arm A also invalidates the hash (cfg_overrides for B/C are already baked
+    # into sim.rssm_learner.cfg by _arm_sim, so they need no separate entry).
     cfg_dict = (
         dataclasses.asdict(sim.rssm_learner.cfg)
         if sim.rssm_learner is not None
-        else {"brain_arch": "v1"}
+        else {"brain_arch": "v1", "v1_consts": v1_consts or {}}
     )
     cfg_hash = hashlib.sha1(
         repr((sorted(vars(a).items()), sorted(cfg_dict.items()))).encode()
     ).hexdigest()[:12]
-    (out / f"{a.arm}_s{a.seed}.summary.json").write_text(
+    (out / f"{stub}.summary.json").write_text(
         json.dumps(
             {
                 "arm": a.arm,
+                "tag": tag,
                 "seed": a.seed,
                 "ticks": a.ticks,
                 "git": sha,
                 "torch": torch.__version__,
                 "cuda": torch.version.cuda,
+                "cfg_overrides": cfg_overrides or {},
+                "v1_consts": v1_consts or {},
                 "cfg_hash": cfg_hash,
             }
         )
@@ -186,7 +257,12 @@ def cmd_run(a):
 def cmd_analyze(a):
     runs = {}
     for f in pathlib.Path(a.dir).glob("*_s*.events.jsonl"):
-        arm, seed = f.stem.split(".")[0].split("_s")
+        # Filename is `<arm>_s<seed>` (no tag, backward compat) or
+        # `<arm>_<tag>_s<seed>` (tagged run). rsplit on the LAST "_s" in both
+        # cases yields (arm[_tag], seed); the arm-or-arm_tag half becomes the
+        # "arm" key below, so a tagged variant renders as its own row (e.g.
+        # "B_k4") instead of collapsing into plain "B".
+        arm, seed = f.stem.split(".")[0].rsplit("_s", 1)
         births, deaths, last_t = {}, {}, 0
         for line in f.open():
             r = json.loads(line)
@@ -235,6 +311,22 @@ if __name__ == "__main__":
     r.add_argument("--ticks", type=int, default=20000)
     r.add_argument("--out", required=True)
     r.add_argument("--cpu", action="store_true")
+    r.add_argument("--tag", default=None, help="output files become <arm>_<tag>_s<seed>.*")
+    r.add_argument(
+        "--cfg",
+        action="append",
+        default=[],
+        metavar="key=value",
+        help="RSSMConfig field override (repeatable, arms B/C only)",
+    )
+    r.add_argument(
+        "--v1-const",
+        dest="v1_const",
+        action="append",
+        default=[],
+        metavar="KEY=value",
+        help="artificial_society.agents.brain module constant override (repeatable, arm A only)",
+    )
     an = sub.add_parser("analyze")
     an.add_argument("dir")
     an.add_argument("--tau", type=int, default=2000)
