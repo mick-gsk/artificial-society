@@ -28,12 +28,12 @@
   // Six zuschaltbare Overlays, Default alle aus. Three are server-computed
   // layers (need a WS `layers` request); three are client-only.
   const OVERLAY_CHIPS = [
-    { key: "food", label: "Nahrung", server: false },
-    { key: "temperature", label: "Temperatur", server: true },
-    { key: "danger", label: "Gefahr", server: true },
-    { key: "disease", label: "Krankheit", server: true },
-    { key: "tribe", label: "Territorium", server: false },
-    { key: "kin", label: "Verwandtschaft", server: false },
+    { key: "food", label: "Food", server: false },
+    { key: "temperature", label: "Temperature", server: true },
+    { key: "danger", label: "Danger", server: true },
+    { key: "disease", label: "Disease", server: true },
+    { key: "tribe", label: "Territory", server: false },
+    { key: "kin", label: "Kinship", server: false },
   ];
   const SERVER_OVERLAY_KEYS = OVERLAY_CHIPS.filter((c) => c.server).map((c) => c.key);
   let overlays = $state({}); // key -> bool
@@ -249,26 +249,26 @@
 
   <div class="legend" aria-hidden="true">
     <span class="lg-group">
-      <span class="chip" style="--c:#49d17c"></span><span class="lg-label">sammeln</span>
-      <span class="chip" style="--c:#3fc5f0"></span><span class="lg-label">kooperieren</span>
-      <span class="chip" style="--c:#ff5d6c"></span><span class="lg-label">kampf</span>
-      <span class="chip" style="--c:#ffb54d"></span><span class="lg-label">bauen</span>
-      <span class="chip" style="--c:#9b8cff"></span><span class="lg-label">schlafen</span>
+      <span class="chip" style="--c:#49d17c"></span><span class="lg-label">forage</span>
+      <span class="chip" style="--c:#3fc5f0"></span><span class="lg-label">cooperate</span>
+      <span class="chip" style="--c:#ff5d6c"></span><span class="lg-label">fight</span>
+      <span class="chip" style="--c:#ffb54d"></span><span class="lg-label">build</span>
+      <span class="chip" style="--c:#9b8cff"></span><span class="lg-label">sleep</span>
     </span>
     <span class="lg-sep">·</span>
     <span class="lg-group">
       <span class="icon tri" style="--c:#ffb54d"></span><span class="lg-label">camp</span>
       <span class="icon sq" style="--c:#74c69d"></span><span class="lg-label">farm</span>
-      <span class="icon ring" style="--c:#64b5f6"></span><span class="lg-label">brunnen</span>
+      <span class="icon ring" style="--c:#64b5f6"></span><span class="lg-label">well</span>
     </span>
     <span class="lg-sep">·</span>
     <span class="lg-group">
-      <span class="glyph" style="--c:#cfd8e3">⚒</span><span class="lg-label">werkzeug</span>
-      <span class="glyph" style="--c:#ff8a3c">▲</span><span class="lg-label">feuer</span>
-      <span class="glyph" style="--c:#c084fc">◆</span><span class="lg-label">entdeckung</span>
+      <span class="glyph" style="--c:#cfd8e3">⚒</span><span class="lg-label">tool</span>
+      <span class="glyph" style="--c:#ff8a3c">▲</span><span class="lg-label">fire</span>
+      <span class="glyph" style="--c:#c084fc">◆</span><span class="lg-label">discovery</span>
     </span>
     <span class="lg-sep">·</span>
-    <span class="lg-hint">rad&nbsp;zoomen · ziehen&nbsp;schwenken · agent&nbsp;anklicken</span>
+    <span class="lg-hint">wheel&nbsp;zoom · drag&nbsp;pan · click&nbsp;agent</span>
   </div>
 </div>
 

@@ -3,10 +3,10 @@
 </script>
 
 <div class="feed">
-  <div class="feed-head">Chronik</div>
+  <div class="feed-head">Chronicle</div>
   <div class="feed-body">
     {#if !entries.length}
-      <div class="empty">Noch keine Ereignisse — die Welt erwacht…</div>
+      <div class="empty">No events yet — the world is waking up…</div>
     {/if}
     {#each entries as e (e.key)}
       <div class="row {e.cls}">

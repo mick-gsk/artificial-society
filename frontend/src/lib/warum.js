@@ -13,23 +13,23 @@
 // caller renders "Alltag" for it. Indices mirror serve/frame.py `_NEED_NAMES`.
 export const NEED_DE = {
   1: "Hunger",
-  2: "Durst",
-  3: "Kälte",
-  4: "Krankheit",
-  5: "Werkzeugbedarf",
-  6: "Neugier",
-  7: "Müdigkeit",
+  2: "Thirst",
+  3: "Cold",
+  4: "Sickness",
+  5: "Tool need",
+  6: "Curiosity",
+  7: "Fatigue",
 };
 
 // Action code (act, 0..5) → German verb phrase. Mirrors serve/frame.py `acts`
 // (idle/forage/cooperate/attack/build + the sleeping override at 5).
 export const ACT_DE = {
-  0: "wartet",
-  1: "sucht Nahrung",
-  2: "kooperiert",
-  3: "greift an",
-  4: "baut",
-  5: "schläft",
+  0: "idles",
+  1: "forages",
+  2: "cooperates",
+  3: "attacks",
+  4: "builds",
+  5: "sleeps",
 };
 
 // Goal code (gl, 1..12) → short German goal noun. The goal code is the 1-based
@@ -37,18 +37,18 @@ export const ACT_DE = {
 // in here and overridden from the hello legend via initWarum() so the mapping
 // stays correct even if the backend property order ever shifts.
 const PROP_DE_BY_NAME = {
-  flammable: "Brennstoff",
-  hardness: "hartes Material",
-  edibility: "Essbares",
-  toxicity: "Gift",
-  heat_emission: "Wärmequelle",
-  light_emission: "Lichtquelle",
-  mass: "schweres Material",
-  dryness: "Trockenes",
-  sharpness: "Klinge",
-  solubility: "Lösliches",
-  conductivity: "Leiter",
-  scent: "Duftstoff",
+  flammable: "Fuel",
+  hardness: "Hard material",
+  edibility: "Food",
+  toxicity: "Poison",
+  heat_emission: "Warmth",
+  light_emission: "Light source",
+  mass: "Heavy material",
+  dryness: "Dry matter",
+  sharpness: "Blade",
+  solubility: "Solubles",
+  conductivity: "Conductor",
+  scent: "Scent",
 };
 
 // Default PROP_DIMS order (serve/environment/materials.py). Rebuilt from the
@@ -83,16 +83,16 @@ _rebuildPropDe(DEFAULT_PROP_ORDER);
 
 // Theory-of-mind role → German role noun (used by the Inspector's ToM badges).
 export const ROLE_DE = {
-  hunter: "Jäger",
-  maker: "Macher",
-  elder: "Ältester",
-  scout: "Späher",
-  warrior: "Krieger",
-  sleeper: "Schläfer",
+  hunter: "Hunter",
+  maker: "Maker",
+  elder: "Elder",
+  scout: "Scout",
+  warrior: "Warrior",
+  sleeper: "Sleeper",
 };
 
 export function roleWord(role) {
-  return ROLE_DE[role] ?? "Unbekannt";
+  return ROLE_DE[role] ?? "Unknown";
 }
 
 // Legends captured from the WS hello message. `acts` and `needs` are kept for
@@ -110,14 +110,14 @@ export function initWarum(legends) {
   _rebuildPropDe(Array.isArray(order) && order.length ? order : DEFAULT_PROP_ORDER);
 }
 
-/** German word for a dominant-need code (nd). 0/absent → "Alltag". */
+/** Word for a dominant-need code (nd). 0/absent → "Routine". */
 export function needWord(nd) {
-  return NEED_DE[nd] ?? "Alltag";
+  return NEED_DE[nd] ?? "Routine";
 }
 
-/** German verb phrase for an action code (act). Absent → "wartet". */
+/** Verb phrase for an action code (act). Absent → "idles". */
 export function actWord(act) {
-  return ACT_DE[act] ?? "wartet";
+  return ACT_DE[act] ?? "idles";
 }
 
 /**
@@ -142,31 +142,31 @@ export function warumLine(a, _byId) {
   const act = a.act ?? 0;
 
   // Sleeping overrides all other drives — a sleeping agent runs no actions.
-  if (act === 5) return "Müdigkeit → schläft";
+  if (act === 5) return "Fatigue → sleeps";
 
-  const need = needWord(a.nd); // 0/absent → "Alltag"
+  const need = needWord(a.nd); // 0/absent → "Routine"
 
   // Verb clause. Attack with a known victim reads as one phrase around the id;
   // a plain attack (no tg) or any other action uses the bare verb.
   let verb;
   if (act === 3 && a.tg != null) {
-    verb = `greift Agent ${a.tg} an`;
+    verb = `attacks Agent ${a.tg}`;
   } else {
     verb = actWord(act);
     // cooperate with a known partner: name them after the verb.
-    if (act === 2 && a.tg != null) verb += ` mit Agent ${a.tg}`;
+    if (act === 2 && a.tg != null) verb += ` with Agent ${a.tg}`;
   }
 
   let line = `${need} → ${verb}`;
 
   // Target cell of the current goal (where the agent is headed).
   if (a.gx != null && a.gy != null) {
-    line += ` (Ziel: ${a.gx},${a.gy})`;
+    line += ` (target: ${a.gx},${a.gy})`;
   }
 
   // Concrete goal object + progress.
   if (a.gl) {
-    const goalWord = PROP_DE[a.gl] ?? `Ziel ${a.gl}`;
+    const goalWord = PROP_DE[a.gl] ?? `goal ${a.gl}`;
     line += ` – ${goalWord}`;
     const gm = a.gm ?? 0;
     if (gm > 0) line += ` (${a.gp ?? 0}/${gm})`;

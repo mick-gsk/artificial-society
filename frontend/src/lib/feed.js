@@ -66,7 +66,7 @@ export function createFeedDiffer(getSelectedId = () => null) {
         tick,
         icon: "↺",
         cls: "epoch",
-        text: "Neuer Lauf gestartet",
+        text: "New run started",
         ids: [],
       });
       lastFight.clear();
@@ -118,8 +118,8 @@ export function createFeedDiffer(getSelectedId = () => null) {
               icon: "✦",
               cls: "birth",
               text: hasParent
-                ? `Agent ${a.id} geboren (Mutter Agent ${a.pa})`
-                : `Agent ${a.id} geboren`,
+                ? `Agent ${a.id} born (mother: Agent ${a.pa})`
+                : `Agent ${a.id} born`,
               ids: hasParent ? [a.id, a.pa] : [a.id],
             },
             birthCounter,
@@ -130,7 +130,7 @@ export function createFeedDiffer(getSelectedId = () => null) {
       for (const id of prevIds) {
         if (!ids.has(id)) {
           pushCapped(
-            { tick, icon: "✝", cls: "death", text: `Agent ${id} gestorben`, ids: [id] },
+            { tick, icon: "✝", cls: "death", text: `Agent ${id} died`, ids: [id] },
             deathCounter,
           );
         }
@@ -160,7 +160,7 @@ export function createFeedDiffer(getSelectedId = () => null) {
           tick,
           icon: "⚔",
           cls: "attack",
-          text: `Kampf bei (${a.x}, ${a.y}) — Agent ${a.id}`,
+          text: `Fight at (${a.x}, ${a.y}) — Agent ${a.id}`,
           ids: ids2,
         });
       } else if (fights.length > 1) {
@@ -176,7 +176,7 @@ export function createFeedDiffer(getSelectedId = () => null) {
           tick,
           icon: "⚔",
           cls: "attack",
-          text: `${fights.length} Kämpfe entbrannt`,
+          text: `${fights.length} fights broke out`,
           ids: [...idSet],
         });
       }
@@ -189,7 +189,7 @@ export function createFeedDiffer(getSelectedId = () => null) {
           tick,
           icon: "⚔",
           cls: "attack",
-          text: `Kampf bei (${a.x}, ${a.y}) — Agent ${a.id}`,
+          text: `Fight at (${a.x}, ${a.y}) — Agent ${a.id}`,
           ids: ids2,
           personalOnly: true,
         });
@@ -212,7 +212,7 @@ export function createFeedDiffer(getSelectedId = () => null) {
             tick,
             icon: "⚒",
             cls: "epoch",
-            text: `Die erste Klinge — Agent ${a.id} hat ein scharfes Werkzeug erschaffen`,
+            text: `The first blade — Agent ${a.id} has crafted a sharp tool`,
             ids: [a.id],
             ...(personalOnly ? { personalOnly } : {}),
           });
@@ -221,7 +221,7 @@ export function createFeedDiffer(getSelectedId = () => null) {
             tick,
             icon: "⚒",
             cls: "tool",
-            text: `Agent ${a.id} schlägt sich eine scharfe Klinge`,
+            text: `Agent ${a.id} knaps a sharp blade`,
             ids: [a.id],
             ...(personalOnly ? { personalOnly } : {}),
           });
@@ -230,7 +230,7 @@ export function createFeedDiffer(getSelectedId = () => null) {
             tick,
             icon: "⚒",
             cls: "tool",
-            text: `Agent ${a.id} nimmt einen Stein als Werkzeug`,
+            text: `Agent ${a.id} picks up a stone as a tool`,
             ids: [a.id],
             ...(personalOnly ? { personalOnly } : {}),
           });
@@ -254,7 +254,7 @@ export function createFeedDiffer(getSelectedId = () => null) {
               tick,
               icon: "◇",
               cls: "goal",
-              text: `Agent ${a.id} nimmt sich vor: ${name}`,
+              text: `Agent ${a.id} sets out for: ${name}`,
               ids: [a.id],
             },
             goalCounter,
@@ -266,7 +266,7 @@ export function createFeedDiffer(getSelectedId = () => null) {
               tick,
               icon: "◈",
               cls: "goal",
-              text: `Agent ${a.id} beendet Vorhaben: ${name}`,
+              text: `Agent ${a.id} finished: ${name}`,
               ids: [a.id],
             },
             goalCounter,
@@ -287,7 +287,7 @@ export function createFeedDiffer(getSelectedId = () => null) {
               tick,
               icon: "☣",
               cls: "sick",
-              text: `Agent ${a.id} erkrankt`,
+              text: `Agent ${a.id} falls ill`,
               ids: [a.id],
             },
             sickCounter,
@@ -298,7 +298,7 @@ export function createFeedDiffer(getSelectedId = () => null) {
               tick,
               icon: "✚",
               cls: "sick",
-              text: `Agent ${a.id} genesen`,
+              text: `Agent ${a.id} recovered`,
               ids: [a.id],
             },
             sickCounter,
@@ -337,15 +337,15 @@ export function createFeedDiffer(getSelectedId = () => null) {
           tick,
           icon: "▲",
           cls: "epoch",
-          text: `Das erste Feuer der Welt brennt bei (${fresh[11][0]})`,
+          text: `The world's first fire burns at (${fresh[11][0]})`,
           ids: [],
         });
         fresh[11].shift();
       }
       const SPECIAL_TEXT = {
-        11: [(p) => `Feuer brennt bei (${p})`, (n) => `${n} Feuer brennen`],
-        10: [(p) => `Steinschlag — scharfe Splitter bei (${p})`, (n) => `${n} Zellen mit frischen Splittern`],
-        9: [(p) => `Unbekanntes Material liegt bei (${p})`, (n) => `${n} unbekannte Materialien aufgetaucht`],
+        11: [(p) => `Fire burns at (${p})`, (n) => `${n} fires burning`],
+        10: [(p) => `Knapping — sharp flakes at (${p})`, (n) => `${n} cells with fresh flakes`],
+        9: [(p) => `Unknown material lies at (${p})`, (n) => `${n} unknown materials appeared`],
       };
       const SPECIAL_STYLE = { 11: ["▲", "fire"], 10: ["⚒", "tool"], 9: ["◆", "wonder"] };
       for (const k of [11, 10, 9]) {
@@ -361,7 +361,7 @@ export function createFeedDiffer(getSelectedId = () => null) {
 
     const structs = new Set((frame.structures ?? []).map((s) => `${s.k}@${s.x},${s.y}`));
     if (prevStructs) {
-      const NAME = { camp: "Camp", farm: "Farm", well: "Brunnen" };
+      const NAME = { camp: "Camp", farm: "Farm", well: "Well" };
       for (const s of structs) {
         if (!prevStructs.has(s)) {
           const [k, pos] = s.split("@");
@@ -369,7 +369,7 @@ export function createFeedDiffer(getSelectedId = () => null) {
             tick,
             icon: "⌂",
             cls: "build",
-            text: `${NAME[k] ?? k} errichtet bei (${pos})`,
+            text: `${NAME[k] ?? k} built at (${pos})`,
             ids: [],
           });
         }
@@ -387,7 +387,7 @@ export function createFeedDiffer(getSelectedId = () => null) {
           tick,
           icon: "✧",
           cls: "tech",
-          text: techAccum === 1 ? "Neue Entdeckung" : `${techAccum} neue Entdeckungen`,
+          text: techAccum === 1 ? "New discovery" : `${techAccum} new discoveries`,
           ids: [],
         });
         techAccum = 0;
@@ -397,14 +397,14 @@ export function createFeedDiffer(getSelectedId = () => null) {
 
     const tribes = frame.stats?.tribes;
     if (prevTribes != null && typeof tribes === "number" && tribes > prevTribes) {
-      out.push({ tick, icon: "⚑", cls: "tribe", text: "Neuer Stamm gegründet", ids: [] });
+      out.push({ tick, icon: "⚑", cls: "tribe", text: "New tribe founded", ids: [] });
     }
 
-    const KIND = { drought: "Dürre", storm: "Sturm", fire: "Feuer", blight: "Fäule" };
+    const KIND = { drought: "Drought", storm: "Storm", fire: "Fire", blight: "Blight" };
     const evs = new Set((frame.events ?? []).map((e) => e.kind));
     for (const k of evs) {
       if (!prevEvents.has(k)) {
-        out.push({ tick, icon: "⚠", cls: "event", text: `${KIND[k] ?? k} zieht auf`, ids: [] });
+        out.push({ tick, icon: "⚠", cls: "event", text: `${KIND[k] ?? k} sets in`, ids: [] });
       }
     }
 

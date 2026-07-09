@@ -42,39 +42,39 @@
     return out;
   });
 
-  const STAGE_NAME = ["Kind", "Erwachsen", "Ältester"];
-  const TOOL_NAME = ["—", "Stein", "scharfe Klinge"];
+  const STAGE_NAME = ["Child", "Adult", "Elder"];
+  const TOOL_NAME = ["—", "Stone", "Sharp blade"];
   const NEED_KEYS = ["hunger", "durst", "kaelte", "krank", "werkzeug", "forschung", "muede"];
   const NEED_LABEL = {
     hunger: "Hunger",
-    durst: "Durst",
-    kaelte: "Kälte",
-    krank: "Krankheit",
-    werkzeug: "Werkzeug",
-    forschung: "Neugier",
-    muede: "Müdigkeit",
+    durst: "Thirst",
+    kaelte: "Cold",
+    krank: "Sickness",
+    werkzeug: "Tool",
+    forschung: "Curiosity",
+    muede: "Fatigue",
   };
   // hormone order mirrors frame.py agent.endocrine.h (8 floats)
   const HORM_LABEL = [
     "Cortisol",
-    "Adrenalin",
+    "Adrenaline",
     "Melatonin",
     "Serotonin",
-    "Dopamin",
+    "Dopamine",
     "Oxytocin",
-    "Entzündung",
-    "Stoffwechsel",
+    "Inflammation",
+    "Metabolism",
   ];
   // need-word → accent colour for the headline
   const NEED_COLOR = {
     Hunger: "#ffd166",
-    Durst: "#5ec8ff",
-    Kälte: "#8fd3ff",
-    Krankheit: "#ff7a9c",
-    Werkzeugbedarf: "#c9a86a",
-    Neugier: "#b58cff",
-    Müdigkeit: "#9b8cff",
-    Alltag: "#9fb0c8",
+    Thirst: "#5ec8ff",
+    Cold: "#8fd3ff",
+    Sickness: "#ff7a9c",
+    "Tool need": "#c9a86a",
+    Curiosity: "#b58cff",
+    Fatigue: "#9b8cff",
+    Routine: "#9fb0c8",
   };
 
   // --- client-side reward ring buffer for the footer sparkline ----------------
@@ -132,9 +132,9 @@
   let flags = $derived.by(() => {
     const f = sel?.fl ?? 0;
     const out = [];
-    if (f & 1) out.push({ t: "krank", c: "#ff7a9c" });
-    if (f & 2) out.push({ t: "schwanger", c: "#ff9ecb" });
-    if (f & 4) out.push({ t: "kommuniziert", c: "#9fd0ff" });
+    if (f & 1) out.push({ t: "sick", c: "#ff7a9c" });
+    if (f & 2) out.push({ t: "pregnant", c: "#ff9ecb" });
+    if (f & 4) out.push({ t: "communicating", c: "#9fd0ff" });
     return out;
   });
 
@@ -149,10 +149,10 @@
       <button
         class="ins-follow"
         class:on={following}
-        title="Kamera folgen"
-        onclick={() => onFollowToggle()}>folgen</button
+        title="Follow camera"
+        onclick={() => onFollowToggle()}>follow</button
       >
-      <button class="ins-close" title="Schließen" onclick={() => onClose()}>×</button>
+      <button class="ins-close" title="Close" onclick={() => onClose()}>×</button>
     </div>
 
     <!-- 1 · Warum-Headline -->
@@ -164,9 +164,9 @@
     <!-- 2 · Ziel (goal object + progress + clickable target cell) -->
     {#if sel.gl}
       <div class="sec">
-        <div class="sec-h">Ziel</div>
+        <div class="sec-h">Goal</div>
         <div class="goal-row">
-          <span class="goal-name">{PROP_DE[sel.gl] ?? `Ziel ${sel.gl}`}</span>
+          <span class="goal-name">{PROP_DE[sel.gl] ?? `Goal ${sel.gl}`}</span>
           {#if sel.gx != null && sel.gy != null}
             <button class="cell-link" onclick={() => onJump({ x: sel.gx, y: sel.gy })}
               >({sel.gx}, {sel.gy})</button
@@ -184,7 +184,7 @@
 
     <!-- 3 · Bedürfnisse -->
     <div class="sec">
-      <div class="sec-h">Bedürfnisse</div>
+      <div class="sec-h">Needs</div>
       {#if detail?.needs}
         {#each NEED_KEYS as k}
           <div class="need-row">
@@ -201,14 +201,14 @@
 
     <!-- 4 · Vitalwerte -->
     <div class="sec">
-      <div class="sec-h">Vitalwerte</div>
+      <div class="sec-h">Vitals</div>
       <div class="need-row">
-        <span class="need-k">Energie</span>
+        <span class="need-k">Energy</span>
         <span class="bar sm"><span class="fill e" style="width:{pct(sel.e, 240)}%"></span></span>
         <span class="bar-num">{sel.e}</span>
       </div>
       <div class="need-row">
-        <span class="need-k">Gesundheit</span>
+        <span class="need-k">Health</span>
         <span class="bar sm"><span class="fill h" style="width:{pct(sel.hp, 100)}%"></span></span>
         <span class="bar-num">{sel.hp}</span>
       </div>
@@ -224,7 +224,7 @@
     <!-- 5 · Hormone -->
     {#if detail?.horm}
       <div class="sec">
-        <div class="sec-h">Hormone</div>
+        <div class="sec-h">Hormones</div>
         <div class="horm-grid">
           {#each detail.horm as v, i}
             <div class="horm-cell">
@@ -238,9 +238,9 @@
 
     <!-- 6 · Inventar -->
     <div class="sec">
-      <div class="sec-h">Inventar</div>
+      <div class="sec-h">Inventory</div>
       <div class="need-row">
-        <span class="need-k">Werkzeug</span>
+        <span class="need-k">Tool</span>
         <span class="need-v">{TOOL_NAME[sel.tl ?? 0]}</span>
       </div>
       {#if invEntries.length}
@@ -250,15 +250,15 @@
           {/each}
         </div>
       {:else}
-        <div class="hint">leer</div>
+        <div class="hint">empty</div>
       {/if}
     </div>
 
     <!-- 7 · Soziales -->
     <div class="sec">
-      <div class="sec-h">Soziales</div>
+      <div class="sec-h">Social</div>
       <div class="need-row">
-        <span class="need-k">Stamm</span>
+        <span class="need-k">Tribe</span>
         <span class="need-v">{sel.tribe ?? "—"}</span>
       </div>
       {#if detail?.trust?.length}
@@ -294,20 +294,20 @@
 
     <!-- 9 · Footer -->
     <div class="footer">
-      <span class="foot-k">Alter</span><span class="foot-v">{detail?.age ?? "—"}</span>
-      <span class="foot-k">Geschl.</span><span class="foot-v"
-        >{detail?.sex === "m" ? "m" : detail?.sex === "f" ? "w" : "—"}</span
+      <span class="foot-k">Age</span><span class="foot-v">{detail?.age ?? "—"}</span>
+      <span class="foot-k">Sex</span><span class="foot-v"
+        >{detail?.sex === "m" ? "m" : detail?.sex === "f" ? "f" : "—"}</span
       >
       <span class="foot-k">Gen</span><span class="foot-v">{detail?.gen ?? "—"}</span>
       {#if detail?.par != null}
-        <span class="foot-k">Eltern</span>
+        <span class="foot-k">Parent</span>
         <button class="cell-link" onclick={() => onJump({ agent: detail.par })}>Agent {detail.par}</button>
       {/if}
-      <span class="foot-k">Kinder</span><span class="foot-v">{detail?.kids ?? "—"}</span>
+      <span class="foot-k">Children</span><span class="foot-v">{detail?.kids ?? "—"}</span>
     </div>
     {#if sparkPts}
       <div class="spark">
-        <span class="foot-k">Belohnung</span>
+        <span class="foot-k">Reward</span>
         <svg viewBox="0 0 96 18" preserveAspectRatio="none" class="spark-svg">
           <polyline points={sparkPts} fill="none" stroke="#5ec8ff" stroke-width="1" />
         </svg>
@@ -316,7 +316,7 @@
 
     <!-- 10 · Persönliche Chronik -->
     <div class="sec chronik-slot">
-      <div class="sec-h">Chronik</div>
+      <div class="sec-h">Chronicle</div>
       {#if chronikEntries.length}
         <div class="chronik-list">
           {#each chronikEntries as e (e.key)}
@@ -328,7 +328,7 @@
           {/each}
         </div>
       {:else}
-        <div class="hint">noch nichts erlebt</div>
+        <div class="hint">nothing yet</div>
       {/if}
     </div>
   </div>
