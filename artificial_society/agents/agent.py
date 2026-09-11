@@ -88,6 +88,20 @@ REPRODUCTION_COOLDOWN = 100
 # drops, so the population settles near carrying capacity instead of crashing.
 REPRODUCTION_SENSE_RADIUS = 2
 REPRODUCTION_MIN_FOOD_PER_CAPITA = 6.0
+# Demografie-Stabilisierung C2 (Option A, nur physics_v2): das Fruchtbarkeits-Gate
+# hängt im v2-Pfad an der nachhaltigen ERNEUERUNG pro Mund (Σ plant_renewal_ema
+# über die (2R+1)²-Box / Münder), NICHT am momentanen Bestand. Das momentane-
+# Bestand-Gate (REPRODUCTION_MIN_FOOD_PER_CAPITA) wird bei voller t0-Welt vom
+# nicht erneuerbaren Startpuffer getäuscht → Malthus-Overshoot 30→~55→Crash.
+# Der EMA-Fluss dämpft dagegen doppelt bei niedriger Dichte (Zähler steigt via
+# stress_factor-Erholung, Nenner sinkt) und erhält so die Erholung.
+# SKALA: EMA-Fluss (food/tick), NICHT die alte 6/8-Bestandsskala. Der Default
+# 0.20 wurde per Instrumentierung (gate-off, 4 Seeds, grid 24x18) in die Lücke
+# der renewal-pro-Mund-Verteilung gelegt: crowded (pop>=45) p75=0.12 / recovered
+# (pop 8-15) p75=0.21. 0.20 verwirft ~88% der Overshoot-Checks (> crowded-p75) und
+# öffnet ~27% der Erholungs-Checks (< recovered-p75). Freier, sweepbarer Parameter
+# (Harness --min-renewal-per-capita).
+REPRODUCTION_MIN_RENEWAL_PER_CAPITA = 0.20
 # Angeborene Grund-Taxis (Chemotaxis-Analogon, Architektur A2): symmetrischer
 # Nahrungs- & Partner-GRUNDTRIEB, der im physics_v2-Pfad die Welt-Wirkung des
 # Move-Kopfs (Dims 0/1) ersetzt. Rein deterministisch, KEIN random.* — der
@@ -789,7 +803,12 @@ class Agent:
             if self.physics_v2 and self.energy < MAX_ENERGY:
                 layer = world.objects
                 for obj in layer.objects_at((x, y)):
-                    if obj.kind not in ("carcass", "raw_meat"):
+                    # C3: innater Biss STRIKT auf `carcass` (v1-Aas-Ersatz, toxin-
+                    # frei). `raw_meat` ist Produkt GELERNTER Zerlegung + trägt Toxin,
+                    # das der gelernte eat-Verb zahlt — es MUSS durch diesen Pfad, sonst
+                    # dominiert der toxin-freie innate Biss ihn und verflacht den
+                    # learn>nolearn-Gradient des M1-A/B.
+                    if obj.kind not in ("carcass",):
                         continue
                     result = do_eat(self.body, self.hands, layer, self.pos, obj)
                     if not result.ok:
@@ -997,12 +1016,44 @@ class Agent:
         nearby = len(self._nearby_cached(agents, r))
         return total_food / (nearby + 1.0)
 
+    def _local_renewal_per_capita(self, world, agents):
+        """Sustainable plant RENEWAL (flux) shared over the mouths already nearby.
+
+        Demografie-Stabilisierung C2 (Option A). Sums the realized-regrowth EMA
+        ``plant_renewal_ema`` over the (2R+1)^2 cell box around the mother and
+        divides by the neighbour count (+1 for the mother herself). Unlike
+        ``_local_food_per_capita`` (which sums the momentary standing stock and is
+        fooled by the non-renewable t0 buffer), this reads the *sustainable inflow*
+        and is suppressed under crowding via the regrow ``stress_factor`` channel.
+        Reuses the shared radius-2 neighbour snapshot so it costs no extra scan.
+        """
+        x, y = self.pos
+        r = REPRODUCTION_SENSE_RADIUS
+        total_renewal = 0.0
+        for cx in range(x - r, x + r + 1):
+            for cy in range(y - r, y + r + 1):
+                if world.in_bounds(cx, cy):
+                    total_renewal += world.get_cell(cx, cy)["plant_renewal_ema"]
+        nearby = len(self._nearby_cached(agents, r))
+        return total_renewal / (nearby + 1.0)
+
     def _try_reproduce(self, world, agents):
         if not self.can_reproduce() or self.sex != "f":
             return None
-        if self._local_food_per_capita(world, agents) < REPRODUCTION_MIN_FOOD_PER_CAPITA:
-            # The ground here can't feed another mouth right now — hold off.
-            return None
+        # C2 (KRITISCH, physics_v2-gegated): v2 hängt die Fertilität an die
+        # nachhaltige Erneuerung pro Mund; v1 behält das momentane-Bestand-Gate
+        # BYTE-FÜR-BYTE (Golden-Schutz) und liest plant_renewal_ema NIE.
+        if self.physics_v2:
+            if (
+                self._local_renewal_per_capita(world, agents)
+                < REPRODUCTION_MIN_RENEWAL_PER_CAPITA
+            ):
+                # The renewable supply here can't sustain another mouth — hold off.
+                return None
+        else:
+            if self._local_food_per_capita(world, agents) < REPRODUCTION_MIN_FOOD_PER_CAPITA:
+                # The ground here can't feed another mouth right now — hold off.
+                return None
         x, y = self.pos
         males = [
             a

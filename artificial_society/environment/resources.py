@@ -92,6 +92,15 @@ PLANT_TEMP_FLOOR = 0.5
 COLD_DANGER_THRESHOLD = 6.0
 COLD_DANGER_COEFF = 0.9
 
+# Demografie-Stabilisierung C2 (Option A): geglätteter realisierter Pflanzen-
+# Zufluss. Der EMA (~1/ALPHA≈20-Tick-Gedächtnis) mittelt den TATSÄCHLICHEN
+# post-headroom/post-biome plant_gain und dient dem physics_v2-Fruchtbarkeits-
+# Gate als bestands-unabhängiges, dichte-diskriminierendes Erneuerungssignal.
+# t0 wird der EMA mit dem PRE-headroom-Potenzial geseedet, damit er bei voller
+# Welt (headroom→0 ⇒ realisierter Fluss≈0) nicht fälschlich ≈0 startet.
+# Sweepbar; v1-inert (nur vom v2-Gate gelesen).
+PLANT_RENEWAL_EMA_ALPHA = 0.05
+
 
 def biome_scarcity_ceiling(biome):
     return BIOME_SCARCITY_CEILING.get(biome, SCARCITY_CEILING_FACTOR)
@@ -138,6 +147,10 @@ def initial_cell_state(biome):
         "moisture": float(base["water"] * 0.7),
         "ash": 0.0,
         "disturbance": 0.0,
+        # C2 Option A: EMA des realisierten Pflanzen-Zuflusses. Startwert 0.0 —
+        # der erste regrow-Aufruf (tick==0) überschreibt ihn mit dem pre-headroom
+        # plant_gain-Potenzial (deterministisch, kein RNG).
+        "plant_renewal_ema": 0.0,
         "structures": {"camp": 0.0, "farm": 0.0, "well": 0.0},
         "biome": biome,
         "tick": 0,
@@ -337,6 +350,9 @@ def regrow_cell(world, x, y, biome, season_state, weather_state, tick, event_str
     meat_target = MEAT_CEILING_FACTOR * capacity
     plant_headroom = max(0.0, 1.0 - cell["plant_food"] / max(1.0, plant_target))
     meat_headroom = max(0.0, 1.0 - cell["meat_food"] / max(1.0, meat_target))
+    # C2 Option A: pre-headroom Potenzial für den t0-Seed (VOR *plant_headroom),
+    # spiegelt regrow_grid ~:569 bitgleich.
+    plant_gain_prehead = plant_gain
     plant_gain *= plant_headroom
     meat_gain *= meat_headroom
 
@@ -351,6 +367,21 @@ def regrow_cell(world, x, y, biome, season_state, weather_state, tick, event_str
         water_gain = 0.0
         plant_gain = 0.0
         meat_gain = 0.0
+
+    # C2 Option A: realized-regrowth EMA aus dem finalen (post-headroom/post-biome)
+    # plant_gain. t0 (tick==0) mit dem pre-headroom-Potenzial seeden, sonst EMA
+    # fortschreiben. Transliteration von regrow_grid; hält test_vectorized_equivalence.
+    plant_renewal_ema0 = cell["plant_renewal_ema"]
+    if tick == 0:
+        world.set_cell(x, y, "plant_renewal_ema", plant_gain_prehead)
+    else:
+        world.set_cell(
+            x,
+            y,
+            "plant_renewal_ema",
+            PLANT_RENEWAL_EMA_ALPHA * plant_gain
+            + (1.0 - PLANT_RENEWAL_EMA_ALPHA) * plant_renewal_ema0,
+        )
 
     decayed_meat = min(cell["meat_food"], spoilage * MEAT_SPOIL_RATE)
     world.set_cell(
@@ -515,6 +546,7 @@ def regrow_grid(world, season_state, weather_state, tick, event_fields):
     water0 = F["water"].copy()
     disease0 = F["disease"].copy()
     carcasses0 = F["carcasses"].copy()
+    plant_renewal_ema0 = F["plant_renewal_ema"].copy()  # C2 Option A snapshot
 
     farm = S["farm"]
     camp = S["camp"]
@@ -566,6 +598,9 @@ def regrow_grid(world, season_state, weather_state, tick, event_fields):
     meat_target = MEAT_CEILING_FACTOR * capacity
     plant_headroom = np.maximum(0.0, 1.0 - plant_food0 / np.maximum(1.0, plant_target))
     meat_headroom = np.maximum(0.0, 1.0 - meat_food0 / np.maximum(1.0, meat_target))
+    # C2 Option A: pre-headroom Potenzial für den t0-Seed (VOR *plant_headroom),
+    # spiegelt regrow_cell bitgleich.
+    plant_gain_prehead = plant_gain.copy()
     plant_gain = plant_gain * plant_headroom
     meat_gain = meat_gain * meat_headroom
 
@@ -577,6 +612,17 @@ def regrow_grid(world, season_state, weather_state, tick, event_fields):
     water_gain = np.where(bio["is_water"], 0.0, water_gain)
     plant_gain = np.where(bio["is_water"], 0.0, plant_gain)
     meat_gain = np.where(bio["is_water"], 0.0, meat_gain)
+
+    # C2 Option A: realized-regrowth EMA aus dem finalen (post-headroom/post-biome)
+    # plant_gain. t0 (tick==0) mit dem pre-headroom-Potenzial seeden, sonst EMA
+    # fortschreiben. NUR vom physics_v2-Gate gelesen ⇒ v1-Golden/Digest unberührt.
+    if tick == 0:
+        F["plant_renewal_ema"] = plant_gain_prehead
+    else:
+        F["plant_renewal_ema"] = (
+            PLANT_RENEWAL_EMA_ALPHA * plant_gain
+            + (1.0 - PLANT_RENEWAL_EMA_ALPHA) * plant_renewal_ema0
+        )
 
     meat_cap = np.maximum(15.0, capacity)
     decayed_meat = np.minimum(meat_food0, spoilage * MEAT_SPOIL_RATE)

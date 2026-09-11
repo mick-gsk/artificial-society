@@ -27,18 +27,25 @@ from artificial_society.agents.agent import Agent, MATE_SEEK_RADIUS
 
 
 class FakeWorld:
-    """Uniform, fully-passable, food-bearing map (only the taxis/repro surface)."""
+    """Uniform, fully-passable, food-bearing map (only the taxis/repro surface).
 
-    def __init__(self, width, height, food=10.0):
+    ``renewal`` seeds ``plant_renewal_ema`` — the realized-regrowth flux the v2
+    fertility gate reads (Demografie-Stabilisierung C2). A healthy positive value
+    models the recovered low-density regime these tests are about: scattered
+    survivors on well-regrowing ground MUST be able to breed (C2 low-density-OPEN).
+    """
+
+    def __init__(self, width, height, food=10.0, renewal=1.0):
         self.width = width
         self.height = height
         self._food = food
+        self._renewal = renewal
 
     def in_bounds(self, x, y):
         return 0 <= x < self.width and 0 <= y < self.height
 
     def get_cell(self, x, y):
-        return {"food": self._food, "passable": True}
+        return {"food": self._food, "plant_renewal_ema": self._renewal, "passable": True}
 
 
 def _make_agent(x, y, sex, energy=130.0, age=200):

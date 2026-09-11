@@ -38,6 +38,11 @@ FLOAT_FIELDS: tuple[str, ...] = (
     "moisture",
     "ash",
     "disturbance",
+    # Realized-regrowth EMA (Demografie-Stabilisierung C2, Option A): geglätteter
+    # tatsächlicher Pflanzen-Zufluss pro Zelle. Nur in regrow_grid/regrow_cell
+    # geschrieben; NUR vom physics_v2-Fruchtbarkeits-Gate gelesen (agent.py).
+    # v1-inert (kein Diffuse-/Means-/Golden-/Digest-Lesepfad).
+    "plant_renewal_ema",
 )
 FLOAT_FIELD_SET = frozenset(FLOAT_FIELDS)
 

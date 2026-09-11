@@ -124,6 +124,50 @@ def test_auto_biss_kostet_keine_health_v1_paritaet():
     assert agent.health == pytest.approx(100.0)  # aber kostete keine Health
 
 
+def test_c3_raw_meat_objekt_faellt_durch_kein_innate_biss():
+    """(C3) Der innate Hand-Biss ist auf `carcass` beschränkt. Ein `raw_meat`-
+    Objekt (Produkt GELERNTER Zerlegung, toxin-tragend) darf NICHT innate
+    gebissen werden — es fällt zum gelernten eat-Verb durch, damit der
+    learn>nolearn-Gradient nicht verflacht."""
+    sim = Simulation(seed=42, physics_v2=True, **_PARAMS)
+    agent = sim.agents[0]
+    x, y = agent.pos
+    sim.world.set_cell(x, y, "plant_food", 0.0)  # isoliert die Objekt-Linie
+    raw = make_object("raw_meat", 70.0)
+    sim.world.objects.add(raw, (x, y), source="spawned")
+
+    agent.energy = 100.0  # hungrig → innate Biss WÜRDE feuern, wenn kind zugelassen
+    masse_vorher = raw.mass
+    meat_vorher = agent.meat_eaten
+    eaten_vorher = sim.world.objects.ledger["eaten"]
+
+    agent._forage(sim.world, {})
+
+    assert raw.mass == pytest.approx(masse_vorher)  # unangetastet
+    assert agent.meat_eaten == meat_vorher  # kein innate Biss
+    assert sim.world.objects.ledger["eaten"] == pytest.approx(eaten_vorher)
+
+
+def test_c3_carcass_objekt_wird_weiter_gebissen():
+    """(C3) Gegenprobe: ein `carcass`-Objekt am selben Setup wird weiter innate
+    gebissen — die C3-Einschränkung entfernt nur `raw_meat`, nicht `carcass`."""
+    sim = Simulation(seed=42, physics_v2=True, **_PARAMS)
+    agent = sim.agents[0]
+    x, y = agent.pos
+    sim.world.set_cell(x, y, "plant_food", 0.0)
+    carcass = make_object("carcass", 70.0)
+    sim.world.objects.add(carcass, (x, y), source="from_carcass")
+
+    agent.energy = 100.0
+    masse_vorher = carcass.mass
+    meat_vorher = agent.meat_eaten
+
+    agent._forage(sim.world, {})
+
+    assert carcass.mass < masse_vorher  # gebissen
+    assert agent.meat_eaten == meat_vorher + 1
+
+
 def test_determinismus_gleicher_seed_gleiches_ergebnis():
     """(5) Gleicher Seed → identische Energie-Trajektorie über den Auto-Biss-Pfad."""
 

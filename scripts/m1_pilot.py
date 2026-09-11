@@ -354,10 +354,22 @@ def _age_structure_founders(sim) -> None:
     Bedingungen, kein Determinismus-Bug (gleicher Seed + gleiches Flag ⇒
     weiterhin bitidentisch).
     """
+    # Demografie-Stabilisierung C1: zusätzlich einen initialen
+    # `reproduction_cooldown` gleichverteilt über [0, REPRODUCTION_COOLDOWN) aus
+    # DEMSELBEN globalen `random`-Strom ziehen wie der Schwester-`age`-Draw (KEIN
+    # separates RNG-Objekt — der Strom ist bereits über `rng.seed_all` geseedet,
+    # `seed_all` IST `random.seed`). Das zerlegt den synchronen t0-Konzeptions-
+    # Puls (alle Gründer starten sonst mit cooldown==0 fertil) in einen
+    # gleichmäßigen Zufluss — genau das t0-Fenster, das das C2-Fluss-Gate bei
+    # voller Welt (Fluss≈0) am schlechtesten abdeckt. Ort BINDEND: die Harness
+    # (Review I-2/I-3), außerhalb des Golden-/Digest-Pfads.
+    from artificial_society.agents.agent import REPRODUCTION_COOLDOWN
+
     for a in sim.agents:
         age = random.randint(0, 1999)
         a.age = age
         a.birth_tick = sim.tick - age
+        a.reproduction_cooldown = random.randint(0, REPRODUCTION_COOLDOWN - 1)
 
 
 # Review-Finding I-1 (Etappe 1a, review-report-etappe1.md): `_scale_regrowth`
@@ -480,6 +492,26 @@ def _set_min_food_per_capita(value: float) -> None:
     import artificial_society.agents.agent as agent_mod
 
     agent_mod.REPRODUCTION_MIN_FOOD_PER_CAPITA = value
+
+
+def _set_min_renewal_per_capita(value: float) -> None:
+    """Demografie-Stabilisierung C2 (Review M-2): patcht
+    `agents/agent.py`s `REPRODUCTION_MIN_RENEWAL_PER_CAPITA` (Default 0.20) —
+    den Floor des NEUEN physics_v2-Fruchtbarkeits-Gates auf der erneuerbaren
+    Versorgung pro Mund (Σ `plant_renewal_ema`/Münder).
+
+    BEWUSST getrennt von `_set_min_food_per_capita`: der alte Floor regelt
+    weiter das v1-Bestand-Gate (und den v2-Fallback); dieser Floor lebt in einer
+    ANDEREN Skala (EMA-Fluss food/tick, nicht 6/8-Bestand). Getrennte Flags
+    halten v1- und v2-Sweeps unabhängig + selbstdokumentierend im meta-Record.
+
+    Call-time-Beleg wie `_set_min_food_per_capita`: `_try_reproduce` liest den
+    Namen als freien Modul-Global im physics_v2-Zweig — Patchen NACH dem Import
+    wirkt auf jeden folgenden Aufruf.
+    """
+    import artificial_society.agents.agent as agent_mod
+
+    agent_mod.REPRODUCTION_MIN_RENEWAL_PER_CAPITA = value
 
 
 # --------------------------------------------------------------------------
@@ -795,6 +827,7 @@ def run_one(
     taxis_hunger_threshold: float = 80.0,
     mate_seek_radius: int = 8,
     respawn_mode: str = "scatter",
+    min_renewal_per_capita: float = 0.20,
 ) -> str:
     conf = EXPERIMENTS[exp]
     # Patches VOR dem Simulation-Bau anwenden (Spec §1). Modul-Konstanten wie
@@ -836,6 +869,9 @@ def run_one(
     # Verhalten gegenüber Läufen ohne diese Flags.
     _scale_regrowth(regrow_scale)
     _set_min_food_per_capita(min_food_per_capita)
+    # C2-Floor (physics_v2-Fruchtbarkeits-Gate). Default 0.20 = Paket-Default,
+    # unverändert; getrennt vom v1-Bestand-Floor (siehe _set_min_renewal_per_capita).
+    _set_min_renewal_per_capita(min_renewal_per_capita)
 
     # v1-vs-v2-Demografie-Vergleich: `--physics` steuert NUR den Bau-Parameter
     # von `Simulation` (physics_v2-Kern-/Brain-Pfad). Die Arm-Patches oben und
@@ -945,6 +981,9 @@ def run_one(
             "age_structured_founders": age_structured_founders,
             "regrow_scale": regrow_scale,
             "min_food_per_capita": min_food_per_capita,
+            # C2 (Demografie-Stabilisierung): Floor des physics_v2-Renewal-Gates
+            # (Σ plant_renewal_ema/Münder), getrennte Skala vom Bestand-Floor.
+            "min_renewal_per_capita": min_renewal_per_capita,
             # Demografie-Diagnose (siehe `_scale_plant_ceiling`-Docstring):
             # skaliert die Pflanzen-Nahrungs-DECKE (world._bio["plant_ceiling"]),
             # nicht die Zufluss-RATE wie `regrow_scale`.
@@ -1070,6 +1109,18 @@ def main() -> None:
         ),
     )
     ap.add_argument(
+        "--min-renewal-per-capita",
+        type=float,
+        default=0.20,
+        help=(
+            "Demografie-Stabilisierung C2 (Review M-2): patcht agents.agent."
+            "REPRODUCTION_MIN_RENEWAL_PER_CAPITA (Default 0.20 = Paket-Default) — "
+            "den Floor des physics_v2-Fruchtbarkeits-Gates auf der ERNEUERBAREN "
+            "Versorgung pro Mund (Σ plant_renewal_ema/Münder). ANDERE Skala als "
+            "--min-food-per-capita (Bestand); Details: _set_min_renewal_per_capita."
+        ),
+    )
+    ap.add_argument(
         "--physics",
         choices=["v1", "v2"],
         default="v2",
@@ -1145,6 +1196,7 @@ def main() -> None:
         args.taxis_hunger_threshold,
         args.mate_seek_radius,
         args.respawn_mode,
+        min_renewal_per_capita=args.min_renewal_per_capita,
     )
 
 
